@@ -15,6 +15,7 @@ export class SSHClientPool {
   private configs = new Map<string, ActiveDeviceConfig>();
   private reconnectTimers = new Map<string, NodeJS.Timeout>();
   private activeClients = new Map<string, Client>();
+  private connectingClients = new Map<string, Client>();
   private stopped = false;
 
   constructor(registry: DeviceRegistry) {
@@ -62,6 +63,7 @@ export class SSHClientPool {
     if (this.stopped || !this.configs.has(config.id)) return;
 
     const client = new SSHClientClass();
+    this.connectingClients.set(config.id, client);
 
     const connectConfig: ConnectConfig = {
       host: config.host,
@@ -89,6 +91,7 @@ export class SSHClientPool {
     }
 
     client.on('ready', () => {
+      this.connectingClients.delete(config.id);
       this.activeClients.set(config.id, client);
       const driver = new SSHHostDriver(config.id, client);
 
@@ -111,6 +114,7 @@ export class SSHClientPool {
     });
 
     client.on('error', (err) => {
+      this.connectingClients.delete(config.id);
       const existing = this.registry.get(config.id);
       if (existing && existing.info.mode === 'active_ssh') {
         this.registry.register(
@@ -126,6 +130,7 @@ export class SSHClientPool {
     });
 
     client.on('close', () => {
+      this.connectingClients.delete(config.id);
       this.activeClients.delete(config.id);
       const existing = this.registry.get(config.id);
       if (existing && existing.info.mode === 'active_ssh') {
@@ -168,8 +173,13 @@ export class SSHClientPool {
     }
     this.reconnectTimers.clear();
 
+    for (const client of this.connectingClients.values()) {
+      try { client.destroy(); } catch {}
+    }
+    this.connectingClients.clear();
+
     for (const client of this.activeClients.values()) {
-      try { client.end(); } catch {}
+      try { client.destroy(); } catch {}
     }
     this.activeClients.clear();
   }
