@@ -1,0 +1,25 @@
+import { Client } from "ssh2";
+import fs from "node:fs"; import os from "node:os"; import path from "node:path";
+const key = fs.readFileSync(path.join(os.homedir(), ".ssh", "wshome"));
+const c = new Client();
+await new Promise((res, rej) => { c.on("ready", res); c.on("error", rej); c.connect({ host:"155.103.66.113", port:35683, username:"root", privateKey:key }); });
+// no pty at all
+const s = await new Promise((res, rej) => c.shell((e, st) => e ? rej(e) : res(st)));
+let buf = "";
+s.on("data", d => buf += d.toString());
+s.stderr.on("data", d => buf += "[ERR]" + d.toString());
+const t0 = Date.now();
+s.write('echo "S:$((1+1))"; echo "E:$?"\n');
+while (!buf.includes("E:")) await new Promise(r => setTimeout(r, 2));
+console.log("no-pty shell ms", Date.now() - t0, JSON.stringify(buf));
+buf = "";
+const t1 = Date.now();
+s.write('(cd /root && pwd && echo done) ; echo "E:$?"\n');
+while (!buf.includes("E:")) await new Promise(r => setTimeout(r, 2));
+console.log("subshell ms", Date.now() - t1, JSON.stringify(buf));
+buf = "";
+const t2 = Date.now();
+s.write('false; echo "E:$?"\n');
+while (!buf.includes("E:")) await new Promise(r => setTimeout(r, 2));
+console.log("exitcode ms", Date.now() - t2, JSON.stringify(buf));
+c.end(); process.exit(0);

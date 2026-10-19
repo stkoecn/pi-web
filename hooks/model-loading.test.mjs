@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Script } from "node:vm";
 import ts from "typescript";
+import { withDeviceId } from "../lib/device-context.ts";
 
 const source = ts.createSourceFile(
   "useAgentSession.ts",
@@ -39,6 +40,8 @@ function setup(fetchImpl) {
     thinkingLevelPinsRef: { current: {} }, defaultThinkingLevelRef: { current: null },
     asConcreteThinkingLevel: (value) => (!value || value === "auto" ? null : value),
     fetch: fetchImpl,
+    // The hook reads the device it talks to from a ref; these runs are local.
+    deviceIdRef: { current: "localhost" }, withDeviceId,
     MODELS_RETRY_DELAYS_MS: script(schedule.initializer.getText(source)).runInNewContext(),
     delay: async (ms) => { delays.push(ms); },
   };

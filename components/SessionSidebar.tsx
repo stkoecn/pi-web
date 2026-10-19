@@ -2,6 +2,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
+import { withDeviceId } from "@/lib/device-context";
 import { listSessionFamilies, type SessionFamily } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
@@ -91,6 +92,7 @@ import { SessionSearch } from "./SessionSearch";
 import { SessionTree, sessionRowTitle, type SessionTreeReveal } from "./SessionTree";
 import { SidebarMenu, type SidebarMenuAnchor, type SidebarMenuItem } from "./SidebarMenu";
 import { SidebarToast, type SidebarToastAction, type SidebarToastData } from "./SidebarToast";
+import { deviceHomeOrRoot, loadHome, rememberHome } from "@/lib/device-home-client";
 import {
   ArchiveIcon,
   ChangesIcon,
@@ -185,10 +187,13 @@ function ToolbarIconButton({
   );
 }
 
-function sessionListUrl(summary: boolean, force: boolean): string {
-  if (summary) return "/api/sessions?summary=1";
-  if (force) return "/api/sessions?force=1";
-  return "/api/sessions";
+function sessionListUrl(summary: boolean, force: boolean, deviceId?: string): string {
+  const params = new URLSearchParams();
+  if (summary) params.set("summary", "1");
+  if (force) params.set("force", "1");
+  if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
+  const q = params.toString();
+  return q ? `/api/sessions?${q}` : "/api/sessions";
 }
 
 /** How a pick in the sidebar opens a session. */
@@ -301,7 +306,10 @@ type ArchiveDeleteScope = "all" | "old";
 
 const UNREAD_SESSIONS_STORAGE_KEY = "pi-web:unread-session-ids";
 const LAST_CUSTOM_CWD_STORAGE_KEY = "pi-web:last-custom-cwd";
-const RUNNING_SESSIONS_POLL_MS = 2500;
+const RUNNING_SESSIONS_POLL_MS = 8000;
+/** A failing /api/agent/running poll backs off by 1.5x per attempt, up to this. */
+const RUNNING_SESSIONS_POLL_MAX_MS = 30000;
+const RUNNING_SESSIONS_POLL_BACKOFF_FACTOR = 1.5;
 const SESSION_DETAILS_HYDRATION_DELAY_MS = 750;
 /** "Archive sessions older than 7 days" in a project's menu. */
 const ARCHIVE_OLDER_THAN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -667,7 +675,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     apply: applyUiStateRequest,
     snapshot: snapshotUiState,
     noteRevision: noteUiRevision,
-  } = useSessionUiState();
+  } = useSessionUiState(deviceId);
 
   // The explorer's scroll container is always mounted (empty without a cwd),
   // so the scrollbar hook stays bound to the element that is on the page.
@@ -745,11 +753,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     forgetRetiredSidebarKeys();
   }, []);
 
+  const deviceIdRef = useRef(deviceId);
+  deviceIdRef.current = deviceId;
+
   const loadSessions = useCallback(async (showLoading = false, force = false, summary = false) => {
+    const currentDeviceId = deviceIdRef.current;
     const loadId = ++sessionLoadIdRef.current;
     try {
       if (showLoading) setLoading(true);
-      const res = await fetch(sessionListUrl(summary, force), {
+      const res = await fetch(sessionListUrl(summary, force, currentDeviceId), {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -764,6 +776,19 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       sessionListVersionRef.current = data.sessionListVersion;
       setAllSessions(data.sessions);
       if (!summary) setSessionDetailsLoaded(true);
+
+      setSelectedCwd((prev) => {
+        if (currentDeviceId && currentDeviceId !== "localhost") {
+          // Not `/root`: macOS devices answer `/Users/<name>`. Until the home
+          // lookup lands, `/` is the one path every POSIX device has.
+          return deviceHomeOrRoot(currentDeviceId);
+        }
+        if (!prev) {
+          const recent = getRecentProjects(data.sessions);
+          return recent[0]?.root ?? null;
+        }
+        return prev;
+      });
       // Treat the fetched running set as an initial fallback only. Once the
       // lightweight poll is live, a slow session-list fetch cannot overwrite it.
       if (!runningPollAuthoritativeRef.current) {
@@ -826,6 +851,25 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       }
     };
   }, [loadSessions, refreshKey]);
+
+  const prevDeviceIdRef = useRef(deviceId);
+  useEffect(() => {
+    if (prevDeviceIdRef.current === deviceId) return;
+    prevDeviceIdRef.current = deviceId;
+    const isRemote = deviceId && deviceId !== "localhost";
+    setSelectedCwd(isRemote ? deviceHomeOrRoot(deviceId) : (selectedCwdProp ?? null));
+    // Resolve the new device's home, then move the workspace there if the
+    // placeholder `/` is still what we are showing.
+    if (isRemote) {
+      void loadHome(deviceId).then((home) => {
+        if (!home || prevDeviceIdRef.current !== deviceId) return;
+        setSelectedCwd((current) => (current === "/" || !current ? home : current));
+      });
+    }
+    setAllSessions([]);
+    void loadSessions(true, true);
+    setExplorerKey((k) => k + 1);
+  }, [deviceId, selectedCwdProp, loadSessions]);
 
   // Only the server can raise a file-manager window, and only when the browser
   // runs on that same machine. Ask it once so the button can pick the right
@@ -903,6 +947,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
+    // Backoff state: grows 1.5x on a failed poll, snaps back on a good one.
+    let nextDelay = RUNNING_SESSIONS_POLL_MS;
 
     const clearTimer = () => {
       if (timer) clearTimeout(timer);
@@ -912,7 +958,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const schedule = () => {
       clearTimer();
       if (stopped || document.visibilityState !== "visible") return;
-      timer = setTimeout(() => void poll(), RUNNING_SESSIONS_POLL_MS);
+      timer = setTimeout(() => void poll(), nextDelay);
     };
 
     const poll = async () => {
@@ -920,12 +966,21 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const current = new AbortController();
       controller?.abort();
       controller = current;
+      let failed = false;
       try {
-        const res = await fetch("/api/agent/running", {
+        const currentDeviceId = deviceIdRef.current;
+        const deviceQuery =
+          currentDeviceId && currentDeviceId !== "localhost"
+            ? `?deviceId=${encodeURIComponent(currentDeviceId)}`
+            : "";
+        const res = await fetch(`/api/agent/running${deviceQuery}`, {
           cache: "no-store",
           signal: current.signal,
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          failed = true;
+          return;
+        }
         const data = await res.json() as {
           sessionListVersion: number;
           runningSessionIds?: string[];
@@ -948,8 +1003,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }
       } catch {
         // Keep the last known state; the next visible-tab poll retries.
+        // An abort (tab hidden, or a newer poll superseding this one) is not
+        // a failure, so it must not inflate the backoff.
+        failed = !current.signal.aborted;
       } finally {
-        if (controller === current) controller = null;
+        // Only the poll that still owns the controller may change the cadence;
+        // a superseded or tab-hidden-aborted poll must not reset it.
+        const ownsController = controller === current;
+        if (ownsController) controller = null;
+        if (ownsController) {
+          nextDelay = failed
+            ? Math.min(
+                RUNNING_SESSIONS_POLL_MAX_MS,
+                Math.round(nextDelay * RUNNING_SESSIONS_POLL_BACKOFF_FACTOR),
+              )
+            : RUNNING_SESSIONS_POLL_MS;
+        }
         schedule();
       }
     };
@@ -1039,10 +1108,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, [explorerRefreshKey]);
 
   useEffect(() => {
-    fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
-      if (d.home) setHomeDir(d.home);
-    }).catch(() => {});
-  }, []);
+    void loadHome(deviceIdRef.current).then((home) => {
+      if (!home) return;
+      rememberHome(deviceIdRef.current, home);
+      setHomeDir(home);
+    });
+  }, [deviceId]);
 
   const restoredRef = useRef(false);
 
@@ -1086,7 +1157,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     if (selectedCwdProp !== lastSyncedCwdPropRef.current) {
       lastSyncedCwdPropRef.current = selectedCwdProp;
-      setSelectedCwd(selectedCwdProp);
+      const isRemote = deviceId && deviceId !== "localhost";
+      if (isRemote && (selectedCwdProp.includes("\\") || /^[a-zA-Z]:/.test(selectedCwdProp))) {
+        // A Windows path arrived from a previous device: adopt this one's home.
+        setSelectedCwd(deviceHomeOrRoot(deviceId));
+      } else {
+        setSelectedCwd(selectedCwdProp);
+      }
     }
   }, [selectedCwdProp]);
 
@@ -1100,7 +1177,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     let cancelled = false;
     setWorktreeLoadingCwd(selectedCwd);
-    fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`)
+    const devQuery = deviceId && deviceId !== "localhost" ? `&deviceId=${encodeURIComponent(deviceId)}` : "";
+    fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}${devQuery}`)
       .then((r) => r.json())
       .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; worktrees?: WorktreeEntry[]; error?: string }) => {
         if (cancelled) return;
@@ -1177,7 +1255,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const res = await fetch("/api/cwd/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: path }),
+        body: JSON.stringify({ cwd: path, deviceId: deviceIdRef.current }),
       });
       const data = await res.json().catch(() => ({})) as {
         cwd?: string;
@@ -1247,7 +1325,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const res = await fetch("/api/worktrees", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: project.root, branch }),
+        body: JSON.stringify({ cwd: project.root, branch, deviceId: deviceIdRef.current }),
       });
       const data = await res.json().catch(() => ({})) as { path?: string; error?: string };
       if (!res.ok || data.error || !data.path) return { error: data.error ?? `HTTP ${res.status}` };
@@ -1269,7 +1347,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const res = await fetch("/api/worktrees", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: project.root, path, force }),
+        body: JSON.stringify({ cwd: project.root, path, force, deviceId: deviceIdRef.current }),
       });
       const data = await res.json().catch(() => ({})) as { error?: string; dirty?: boolean };
       if (!res.ok) {
@@ -1292,6 +1370,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const handleFilesPick = useCallback(({ cwd, projectKey, projectRoot }: NewSessionTarget) => {
     if (projectKey && projectRoot) setValidatedProject({ cwd, root: projectRoot, key: projectKey });
     setSelectedCwd(cwd);
+    setExplorerKey((k) => k + 1);
   }, []);
 
   // Clicking a session moves the effective cwd to that session's worktree.
@@ -1417,9 +1496,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     () => effectiveGroupExpansion(groupExpansion, keptOpenGroups),
     [groupExpansion, keptOpenGroups],
   );
+  const isRemote = Boolean(deviceId && deviceId !== "localhost");
+  const effectiveUiState = useMemo(() => {
+    if (!isRemote) return uiState;
+    const remoteRoots = Array.from(new Set(allSessions.map(s => s.projectRoot || s.cwd).filter(Boolean)));
+    if (selectedCwd && !remoteRoots.includes(selectedCwd)) remoteRoots.push(selectedCwd);
+    return {
+      ...uiState,
+      projectOrder: remoteRoots,
+      projects: Object.fromEntries(
+        remoteRoots.map(root => [root, { root, key: root, pinnedAt: 0 }])
+      ),
+    };
+  }, [uiState, isRemote, allSessions, selectedCwd]);
+
   const model = useMemo(() => buildSessionTree({
     sessions: allSessions,
-    uiState,
+    uiState: effectiveUiState,
     runningIds: runningSessionIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
@@ -1428,21 +1521,21 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     groupExpansion: shownGroupExpansion,
     moreShown,
     pinnedCollapsed,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
+  }), [allSessions, effectiveUiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
   // Built while the archive view is rendered, its way out included: it
   // leaves as it was, not empty.
   const archiveMounted = archiveMotion.archiveMounted;
   const archiveCollapsedSet = useMemo(() => new Set(archiveCollapsed), [archiveCollapsed]);
   const archiveRows = useMemo(() => (archiveMounted ? buildArchiveRows({
     sessions: allSessions,
-    uiState,
+    uiState: effectiveUiState,
     runningIds: runningSessionIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
     selectedSessionId,
     currentProject,
     collapsed: archiveCollapsedSet,
-  }) : []), [archiveMounted, allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
+  }) : []), [archiveMounted, allSessions, effectiveUiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
   // The archive's projects, top to bottom, folded or not.
   const archiveGroups = useMemo(
     () => archiveRows.flatMap((row) => (row.kind === "archive-group" ? [row] : [])),
@@ -1830,7 +1923,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     // skill-invoked session stays a no-op instead of persisting raw XML.)
     if (renameValue === title || name === (session.name ?? "")) return;
     try {
-      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+      await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(session.id)}`, deviceIdRef.current), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -1865,7 +1958,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setConfirmDeleteRootId((current) => (current === session.id ? null : current));
     try {
       // The server deletes the family's subagent sessions with it.
-      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+      await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(session.id)}`, deviceIdRef.current), { method: "DELETE" });
       onSessionDeleted?.(session.id);
       void loadSessions();
     } catch {
@@ -1935,7 +2028,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     forkingIdsRef.current.add(source.id);
     const selectedAtClick = selectedSessionIdRef.current;
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(source.id)}/fork`, {
+      const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(source.id)}/fork`, deviceIdRef.current), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",

@@ -6,6 +6,14 @@
 //
 // Call sites previously repeated the same 5-line fetch block 13× in
 // hooks/useAgentSession.ts. This helper collapses that down to one line.
+//
+// Both functions take an optional trailing `deviceId`: the id of the gateway
+// device the session lives on. It is appended with `withDeviceId`, so a
+// `localhost` call keeps the exact URL it always had.
+
+// Relative import: this module is loaded by lib/agent-client.test.mjs through
+// jiti without tsconfig path mapping, so `@/lib/...` would not resolve there.
+import { withDeviceId } from "./device-context";
 
 export class AgentCommandError extends Error {
   constructor(
@@ -31,15 +39,17 @@ export function isPromptRejectedError(error: unknown): error is AgentCommandErro
  * prompt, and it is nearly all of the reply (context files, skills, tool notes: hundreds of KB
  * in a large project), fetched again after every model call (#1302).
  */
-export function agentStatusUrl(sessionId: string): string {
-  return `/api/agent/${encodeURIComponent(sessionId)}?systemPrompt=0`;
+export function agentStatusUrl(sessionId: string, deviceId?: string): string {
+  return withDeviceId(`/api/agent/${encodeURIComponent(sessionId)}?systemPrompt=0`, deviceId);
 }
 
 export async function sendAgentCommand<T = unknown>(
   sessionId: string,
   command: Record<string, unknown>,
+  deviceId?: string,
 ): Promise<T> {
-  const res = await fetch(`/api/agent/${encodeURIComponent(sessionId)}`, {
+  const url = withDeviceId(`/api/agent/${encodeURIComponent(sessionId)}`, deviceId);
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(command),

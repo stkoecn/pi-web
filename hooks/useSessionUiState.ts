@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LOCAL_DEVICE_ID, withDeviceId } from "@/lib/device-context";
 import {
   applySessionUiStateRequest,
   emptySessionUiState,
@@ -12,6 +13,15 @@ import {
 } from "@/lib/session-ui-state-shared";
 
 const SESSION_UI_STATE_URL = "/api/sessions/ui-state";
+
+/**
+ * The state file lives on the host that serves the request, so the device has to
+ * travel with every read and write. `withDeviceId` keeps a localhost URL exactly
+ * as it was, which is what the existing tests assert.
+ */
+function uiStateUrl(deviceId: string): string {
+  return withDeviceId(SESSION_UI_STATE_URL, deviceId);
+}
 
 export interface SessionUiStateApi {
   state: SessionUiState;
@@ -73,7 +83,11 @@ async function readState(response: Response): Promise<SessionUiState> {
  * are queued never drops their optimistic effect. Writes run one at a time in
  * call order (archive, then undo, stays ordered on the server).
  */
-export function useSessionUiState(): SessionUiStateApi {
+export function useSessionUiState(deviceId: string = LOCAL_DEVICE_ID): SessionUiStateApi {
+  // Read through a ref so a device switch does not rebuild every callback (and
+  // re-run the write chain); `load`/`apply` pick up the current device instead.
+  const deviceIdRef = useRef(deviceId);
+  deviceIdRef.current = deviceId;
   const [state, setState] = useState<SessionUiState>(emptySessionUiState);
   const [loaded, setLoaded] = useState(false);
   const [synced, setSynced] = useState(false);
@@ -101,7 +115,7 @@ export function useSessionUiState(): SessionUiStateApi {
     const loadId = ++loadIdRef.current;
     refreshInFlightRef.current = loadId;
     try {
-      const response = await fetch(SESSION_UI_STATE_URL, { cache: "no-store" });
+      const response = await fetch(uiStateUrl(deviceIdRef.current), { cache: "no-store" });
       const next = await readState(response);
       if (loadId !== loadIdRef.current) return;
       serverStateRef.current = next;
@@ -137,7 +151,7 @@ export function useSessionUiState(): SessionUiStateApi {
     const run = async (): Promise<boolean> => {
       let ok = false;
       try {
-        const response = await fetch(SESSION_UI_STATE_URL, {
+        const response = await fetch(uiStateUrl(deviceIdRef.current), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(request),

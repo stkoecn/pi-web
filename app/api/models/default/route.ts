@@ -13,6 +13,8 @@ import { resolveVisibleModels } from "@/lib/model-scope";
 import { withDeferredProviderModels } from "@/lib/deferred-provider-models";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { loadRemoteModels } from "@/lib/remote-models";
 
 export const dynamic = "force-dynamic";
 
@@ -38,12 +40,37 @@ function parseEdit(body: DefaultPreferencesRequest): DefaultPreferencesEdit | nu
 }
 
 /**
+ * Current default model / reasoning level of the device the request names.
+ *
+ * The local machine reads pi's settings files; a remote device has no RPC
+ * command that exposes them, so its live session's state is the best answer
+ * available (that is the model and level a new session there starts with).
+ */
+export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (!isRemoteDevice(deviceId)) {
+    return Response.json({ error: "Expected a remote deviceId" }, { status: 400 });
+  }
+  const catalogue = await loadRemoteModels(deviceId);
+  return Response.json({
+    defaultModel: catalogue.defaultModel
+      ? { provider: catalogue.defaultModel.provider, modelId: catalogue.defaultModel.id }
+      : null,
+    defaultThinkingLevel: catalogue.thinkingLevel ?? null,
+  });
+}
+
+/**
  * Save the model and/or reasoning level new sessions start with.
  *
  * Picking a model for one chat is session-scoped, as in the TUI; this is the
  * explicit "save as default" behind the selectors' star. The cwd decides which
  * project settings could shadow the global value and which models are in scope,
  * so it goes through the same allow-list as `/api/models`.
+ *
+ * Writing a *remote* device's settings is not implemented: the RPC protocol has
+ * no settings command, and falling through to the local files would silently
+ * save the preference on the wrong machine.
  */
 export async function PUT(req: Request) {
   let body: DefaultPreferencesRequest;
@@ -52,20 +79,22 @@ export async function PUT(req: Request) {
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return Response.json({ error: "Not supported on remote devices yet" }, { status: 501 });
+  }
   const edit = parseEdit(body);
   if (!edit) {
     return Response.json({ error: "Expected provider and modelId, or a valid thinkingLevel" }, { status: 400 });
   }
 
-  const cwd = resolve(typeof body.cwd === "string" && body.cwd ? body.cwd : process.cwd());
-  let cwdStat;
+  let cwd = resolve(typeof body.cwd === "string" && body.cwd ? body.cwd : process.cwd());
   try {
-    cwdStat = await stat(cwd);
+    const cwdStat = await stat(cwd);
+    if (!cwdStat.isDirectory()) {
+      return Response.json({ error: `Not a directory: ${cwd}` }, { status: 400 });
+    }
   } catch {
-    return Response.json({ error: `Directory does not exist: ${cwd}` }, { status: 400 });
-  }
-  if (!cwdStat.isDirectory()) {
-    return Response.json({ error: `Not a directory: ${cwd}` }, { status: 400 });
+    cwd = process.cwd();
   }
   const allowedRoots = await getAllowedFileRoots();
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) {

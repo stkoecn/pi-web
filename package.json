@@ -36,8 +36,8 @@
   ],
   "scripts": {
     "postinstall": "node bin/prepare-terminal.js",
-    "dev": "next dev --webpack -H 127.0.0.1 -p 9564",
-    "dev:lan": "next dev --webpack -H 0.0.0.0 -p 9564",
+    "dev": "next dev --turbopack -H 127.0.0.1 -p 9564",
+    "dev:lan": "next dev --turbopack -H 0.0.0.0 -p 9564",
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 9564",
     "start:lan": "next start -H 0.0.0.0 -p 9564",

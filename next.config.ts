@@ -35,6 +35,9 @@ const nextConfig: NextConfig = {
     },
   },
   webpack(config) {
+    // Kept: `npm run build` still runs `next build --webpack`, so the
+    // production bundle needs this injection. Turbopack (dev only) uses
+    // `turbopack.rules` above. Removing this would re-break iOS 16.2 in prod.
     config.module.rules.push({
       test: /[\\/]mdast-util-gfm-autolink-literal[\\/]lib[\\/]index\.js$/,
       loader: gfmAutolinkEmailLoader,

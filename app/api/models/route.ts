@@ -14,6 +14,8 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 import { projectTrustReloadOptions } from "@/lib/project-trust";
 import { rememberProviderModels, withDeferredProviderModels } from "@/lib/deferred-provider-models";
 import { inferRemovedWorktree } from "@/lib/worktree";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { loadRemoteModels, type RemoteModelCatalogue } from "@/lib/remote-models";
 
 export const dynamic = "force-dynamic";
 
@@ -101,8 +103,62 @@ const EMPTY_MODELS: ModelsData = {
   thinkingLevelPins: {},
 };
 
+/**
+ * Map a remote device's catalogue into the exact payload the local branch
+ * returns, so the model selector needs no second code path.
+ *
+ * What the device cannot tell us over RPC (pi's `enabledModels` scope, its saved
+ * default thinking level) is left at its neutral value: no pins, no warnings, and
+ * the level the device's live session reports as both resolved and saved.
+ */
+function remoteCatalogueToModelsData(catalogue: RemoteModelCatalogue): ModelsData {
+  const models: Record<string, string> = {};
+  const modelList: ModelsData["modelList"] = [];
+  const thinkingLevels: Record<string, string[]> = {};
+  const thinkingLevelMaps: Record<string, Record<string, string | null>> = {};
+
+  for (const model of catalogue.models) {
+    const key = `${model.provider}:${model.id}`;
+    const name = model.name || model.id;
+    models[key] = name;
+    modelList.push({
+      id: model.id,
+      name,
+      provider: model.provider,
+      ...(Array.isArray(model.input) ? { input: model.input } : {}),
+    });
+    thinkingLevels[key] = model.thinkingLevels ?? ["off"];
+    if (model.thinkingLevelMap) thinkingLevelMaps[key] = model.thinkingLevelMap;
+  }
+
+  const thinkingLevel = catalogue.thinkingLevel ?? null;
+  return {
+    models,
+    modelList,
+    defaultModel: catalogue.defaultModel
+      ? { provider: catalogue.defaultModel.provider, modelId: catalogue.defaultModel.id }
+      : null,
+    defaultThinkingLevel: thinkingLevel,
+    // The device reports one level, not "resolved vs saved": treat it as both so
+    // the reasoning selector's star does not claim a different saved value.
+    savedDefaultThinkingLevel: thinkingLevel,
+    thinkingLevels,
+    thinkingLevelMaps,
+    thinkingLevelPins: {},
+  };
+}
+
 export async function GET(req: Request) {
-  const requestedCwd = resolve(new URL(req.url).searchParams.get("cwd") || process.cwd());
+  const url = new URL(req.url);
+  const deviceId = getRequestDeviceId(req, url.searchParams);
+  if (isRemoteDevice(deviceId)) {
+    // The catalogue is built by the device's own `pi` over RPC and cached there
+    // per device (see lib/remote-models.ts); the local cwd allow-list does not
+    // apply, because no local file is read for it.
+    return Response.json(remoteCatalogueToModelsData(await loadRemoteModels(deviceId)));
+  }
+
+  const requestedCwd = resolve(url.searchParams.get("cwd") || process.cwd());
   // A subagent run isolated in a worktree has that worktree removed when the run
   // finishes, yet its session file still records the worktree as its cwd. Fall back
   // to the main repo it branched from, so opening a finished subagent resolves the

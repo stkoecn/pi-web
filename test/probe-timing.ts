@@ -1,0 +1,18 @@
+const t0 = Date.now();
+const { getGateway } = await import("../lib/gateway/singleton");
+const g = getGateway();
+const d = await g.getOrConnectDriver("fuckip-us");
+console.log("connect ms", Date.now() - t0);
+const t1 = Date.now();
+const r = await d.exec('printf "%s" "$HOME/.pi/agent/sessions"');
+console.log("exec1 ms", Date.now() - t1, JSON.stringify(r.stdout));
+const t2 = Date.now();
+const r2 = await d.exec("cd /root/.pi/agent/sessions && find . -name '*.jsonl' -type f | head -n 50");
+console.log("exec2 ms", Date.now() - t2, r2.stdout.split("\n").length);
+const t3 = Date.now();
+const r3 = await d.exec("echo hi");
+console.log("exec3 ms", Date.now() - t3);
+const t4 = Date.now();
+const st = await d.stat("/root/.pi/agent/sessions");
+console.log("stat ms", Date.now() - t4, (st as any)?.isDirectory);
+process.exit(0);

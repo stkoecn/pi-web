@@ -162,14 +162,17 @@ async function runTests() {
       body: JSON.stringify({ deviceId: 'fuckip-us', cwd: '/root' }),
     });
     assert.strictEqual(res.status, 200);
-    const data = await res.json() as { id: string; model: any };
-    assert(data.id, 'Remote session id must be returned');
-    assert(data.model?.id, 'Model id must be returned from remote pi runtime');
-    remoteAgentSessionId = data.id;
+    // Shape matches the local branch: { success, sessionId, data, model: {provider, modelId} }.
+    const data = await res.json() as { sessionId: string; model: { provider: string; modelId: string } | null };
+    assert(data.sessionId, 'Remote session id must be returned');
+    assert(data.model?.modelId, 'Model id must be returned from remote pi runtime');
+    remoteAgentSessionId = data.sessionId;
   });
 
   await check('POST /api/agent/[id] sends command to remote Pi session', async () => {
-    const res = await fetch(`${BASE_URL}/api/agent/${remoteAgentSessionId}`, {
+    // The device must travel as ?deviceId= / x-device-id: the command body is a
+    // pi RPC frame and the route resolves the device before reading it.
+    const res = await fetch(`${BASE_URL}/api/agent/${remoteAgentSessionId}?deviceId=fuckip-us`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'get_state' }),
@@ -180,7 +183,7 @@ async function runTests() {
   });
 
   await check('DELETE /api/agent/[id] closes and tears down remote Pi session cleanly', async () => {
-    const res = await fetch(`${BASE_URL}/api/agent/${remoteAgentSessionId}`, {
+    const res = await fetch(`${BASE_URL}/api/agent/${remoteAgentSessionId}?deviceId=fuckip-us`, {
       method: 'DELETE',
     });
     assert.strictEqual(res.status, 200);

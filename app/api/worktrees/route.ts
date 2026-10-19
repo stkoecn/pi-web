@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { addWorktree, findCurrentWorktreePath, listWorktrees, removeWorktree, resolveProject, worktreeRemovalRequiresForce } from "@/lib/worktree";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { projectIdentityKey } from "@/lib/project-identity";
+import { isRemoteDevice } from "@/lib/device-context";
 
 /** Same gate as /api/files: only session cwds / project roots / explicitly
  *  allowed dirs may be inspected or mutated through this endpoint. */
@@ -17,10 +18,40 @@ async function checkCwdAllowed(cwd: string): Promise<NextResponse | null> {
 // GET /api/worktrees?cwd=  →  { projectRoot, projectKey, isGit, isTopLevel, currentWorktreePath, worktrees }
 export async function GET(req: Request) {
   try {
-    const cwd = new URL(req.url).searchParams.get("cwd");
+    const url = new URL(req.url);
+    const cwd = url.searchParams.get("cwd");
+    const deviceId = url.searchParams.get("deviceId") || req.headers.get("x-device-id");
     if (!cwd) {
       return NextResponse.json({ error: "cwd is required" }, { status: 400 });
     }
+
+    if (deviceId && deviceId !== "localhost") {
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const driver = await getGateway().getOrConnectDriver(deviceId);
+      try {
+        const gitTop = await driver.exec("git rev-parse --show-toplevel", [], { cwd });
+        const root = gitTop.stdout.trim() || cwd;
+        const isGit = gitTop.exitCode === 0 && Boolean(root);
+        return NextResponse.json({
+          projectRoot: root,
+          projectKey: root,
+          isGit,
+          isTopLevel: true,
+          currentWorktreePath: root,
+          worktrees: [],
+        });
+      } catch {
+        return NextResponse.json({
+          projectRoot: cwd,
+          projectKey: cwd,
+          isGit: false,
+          isTopLevel: true,
+          currentWorktreePath: cwd,
+          worktrees: [],
+        });
+      }
+    }
+
     const denied = await checkCwdAllowed(cwd);
     if (denied) return denied;
 
@@ -56,12 +87,21 @@ export async function GET(req: Request) {
 // POST /api/worktrees  body: { cwd, branch }  →  { path, branch }
 export async function POST(req: Request) {
   try {
-    const body = await req.json() as { cwd?: string; branch?: string };
+    const body = await req.json() as { cwd?: string; branch?: string; deviceId?: string };
     if (!body.cwd || typeof body.cwd !== "string") {
       return NextResponse.json({ error: "cwd is required" }, { status: 400 });
     }
     if (!body.branch || typeof body.branch !== "string") {
       return NextResponse.json({ error: "branch is required" }, { status: 400 });
+    }
+    // A remote project has no local checkout: creating a worktree there has to
+    // run `git worktree add` on the device, which is not wired yet. Answering
+    // honestly beats failing with "Access denied" from the local allow-list.
+    if (isRemoteDevice(body.deviceId)) {
+      return NextResponse.json(
+        { error: "Worktrees are not supported on remote devices yet" },
+        { status: 501 },
+      );
     }
     const denied = await checkCwdAllowed(body.cwd);
     if (denied) return denied;
@@ -80,12 +120,18 @@ export async function POST(req: Request) {
 // DELETE /api/worktrees  body: { cwd, path, force? }
 export async function DELETE(req: Request) {
   try {
-    const body = await req.json() as { cwd?: string; path?: string; force?: boolean };
+    const body = await req.json() as { cwd?: string; path?: string; force?: boolean; deviceId?: string };
     if (!body.cwd || typeof body.cwd !== "string") {
       return NextResponse.json({ error: "cwd is required" }, { status: 400 });
     }
     if (!body.path || typeof body.path !== "string") {
       return NextResponse.json({ error: "path is required" }, { status: 400 });
+    }
+    if (isRemoteDevice(body.deviceId)) {
+      return NextResponse.json(
+        { error: "Worktrees are not supported on remote devices yet" },
+        { status: 501 },
+      );
     }
     const denied = await checkCwdAllowed(body.cwd);
     if (denied) return denied;

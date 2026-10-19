@@ -16,11 +16,31 @@ function normalizeCwd(cwd: string): string {
 // Validates a candidate workspace before the UI selects it.
 export async function POST(req: Request) {
   try {
-    const body = await req.json() as { cwd?: unknown };
+    const searchParams = new URL(req.url).searchParams;
+    const body = await req.json() as { cwd?: unknown; deviceId?: string };
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+    const deviceId = body.deviceId || searchParams.get("deviceId") || req.headers.get("x-device-id");
 
     if (!cwd) {
       return NextResponse.json({ error: "Path is required" }, { status: 400 });
+    }
+
+    if (deviceId && deviceId !== "localhost") {
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const driver = await getGateway().getOrConnectDriver(deviceId);
+      try {
+        const stat = await driver.stat(cwd);
+        if (!stat.isDirectory) {
+          return NextResponse.json({ error: `Path is not a directory: ${cwd}` }, { status: 400 });
+        }
+        return NextResponse.json({
+          normalized: cwd,
+          projectRoot: cwd,
+          projectKey: `device:${deviceId}:${cwd}`,
+        });
+      } catch {
+        return NextResponse.json({ error: `Directory does not exist: ${cwd}` }, { status: 400 });
+      }
     }
 
     const normalizedCwd = normalizeCwd(cwd);

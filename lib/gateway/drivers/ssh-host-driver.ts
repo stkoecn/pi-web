@@ -2,6 +2,7 @@ import ssh2 from 'ssh2';
 import type { Client, SFTPWrapper, ClientChannel } from 'ssh2';
 import type { IHostDriver, TerminalOptions, TerminalSession, FileEntry, ExecResult, RPCChannel } from '../types/host-driver';
 import { randomUUID } from 'node:crypto';
+import { PersistentShellPool } from './persistent-shell';
 
 export class SSHHostDriver implements IHostDriver {
   readonly deviceId: string;
@@ -9,6 +10,12 @@ export class SSHHostDriver implements IHostDriver {
   private sftpInstance: SFTPWrapper | null = null;
   private sftpPromise: Promise<SFTPWrapper> | null = null;
   private alive: boolean = true;
+  /**
+   * Commands run over long-lived `sh` channels instead of `client.exec()`.
+   * On a 257 ms link a fresh channel costs ~900 ms against ~280 ms for a
+   * command written to a shell that is already open.
+   */
+  private shellPool: PersistentShellPool | null = null;
 
   constructor(deviceId: string, client: Client) {
     this.deviceId = deviceId;
@@ -17,18 +24,31 @@ export class SSHHostDriver implements IHostDriver {
     client.on('end', () => {
       this.alive = false;
       this.sftpInstance = null;
+      this.shellPool?.dispose();
+      this.shellPool = null;
     });
     client.on('close', () => {
       this.alive = false;
       this.sftpInstance = null;
+      this.shellPool?.dispose();
+      this.shellPool = null;
     });
     client.on('error', () => {
       this.alive = false;
+      this.shellPool?.dispose();
+      this.shellPool = null;
     });
   }
 
   isAlive(): boolean {
     return this.alive;
+  }
+
+  private getShellPool(): PersistentShellPool {
+    if (!this.shellPool) {
+      this.shellPool = new PersistentShellPool(this.client, this.deviceId);
+    }
+    return this.shellPool;
   }
 
   private async getSFTP(): Promise<SFTPWrapper> {
@@ -131,16 +151,25 @@ export class SSHHostDriver implements IHostDriver {
     });
   }
 
+  private normalizeRemotePath(p: string): string {
+    if (!p || p === '.' || p === '~' || p === '/~') return '.';
+    if (p.startsWith('/~/')) return p.slice(3);
+    if (p.startsWith('~/')) return p.slice(2);
+    if (/^[a-zA-Z]:/.test(p)) return '.';
+    return p;
+  }
+
   async readDir(dirPath: string): Promise<FileEntry[]> {
     const sftp = await this.getSFTP();
+    const normalized = this.normalizeRemotePath(dirPath);
     return new Promise<FileEntry[]>((resolve, reject) => {
-      sftp.readdir(dirPath, (err, list) => {
+      sftp.readdir(normalized, (err, list) => {
         if (err) return reject(err);
         const entries: FileEntry[] = list.map((item) => {
           const isDir = Boolean((item.attrs.mode & 0o170000) === 0o040000);
-          const fullPath = dirPath.endsWith('/') || dirPath.endsWith('\\')
-            ? `${dirPath}${item.filename}`
-            : `${dirPath}/${item.filename}`;
+          const fullPath = normalized === '.'
+            ? `/${item.filename}`
+            : (normalized.endsWith('/') ? `${normalized}${item.filename}` : `${normalized}/${item.filename}`);
           return {
             name: item.filename,
             path: fullPath,
@@ -156,9 +185,10 @@ export class SSHHostDriver implements IHostDriver {
 
   async readFile(filePath: string): Promise<Buffer> {
     const sftp = await this.getSFTP();
+    const normalized = this.normalizeRemotePath(filePath);
     return new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
-      const readStream = sftp.createReadStream(filePath);
+      const readStream = sftp.createReadStream(normalized);
       readStream.on('data', (d: Buffer) => chunks.push(d));
       readStream.on('error', reject);
       readStream.on('end', () => resolve(Buffer.concat(chunks)));
@@ -167,9 +197,10 @@ export class SSHHostDriver implements IHostDriver {
 
   async writeFile(filePath: string, content: Buffer | string): Promise<void> {
     const sftp = await this.getSFTP();
+    const normalized = this.normalizeRemotePath(filePath);
     const buf = Buffer.isBuffer(content) ? content : Buffer.from(content);
     return new Promise<void>((resolve, reject) => {
-      sftp.writeFile(filePath, buf, (err) => {
+      sftp.writeFile(normalized, buf, (err) => {
         if (err) return reject(err);
         resolve();
       });
@@ -178,8 +209,9 @@ export class SSHHostDriver implements IHostDriver {
 
   async stat(targetPath: string): Promise<FileEntry> {
     const sftp = await this.getSFTP();
+    const normalized = this.normalizeRemotePath(targetPath);
     return new Promise<FileEntry>((resolve, reject) => {
-      sftp.stat(targetPath, (err, stats) => {
+      sftp.stat(normalized, (err, stats) => {
         if (err) return reject(err);
         const isDir = Boolean((stats.mode & 0o170000) === 0o040000);
         const name = targetPath.split(/[/\\]/).filter(Boolean).pop() ?? '';
@@ -197,11 +229,23 @@ export class SSHHostDriver implements IHostDriver {
   async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult> {
     if (!this.alive) throw new Error(`Device ${this.deviceId} is not connected`);
 
-    let fullCommand = [cmd, ...args.map(a => `"${a.replace(/"/g, '\\"')}"`)].join(' ');
-    if (opts?.cwd) {
-      fullCommand = `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${fullCommand}`;
-    }
+    const command = [cmd, ...args.map(a => `"${a.replace(/"/g, '\\"')}"`)].join(' ');
 
+    try {
+      const result = await this.getShellPool().exec(command, { cwd: opts?.cwd, env: opts?.env });
+      return result;
+    } catch (error) {
+      // The shell channel can die (remote sshd restart, network blip). Fall back
+      // to a one-shot channel so a single dead shell does not fail the caller.
+      if (!this.alive) throw error;
+      return this.execOneShot(command, opts);
+    }
+  }
+
+  private execOneShot(
+    fullCommand: string,
+    opts?: { env?: Record<string, string> },
+  ): Promise<ExecResult> {
     return new Promise<ExecResult>((resolve, reject) => {
       this.client.exec(fullCommand, { env: opts?.env as any }, (err: any, stream: ClientChannel) => {
         if (err) return reject(err);
@@ -227,17 +271,29 @@ export class SSHHostDriver implements IHostDriver {
     });
   }
 
-  async spawnPiRpc(opts: { cwd?: string; sessionDir?: string; resumeSession?: string } = {}): Promise<RPCChannel> {
+  async spawnPiRpc(opts: {
+    cwd?: string;
+    sessionDir?: string;
+    resumeSession?: string;
+    ephemeral?: boolean;
+  } = {}): Promise<RPCChannel> {
     if (!this.alive) throw new Error(`Device ${this.deviceId} is not connected`);
 
+    // Remote sessions are PERSISTED by default: pi writes a transcript into
+    // `--session-dir` (or its own default session dir when none is given), so
+    // the session shows up in the remote catalogue and can be reopened later.
+    // `--no-session` (in-memory) is only used when a caller explicitly asks
+    // for an ephemeral run.
     const args = ['--mode', 'rpc'];
-    if (opts.sessionDir) {
-      args.push('--session-dir', `"${opts.sessionDir}"`);
-    }
-    if (opts.resumeSession) {
-      args.push('--session', `"${opts.resumeSession}"`);
-    } else {
+    if (opts.ephemeral === true) {
       args.push('--no-session');
+    } else {
+      if (opts.sessionDir) {
+        args.push('--session-dir', `"${opts.sessionDir}"`);
+      }
+      if (opts.resumeSession) {
+        args.push('--session', `"${opts.resumeSession}"`);
+      }
     }
 
     let command = `pi ${args.join(' ')}`;
@@ -337,6 +393,8 @@ export class SSHHostDriver implements IHostDriver {
 
   async close(): Promise<void> {
     this.alive = false;
+    this.shellPool?.dispose();
+    this.shellPool = null;
     if (this.sftpInstance) {
       try { this.sftpInstance.end(); } catch {}
       this.sftpInstance = null;

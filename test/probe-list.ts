@@ -1,0 +1,13 @@
+const t0 = Date.now();
+const { getGateway } = await import("../lib/gateway/singleton");
+const g = getGateway();
+await g.getOrConnectDriver("fuckip-us");
+console.log("connect ms", Date.now() - t0);
+const t1 = Date.now();
+const { listRemoteSessions } = await import("../lib/remote-session-store");
+const s = await listRemoteSessions("fuckip-us", { force: true });
+console.log("listRemoteSessions ms", Date.now() - t1, s.length);
+const t2 = Date.now();
+await listRemoteSessions("fuckip-us", {});
+console.log("cached ms", Date.now() - t2);
+process.exit(0);

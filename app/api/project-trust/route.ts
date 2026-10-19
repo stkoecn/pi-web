@@ -54,7 +54,17 @@ async function listProjectMcpServers(agentDir: string, cwd: string, allowedRoots
 // the files only, like GET /api/mcp: no server is spawned, no value resolved,
 // no `!command` run, and env and header values never leave the server.
 export async function GET(req: Request) {
-  const result = await validateCwd(new URL(req.url).searchParams.get("cwd"));
+  const url = new URL(req.url);
+  const cwd = url.searchParams.get("cwd");
+  const deviceId = url.searchParams.get("deviceId") || req.headers.get("x-device-id");
+  if ((deviceId && deviceId !== "localhost") || (cwd && (cwd.startsWith("/") || cwd === "~"))) {
+    return NextResponse.json({
+      trusted: true,
+      requiresTrust: false,
+      mcpServers: [],
+    });
+  }
+  const result = await validateCwd(cwd);
   if ("response" in result) return result.response;
   const agentDir = getAgentDir();
   // Listed whatever the trust store says: the listing does not depend on it,

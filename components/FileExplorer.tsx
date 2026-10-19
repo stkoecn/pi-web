@@ -19,6 +19,7 @@ import type { FileTreeHiddenReason } from "@/lib/file-tree-visibility";
 import { createExpandedPathsMemory } from "@/lib/file-tree-expansion";
 import { droppedItems } from "@/hooks/useDragDrop";
 import { useI18n } from "@/hooks/useI18n";
+import { deviceHomeOrRoot } from "@/lib/device-home-client";
 type Translate = ReturnType<typeof useI18n>["t"];
 
 /** Why a listed entry is normally left out; only listings with `hidden=1` report it. */
@@ -100,14 +101,21 @@ async function responseError(res: Response, fallback: string): Promise<Error> {
 }
 
 async function fetchEntries(dirPath: string, showHidden = false, deviceId?: string): Promise<FileNode[]> {
-  const encoded = encodeFilePathForApi(dirPath);
-  const devParam = deviceId && deviceId !== "localhost" ? `&deviceId=${encodeURIComponent(deviceId)}` : "";
+  const isRemote = deviceId && deviceId !== "localhost";
+  // `/` rather than `/root`: macOS devices have no `/root`, and asking for it
+  // made the panel open on a missing directory.
+  let targetPath = dirPath || (isRemote ? deviceHomeOrRoot(deviceId) : ".");
+  if (isRemote && (!targetPath || targetPath === "~" || targetPath === "." || targetPath === "/~" || /^[a-zA-Z]:/.test(targetPath) || targetPath.includes("\\"))) {
+    targetPath = deviceHomeOrRoot(deviceId);
+  }
+  const encoded = encodeFilePathForApi(targetPath);
+  const devParam = isRemote ? `&deviceId=${encodeURIComponent(deviceId)}` : "";
   const res = await fetch(`/api/files/${encoded}?type=list${showHidden ? "&hidden=1" : ""}${devParam}`);
   if (!res.ok) throw await responseError(res, "Failed to load files");
   const data = await res.json() as { entries?: FileEntry[] };
   return (data.entries ?? []).map((e) => ({
     name: e.name,
-    fullPath: joinFilePath(dirPath, e.name),
+    fullPath: joinFilePath(targetPath, e.name),
     isDir: e.isDir,
     size: e.size,
     children: e.isDir ? [] : undefined,
@@ -772,6 +780,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const fileDragDepthRef = useRef(0);
   const prevCwdRef = useRef<string | null>(null);
+  const prevDevRef = useRef<string | undefined>(deviceId);
   const expandedPathsRef = useRef(expandedPaths);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
@@ -1045,15 +1054,18 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
   useEffect(() => {
     const previousCwd = prevCwdRef.current;
+    const previousDev = prevDevRef.current;
     const cwdChanged = previousCwd !== cwd;
+    const devChanged = previousDev !== deviceId;
     prevCwdRef.current = cwd;
+    prevDevRef.current = deviceId;
 
     // Swap the open directories only when cwd changes, not on refreshKey bumps.
     // The roots unmount while the new cwd loads, so each restored directory
     // mounts open and lists itself; one that is gone is never listed to look.
-    if (cwdChanged) {
+    if (cwdChanged || devChanged) {
       if (previousCwd !== null) expandedPathsByCwd.save(previousCwd, expandedPathsRef.current);
-      const restored = expandedPathsByCwd.restore(cwd);
+      const restored = devChanged ? new Set<string>() : expandedPathsByCwd.restore(cwd);
       expandedPathsRef.current = restored;
       setExpandedPaths(restored);
       setHighlightedPaths(new Set());
@@ -1062,7 +1074,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setUploadError(null);
     }
 
-    setLoading(cwdChanged);
+    setLoading(true);
     setError(null);
     let cancelled = false;
     fetchEntries(cwd, showHidden, deviceId)

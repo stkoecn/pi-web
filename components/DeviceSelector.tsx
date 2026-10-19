@@ -2,6 +2,9 @@
 
 import React, { useState, useEffect, useRef } from "react";
 
+/** Background refresh cadence for the device list (visible tabs only). */
+const DEVICES_POLL_MS = 15000;
+
 export interface DeviceInfo {
   id: string;
   name: string;
@@ -44,9 +47,24 @@ export function DeviceSelector({
   };
 
   useEffect(() => {
-    fetchDevices();
-    const interval = setInterval(fetchDevices, 4000);
-    return () => clearInterval(interval);
+    // Only poll while the tab is visible: a background tab kept hitting
+    // /api/devices every 4 s forever, which was one of the two biggest
+    // request sources in the dev server log. Coming back to the tab
+    // refreshes immediately, so the badge never looks stale.
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void fetchDevices();
+    };
+    refresh();
+    const interval = setInterval(refresh, DEVICES_POLL_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -198,6 +216,9 @@ export function DeviceSelector({
               return (
                 <div
                   key={device.id}
+                  data-device-item={device.id}
+                  role="button"
+                  tabIndex={0}
                   style={{
                     display: "flex",
                     alignItems: "center",

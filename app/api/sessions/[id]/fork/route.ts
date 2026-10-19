@@ -11,6 +11,7 @@ import {
   resolveSessionPath,
 } from "@/lib/session-reader";
 import type { SessionInfo } from "@/lib/types";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!isApiRequestAllowed(req)) return refusal(403, "request-denied", "Untrusted API request");
   if (!hasJsonContentType(req)) return refusal(415, "request-denied", "Content-Type must be application/json");
   const { id } = await params;
+
+  // Fork copies a file on this host. On a remote device that would silently
+  // fork the wrong transcript (or nothing), so refuse explicitly.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return refusal(501, "not-supported-remote", "Not supported on remote devices yet");
+  }
 
   try {
     const opened = getRpcSession(id);

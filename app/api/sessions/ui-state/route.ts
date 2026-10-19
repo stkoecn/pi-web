@@ -8,12 +8,14 @@ import {
 import {
   MAX_PROJECT_NAMES,
   PROJECT_NAMES_MAX_BYTES,
+  emptySessionUiState,
   parseSessionUiStateRequest,
   storedProjectName,
   type SessionUiStateErrorResponse,
   type SessionUiStateRefusalReason,
   type SessionUiStateResponse,
 } from "@/lib/session-ui-state-shared";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -30,8 +32,16 @@ function refusal(status: number, reason: SessionUiStateRefusalReason, error: str
 }
 
 // GET /api/sessions/ui-state
-export async function GET() {
-  return NextResponse.json({ state: readSessionUiState() } satisfies SessionUiStateResponse, { headers: NO_STORE });
+//
+// This state file (pins, archive, project order, project names) lives on the
+// host that serves the request. A remote device's own file cannot be read yet,
+// so the sidebar gets an empty-but-valid state rather than the local host's —
+// showing localhost pins while browsing a remote device would be wrong.
+export async function GET(req: Request) {
+  const state = isRemoteDevice(getRequestDeviceId(req))
+    ? emptySessionUiState()
+    : readSessionUiState();
+  return NextResponse.json({ state } satisfies SessionUiStateResponse, { headers: NO_STORE });
 }
 
 // POST /api/sessions/ui-state - one change; answers with the state after it.
@@ -41,6 +51,12 @@ export async function POST(req: Request) {
   }
   if (!hasJsonContentType(req)) {
     return refusal(415, "content-type", "Content-Type must be application/json");
+  }
+  // A write cannot be honoured for a remote device yet (the state file lives on
+  // the host). Answer with an empty-but-valid state of the same shape instead
+  // of writing the remote device's pins into this host's file.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return NextResponse.json({ state: emptySessionUiState() } satisfies SessionUiStateResponse, { headers: NO_STORE });
   }
 
   let body: unknown;

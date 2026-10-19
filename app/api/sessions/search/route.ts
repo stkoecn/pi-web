@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listAllSessions } from "@/lib/session-reader";
-import { searchSessionContents } from "@/lib/session-search";
+import { searchSessionContents, type SessionSearchResponse } from "@/lib/session-search";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,12 @@ export async function GET(request: Request) {
   const headers = { "Cache-Control": "no-store" };
   if (query.length > 200) {
     return NextResponse.json({ error: "Search query exceeds 200 characters" }, { status: 400, headers });
+  }
+  // Content search reads transcript bytes off this host. For a remote device the
+  // only correct answer available today is "nothing found": searching the local
+  // catalogue would surface unrelated localhost sessions.
+  if (isRemoteDevice(getRequestDeviceId(request))) {
+    return NextResponse.json({ results: [], truncated: false } satisfies SessionSearchResponse, { headers });
   }
   try {
     // Paths come only from the same catalog used by the sidebar. `allowStale`

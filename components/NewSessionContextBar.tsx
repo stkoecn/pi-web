@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { NewSessionContext, NewSessionTarget, ProjectChoice } from "@/lib/new-session-context";
 import { focusIfLost } from "@/lib/stacked-dialog";
+import { withDeviceId } from "@/lib/device-context";
 import { ProjectWorktreePicker, type ProjectWorktreeControl, type ProjectWorktreePickerHandle } from "./ProjectWorktreePicker";
 
 /** The bar's two controls. A move names the one it came from, which takes focus in the bar that replaces this one. */
@@ -24,25 +25,33 @@ interface Props {
   onOpenFolder: (opener: HTMLElement | null) => void;
   onRefreshWorktrees: () => void;
   onCreateWorktree: (project: ProjectChoice, branch: string) => Promise<{ path: string } | { error: string }>;
+  /** The gateway device this bar's session will run on; its home path differs. */
+  deviceId?: string;
 }
 
 // The home folder the paths (the menus', a detached checkout's in the
 // worktree button) show as ~, asked for once per page: the bar mounts again
 // with every move of the fresh composer.
-let homeDirCheck: Promise<string> | null = null;
-let homeDirFound = "";
-function loadHomeDir(): Promise<string> {
-  homeDirCheck ??= fetch("/api/home")
+// One lookup per device: the home path differs per device (`/root` on a VPS),
+// and the bar remounts with every move of the fresh composer.
+const homeDirChecks = new Map<string, Promise<string>>();
+const homeDirValues = new Map<string, string>();
+function loadHomeDir(deviceId: string = "localhost"): Promise<string> {
+  const cached = homeDirChecks.get(deviceId);
+  if (cached) return cached;
+  const promise = fetch(withDeviceId("/api/home", deviceId))
     .then((response) => response.json())
     .then((data: { home?: string }) => {
-      homeDirFound = data.home ?? "";
-      return homeDirFound;
+      const home = data.home ?? "";
+      homeDirValues.set(deviceId, home);
+      return home;
     })
     .catch(() => {
-      homeDirCheck = null;
+      homeDirChecks.delete(deviceId);
       return "";
     });
-  return homeDirCheck;
+  homeDirChecks.set(deviceId, promise);
+  return promise;
 }
 
 /**
@@ -65,18 +74,19 @@ export function NewSessionContextBar({
   onOpenFolder,
   onRefreshWorktrees,
   onCreateWorktree,
+  deviceId = "localhost",
 }: Props) {
   const { t } = useI18n();
-  const [homeDir, setHomeDir] = useState(() => homeDirFound);
+  const [homeDir, setHomeDir] = useState(() => homeDirValues.get(deviceId) ?? "");
   const pickerRef = useRef<ProjectWorktreePickerHandle>(null);
   const initialFocusRef = useRef(initialFocus);
   const onInitialFocusDoneRef = useRef(onInitialFocusDone);
   onInitialFocusDoneRef.current = onInitialFocusDone;
 
   useEffect(() => {
-    if (homeDirFound) return;
+    if (homeDirValues.get(deviceId)) return;
     let cancelled = false;
-    void loadHomeDir().then((home) => {
+    void loadHomeDir(deviceId).then((home) => {
       if (!cancelled && home) setHomeDir(home);
     });
     return () => {

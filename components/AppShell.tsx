@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { deviceAwareHref, withDeviceId } from "@/lib/device-context";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar, type SelectSessionOptions, type SessionSidebarControl } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
@@ -76,6 +77,7 @@ import type { FileViewerState } from "@/lib/file-viewer-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { getAgentsBadge, getSessionFamily } from "@/lib/session-family";
 import { getLastSettingsSection, settingsSectionRequiresProject, type SettingsSection } from "@/lib/settings-navigation";
+import { deviceHomeOrRoot, loadHome } from "@/lib/device-home-client";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -533,7 +535,18 @@ export function AppShell() {
   // tab just parked goes to its workspace, not to a same-path tab restored.
   const [fileWorkspaceGeneration, setFileWorkspaceGeneration] = useState(0);
   const fileWorkspaceGenerationRef = useRef(0);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("localhost");
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(() => initialNavigation.deviceId || "localhost");
+  // Navigation URLs must keep the selected device: `router.replace("?session=…")`
+  // drops every other query param, which used to bounce a remote session back to
+  // localhost. A ref (not the state value) keeps the many callbacks below from
+  // needing `selectedDeviceId` in their dependency lists.
+  const selectedDeviceIdRef = useRef(selectedDeviceId);
+  selectedDeviceIdRef.current = selectedDeviceId;
+  const deviceHref = useCallback(
+    (params: Record<string, string | number | null | undefined> | null, pathname?: string) =>
+      deviceAwareHref(params, selectedDeviceIdRef.current, pathname),
+    [],
+  );
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
   // Subagent work tabs are session-scoped and transient: no persistence, and
@@ -690,7 +703,7 @@ export function AppShell() {
     void fetch("/api/cwd/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cwd: requestedCwd }),
+      body: JSON.stringify({ cwd: requestedCwd, deviceId: initialNavigation.deviceId || selectedDeviceId }),
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -708,7 +721,7 @@ export function AppShell() {
         setNewSessionCwd(data.cwd);
         setInitialCwdStatus("ready");
         if (!new URLSearchParams(window.location.search).get("cwd")) {
-          router.replace(`?cwd=${encodeURIComponent(data.cwd)}`, { scroll: false });
+          router.replace(deviceHref({ cwd: data.cwd }), { scroll: false });
         }
       })
       .catch((error: unknown) => {
@@ -757,7 +770,7 @@ export function AppShell() {
       setSelectedSession(s);
       setSessionKey((k) => k + 1);
       if (new URLSearchParams(window.location.search).get("session") !== s.id) {
-        router.replace(`?session=${encodeURIComponent(s.id)}`, { scroll: false });
+        router.replace(deviceHref({ session: s.id }), { scroll: false });
       }
     };
     // Fast path: the sidebar already delivered the catalogue — restore
@@ -766,7 +779,7 @@ export function AppShell() {
       adopt({ sessions: sessionCatalog });
       return;
     }
-    void fetch("/api/sessions")
+    void fetch(withDeviceId("/api/sessions", selectedDeviceIdRef.current))
       .then((r) => (r.ok ? (r.json() as Promise<{ sessions: SessionInfo[] }>) : null))
       .then(adopt)
       .catch(() => {
@@ -823,10 +836,7 @@ export function AppShell() {
     setNewSessionDraftId(draftId);
     activeNewSessionDraftKeyRef.current = draftKey;
     setSelectedSession(null);
-    setNewSessionCwd((prev) => {
-      if (prev && prev !== cwd) return null;
-      return prev;
-    });
+    setNewSessionCwd(cwd);
     setSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -843,7 +853,7 @@ export function AppShell() {
       // the default welcome page when none is remembered.
       if (!skipWorkspaceRestore) restoreWorkspaceContext(newProject, cwd);
     }
-    router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
+    router.replace(deviceHref(null), { scroll: false });
   }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false, entryId?: string, blockIndex?: number, options?: SelectSessionOptions) => {
@@ -898,7 +908,7 @@ export function AppShell() {
     // Tab-memory restore lands on `/` and must write `?session=` so reload
     // and copy-link keep this session.
     if (!isRestore || new URLSearchParams(window.location.search).get("session") !== session.id) {
-      router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
+      router.replace(deviceHref({ session: session.id }), { scroll: false });
     }
   }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession]);
 
@@ -943,8 +953,8 @@ export function AppShell() {
     setSystemInfoLoading(false);
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
-    router.replace(`?cwd=${encodeURIComponent(cwd)}`, { scroll: false });
-  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, isMobile, newSessionCwd, router, selectedSession]);
+    router.replace(deviceHref({ cwd }), { scroll: false });
+  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, isMobile, newSessionCwd, router, deviceHref, selectedSession]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
   useGlobalKeyboardShortcuts({
@@ -957,7 +967,7 @@ export function AppShell() {
   // handleCwdChange relies on. Hydrate it from the session list so switching
   // worktrees right after creating a session doesn't close the chat.
   const hydrateSelectedSession = useCallback((sessionId: string) => {
-    void fetch("/api/sessions", { cache: "no-store" })
+    void fetch(withDeviceId("/api/sessions", selectedDeviceIdRef.current), { cache: "no-store" })
       .then((r) => (r.ok ? (r.json() as Promise<{ sessions: SessionInfo[] }>) : null))
       .then((d) => {
         const full = d?.sessions.find((s) => s.id === sessionId);
@@ -980,8 +990,8 @@ export function AppShell() {
     setNewSessionCwd(null);
     setSelectedSession(session);
     hydrateSelectedSession(session.id);
-    router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+    router.replace(deviceHref({ session: session.id }), { scroll: false });
+  }, [invalidateWorkspaceRestore, router, deviceHref, hydrateSelectedSession]);
 
   const deliverSessionNotification = useCallback(({
     targetSession,
@@ -1121,8 +1131,8 @@ export function AppShell() {
       transient: false,
     }));
     hydrateSelectedSession(newSessionId);
-    router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+    router.replace(deviceHref({ session: newSessionId }), { scroll: false });
+  }, [invalidateWorkspaceRestore, router, deviceHref, hydrateSelectedSession]);
 
   const handleAskInNewChat = useCallback(async (
     prompt: string,
@@ -1170,9 +1180,9 @@ export function AppShell() {
       setSystemTools(null);
       setSystemInfoLoading(false);
       setActiveTopPanel(null);
-      router.replace(cwd ? `?cwd=${encodeURIComponent(cwd)}` : (typeof window !== "undefined" ? window.location.pathname : "/"), { scroll: false });
+      router.replace(deviceHref(cwd ? { cwd } : null), { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, router]);
+  }, [invalidateWorkspaceRestore, router, deviceHref]);
 
   const handleOpenFile = useCallback((
     filePath: string,
@@ -1335,6 +1345,7 @@ export function AppShell() {
       onOpenFolder={handleOpenFolderForNewSession}
       onRefreshWorktrees={handleRefreshNewSessionWorktrees}
       onCreateWorktree={handleCreateNewSessionWorktree}
+      deviceId={selectedDeviceId}
     />
   ) : null;
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
@@ -1351,7 +1362,7 @@ export function AppShell() {
     const controller = new AbortController();
     // The answer also lists the project's MCP servers (`mcpFile`, `mcpServers`), unused here: the
     // trust dialog fetches the listing again when it opens, since the file can change in between.
-    fetch(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, {
+    fetch(withDeviceId(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, selectedDeviceIdRef.current), {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -1374,7 +1385,7 @@ export function AppShell() {
       const response = await fetch("/api/project-trust", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: projectTrustCwd }),
+        body: JSON.stringify({ cwd: projectTrustCwd, deviceId: selectedDeviceIdRef.current }),
       });
       const data = await response.json() as ProjectTrustStatus & Partial<McpErrorResponse>;
       if (!response.ok || data.error) {
@@ -1437,7 +1448,7 @@ export function AppShell() {
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
-        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
+        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? activeCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
         onOpenTerminal={handleOpenTerminal}
@@ -1854,7 +1865,7 @@ export function AppShell() {
           }}
           data-mobile-toolbar-action={mobile ? "tools" : undefined}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: systemTools?.some((tool) => tool.active) ? "var(--accent)" : "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: Array.isArray(systemTools) && systemTools.some((tool) => tool.active) ? "var(--accent)" : "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z" />
           </svg>
           {!mobile && <span>{translate("tools.label")}</span>}
@@ -2153,19 +2164,21 @@ export function AppShell() {
       background: "var(--bg)",
     }}>
       {/* Mobile overlay backdrop */}
-      <div
-        className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
-        onClick={() => setSidebarOpen(false)}
-        style={{
-          position: "fixed",
-          inset: 0,
-          zIndex: 199,
-          background: "rgba(0,0,0,0.4)",
-          opacity: sidebarOpen ? 1 : 0,
-          pointerEvents: sidebarOpen ? "auto" : "none",
-          transition: "opacity 0.25s ease",
-        }}
-      />
+      {isMobile && (
+        <div
+          className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
+          onClick={() => setSidebarOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 199,
+            background: "rgba(0,0,0,0.4)",
+            opacity: sidebarOpen ? 1 : 0,
+            pointerEvents: sidebarOpen ? "auto" : "none",
+            transition: "opacity 0.25s ease",
+          }}
+        />
+      )}
 
       {/* Left sidebar */}
       <div
@@ -2302,7 +2315,30 @@ export function AppShell() {
             <>
               <DeviceSelector
                 selectedDeviceId={selectedDeviceId}
-                onSelectDevice={(id) => setSelectedDeviceId(id)}
+                onSelectDevice={(id) => {
+                  setSelectedDeviceId(id);
+                  const isRemote = id !== "localhost";
+                  // Not `/root`: a macOS device answers `/Users/<name>`. Start at
+                  // its home (already cached when the sidebar listed it, `/` until
+                  // the lookup lands) and correct the workspace once it resolves.
+                  const nextCwd = isRemote ? deviceHomeOrRoot(id) : null;
+                  setActiveCwd(nextCwd);
+                  setSelectedSession(null);
+                  setNewSessionCwd(nextCwd);
+                  setExplorerRefreshKey((k) => k + 1);
+                  clearTabOpenSession();
+                  if (isRemote) {
+                    router.replace(deviceHref({ deviceId: id, cwd: nextCwd ?? "/" }, "/"), { scroll: false });
+                    void loadHome(id).then((home) => {
+                      if (!home || home === nextCwd) return;
+                      setActiveCwd((current) => (current === nextCwd ? home : current));
+                      setNewSessionCwd((current) => (current === nextCwd ? home : current));
+                      router.replace(deviceHref({ deviceId: id, cwd: home }, "/"), { scroll: false });
+                    });
+                  } else {
+                    router.replace(deviceHref(null, "/"), { scroll: false });
+                  }
+                }}
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
               />
               {renderProjectTrustWarning(false)}
@@ -2570,6 +2606,7 @@ export function AppShell() {
             <ChatWindow
               key={sessionKey}
               session={selectedSession}
+              deviceId={selectedDeviceId}
               searchTarget={searchTarget?.sessionId === selectedSession?.id ? searchTarget : null}
               onSearchTargetHandled={handleSearchTargetHandled}
               initialScrollPosition={selectedSession ? sessionScrollPositionsRef.current.get(selectedSession.id) ?? null : null}

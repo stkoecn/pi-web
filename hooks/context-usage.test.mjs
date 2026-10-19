@@ -6,6 +6,7 @@ import ts from "typescript";
 import { createJiti } from "jiti";
 
 const { agentStatusUrl } = await createJiti(import.meta.url, { interopDefault: true }).import("../lib/agent-client.ts");
+const { withDeviceId } = await createJiti(import.meta.url, { interopDefault: true }).import("../lib/device-context.ts");
 
 const source = ts.createSourceFile("useAgentSession.ts", await readFile(new URL("./useAgentSession.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
 const nodes = [];
@@ -23,6 +24,8 @@ function setup() {
     sessionHookMountedRef: { current: true }, sessionIdRef: { current: "a" },
     promptRunIdRef: { current: 1 }, contextUsageRequestIdRef: { current: 0 }, contextUsageAppliedIdRef: { current: 0 },
     agentRunningRef: { current: true }, sdkAgentActiveRef: { current: true }, rpcPromptPendingRef: { current: true },
+    // The hook reads the device it talks to from a ref; these runs are local.
+    deviceIdRef: { current: "localhost" }, withDeviceId,
     setContextUsage: (value) => writes.push(value), agentStatusUrl,
     fetch: (url) => { const request = Promise.withResolvers(); requests.push({ ...request, url }); return request.promise; },
     syncLiveModel() {}, setIsCompacting() {}, setAutoCompactionEnabled() {}, setQueuedMessages() {},

@@ -1,0 +1,16 @@
+const { invalidateRemoteSessionCache, openRemoteSessionManager } = await import("../lib/remote-session-store");
+const sr = await import("../lib/session-reader");
+const dev = "fuckip-us"; const id = "01a1405a-564b-767e-8f15-ac65e7a65cf8";
+let t = Date.now();
+invalidateRemoteSessionCache(dev);
+const remote = await openRemoteSessionManager(dev, id);
+console.log("open", Date.now() - t, "ms");
+const sm = remote!.sm; const entries = sm.getEntries(); const leafId = sm.getLeafId();
+t = Date.now(); sm.getTree(); console.log("getTree", Date.now() - t, "ms");
+t = Date.now(); 0; console.log("notices", Date.now() - t, "ms");
+t = Date.now(); sr.buildSessionContext(entries as any, leafId, { deferThinking: true, deferToolResultImages: true, tail: 50, sessionId: id }); console.log("context", Date.now() - t, "ms");
+t = Date.now(); sr.computeSessionStats(entries as any); console.log("stats", Date.now() - t, "ms");
+t = Date.now(); sr.computeSessionTotalActiveMs(entries); console.log("totalActive", Date.now() - t, "ms");
+t = Date.now(); sr.readSubagentSessionResources(entries as any); sr.readSessionToolSelection(entries as any); console.log("tools", Date.now() - t, "ms");
+t = Date.now(); await sr.attachSessionProjectInfo([{ path: remote!.filePath, id, cwd: "/root", created: "x", modified: "x", messageCount: 1, firstMessage: "a", transient: false }] as any); console.log("projinfo", Date.now() - t, "ms");
+process.exit(0);

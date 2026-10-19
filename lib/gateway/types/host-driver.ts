@@ -54,7 +54,13 @@ export interface IHostDriver {
   exec(cmd: string, args?: string[], opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult>;
 
   // 4. Remote Pi Agent RPC channel (pi --mode rpc)
-  spawnPiRpc(opts?: { cwd?: string; sessionDir?: string; resumeSession?: string }): Promise<RPCChannel>;
+  spawnPiRpc(opts?: {
+    cwd?: string;
+    sessionDir?: string;
+    resumeSession?: string;
+    /** Opt out of session persistence (`--no-session`). Default is persistent. */
+    ephemeral?: boolean;
+  }): Promise<RPCChannel>;
 
   // Status check & lifecycle
   isAlive(): boolean;

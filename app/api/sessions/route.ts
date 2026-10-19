@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import path from "path";
 import { jsonResponse } from "@/lib/json-response";
 import {
   attachSessionProjectInfo,
@@ -15,6 +14,8 @@ import {
   getRunningRpcSessionIds,
 } from "@/lib/rpc-manager";
 import { startServerPerf } from "@/lib/perf";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { listRemoteSessions } from "@/lib/remote-session-store";
 
 export const dynamic = "force-dynamic";
 
@@ -22,64 +23,48 @@ export async function GET(req: Request) {
   const perf = startServerPerf("GET /api/sessions");
   try {
     const searchParams = new URL(req.url).searchParams;
-    const deviceId = searchParams.get("deviceId") || req.headers.get("x-device-id");
-
-    if (deviceId && deviceId !== "localhost") {
-      const { getGateway } = await import("@/lib/gateway/singleton");
-      const { getAllRemoteRpcSessions } = await import("@/lib/remote-agent-manager");
-      const driver = await getGateway().getOrConnectDriver(deviceId);
-
-      // Active remote sessions in memory
-      const activeRemote = getAllRemoteRpcSessions()
-        .filter(s => s.deviceId === deviceId)
-        .map(s => ({
-          id: s.sessionId,
-          path: `remote://${deviceId}/${s.sessionId}`,
-          cwd: s.state?.cwd || "/root",
-          created: new Date(s.createdAt).toISOString(),
-          modified: new Date().toISOString(),
-          messageCount: s.state?.messageCount || 0,
-          firstMessage: "Remote Pi Session",
-        }));
-
-      // Remote persisted files
-      const findRes = await driver.exec('find ~/.pi/agent/sessions/ -name "*.jsonl" 2>/dev/null | head -n 20 || echo ""');
-      const files = (findRes.stdout || "").trim().split("\n").filter(Boolean);
-
-      const persistedRemote: any[] = [];
-      for (const f of files) {
-        try {
-          const headRes = await driver.exec(`head -n 1 "${f}" 2>/dev/null`);
-          const line = headRes.stdout.trim();
-          if (line.startsWith("{")) {
-            const meta = JSON.parse(line);
-            persistedRemote.push({
-              id: meta.id || path.basename(f, ".jsonl"),
-              path: f,
-              cwd: meta.cwd || "/root",
-              created: meta.timestamp || new Date().toISOString(),
-              modified: meta.timestamp || new Date().toISOString(),
-              messageCount: 1,
-              firstMessage: meta.firstMessage || `Session ${meta.id?.slice(0, 8)}`,
-            });
-          }
-        } catch {}
-      }
-
-      const allSessions = [...activeRemote, ...persistedRemote.filter(p => !activeRemote.some(a => a.id === p.id))];
-      return jsonResponse(req, {
-        sessions: allSessions,
-        sessionListVersion: 1,
-        runningSessionIds: activeRemote.map(s => s.id),
-        awaitingInputSessionIds: [],
-        completionNotificationSuppressedSessionIds: [],
-      }, { headers: { "Cache-Control": "no-store" } });
-    }
-
+    const deviceId = getRequestDeviceId(req, searchParams);
     const force = searchParams.get("force") === "1";
     // `summary=1` serves header/stat metadata so the sidebar can paint without
     // waiting for every session transcript to be parsed.
     const summary = searchParams.get("summary") === "1";
+
+    if (isRemoteDevice(deviceId)) {
+      // Same key set as the local branch, same `SessionInfo` shape: the sidebar
+      // cannot tell the two apart. `lib/remote-session-store.ts` does the whole
+      // catalogue in one round trip (find + one awk pass), not one exec per file.
+      const { getAllRemoteRpcSessions } = await import("@/lib/remote-agent-manager");
+      // An offline device must answer immediately: `getOrConnectDriver` polls for
+      // 10 s before it gives up, and the sidebar polls this route. An empty
+      // catalogue plus `deviceOnline: false` lets the UI say "offline" at once
+      // while the pool keeps reconnecting in the background.
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const entry = getGateway().registry.get(deviceId);
+      const online = Boolean(entry && entry.driver.isAlive());
+      if (!online) {
+        return jsonResponse(req, {
+          sessions: [],
+          sessionListVersion: getSessionListVersion(),
+          runningSessionIds: [],
+          awaitingInputSessionIds: [],
+          completionNotificationSuppressedSessionIds: [],
+          deviceOnline: false,
+        }, { headers: { "Cache-Control": "no-store" } });
+      }
+      const sessions = await listRemoteSessions(deviceId, { force, deferDetails: summary });
+      perf?.span("remote-scan");
+      return jsonResponse(req, {
+        sessions,
+        sessionListVersion: getSessionListVersion(),
+        runningSessionIds: getAllRemoteRpcSessions()
+          .filter((s) => s.deviceId === deviceId)
+          .map((s) => s.sessionId),
+        awaitingInputSessionIds: [],
+        completionNotificationSuppressedSessionIds: [],
+        deviceOnline: true,
+      }, { headers: { "Cache-Control": "no-store" } });
+    }
+
     perf?.span("start");
     const persistedSessionsPromise = summary
       ? listSessionSummaries()

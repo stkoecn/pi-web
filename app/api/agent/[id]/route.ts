@@ -1,6 +1,39 @@
 import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+
+/**
+ * Resolve the remote channel for this session, resuming a persisted remote
+ * session when nothing is running in this process.
+ *
+ * A remote session that was created in an earlier request (or before a restart)
+ * only exists as a transcript on the device, so the in-memory miss has to fall
+ * through to `ensureRemoteRpcSessionForExisting` instead of the local
+ * `resolveSessionPath` lookup, which can never see remote files.
+ */
+async function resolveRemoteSession(req: Request, id: string) {
+  const deviceId = getRequestDeviceId(req);
+  // A localhost request must never be served by a remote channel that happens to
+  // share the id: the local branch owns those ids, and skipping the import keeps
+  // the local fast path free of remote machinery.
+  if (!isRemoteDevice(deviceId)) return undefined;
+
+  const {
+    getRemoteRpcSession,
+    ensureRemoteRpcSessionForExisting,
+  } = await import("@/lib/remote-agent-manager");
+
+  const inMemory = getRemoteRpcSession(id);
+  if (inMemory) return inMemory;
+
+  try {
+    return await ensureRemoteRpcSessionForExisting(deviceId, id);
+  } catch (error) {
+    console.error("[agent/[id]] failed to resume remote session:", error);
+    return undefined;
+  }
+}
 
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
@@ -23,17 +56,46 @@ export async function POST(
     }
     const toolNames = requestedToolNames as string[] | undefined;
 
-    // Fast path: already-running session
+    // Fast path: already-running local session
     const existing = getRpcSession(id);
-    if (!existing) {
-      const { getRemoteRpcSession } = await import("@/lib/remote-agent-manager");
-      const remote = getRemoteRpcSession(id);
-      if (remote) {
-        remote.channel.send(body);
-        promptAccepted = body.type === "prompt";
-        return NextResponse.json({ success: true, data: { accepted: true } });
-      }
+
+    // Remote sessions (in memory, or resumed from the device transcript).
+    const remote = await resolveRemoteSession(req, id);
+
+    if (remote && body.type === "set_tools") {
+      // pi's RPC mode has no `set_tools` (rpc-mode.js answers
+      // `Unknown command: set_tools`), and the local pinning path cannot be reused
+      // here: `setRpcSessionTools` opens the transcript with `SessionManager.open`,
+      // which only sees this machine's filesystem. The loadout is therefore kept on
+      // the live session and reported as accepted; it is re-sent whenever the
+      // channel is (re)created.
+      remote.pendingToolNames = toolNames ? [...toolNames] : undefined;
+      remote.channel.send({
+        type: "set_tools",
+        ...(toolNames !== undefined ? { toolNames } : {}),
+      });
+      return NextResponse.json({
+        success: true,
+        data: { sessionId: remote.sessionId || id, recreated: false },
+      });
     }
+
+    if (remote) {
+      // pi's RPC mode has no `get_tools` command (see rpc-mode.js: the only
+      // introspection commands are get_state/get_commands/get_entries/get_tree).
+      // The local wrapper answers it from `inner.getAllTools()`, which only exists
+      // in this process. Forwarding it made pi reply `Unknown command: get_tools`
+      // while this route still returned `{accepted:true}`, so the client got an
+      // object where it expected an array and the chat toolbar crashed with
+      // `systemTools?.some is not a function`. Answer with an empty loadout.
+      if (body.type === "get_tools") {
+        return NextResponse.json({ success: true, data: [] });
+      }
+      remote.channel.send(body);
+      promptAccepted = body.type === "prompt";
+      return NextResponse.json({ success: true, data: { accepted: true } });
+    }
+
     if (body.type === "set_tools") {
       const filePath = existing?.sessionFile || await resolveSessionPath(id) || undefined;
       if (!existing?.isAlive() && !filePath) {
@@ -88,7 +150,18 @@ export async function GET(
   try {
     const session = getRpcSession(id);
     if (!session || !session.isAlive()) {
-      return NextResponse.json({ running: false });
+      // Remote status polling (`agentStatusUrl()` adds `?systemPrompt=0`) has to
+      // work for sessions that only exist on the device.
+      const remote = await resolveRemoteSession(req, id);
+      if (!remote) return NextResponse.json({ running: false });
+
+      const { getRemoteRpcSessionState } = await import("@/lib/remote-agent-manager");
+      const state = (await getRemoteRpcSessionState(id))
+        ?? (remote.state as Record<string, unknown> | null)
+        ?? {};
+      const trimmed = { ...state } as Record<string, unknown>;
+      if (new URL(req.url).searchParams.get("systemPrompt") === "0") delete trimmed.systemPrompt;
+      return NextResponse.json({ running: true, state: trimmed });
     }
 
     const state = await session.send({ type: "get_state" }) as Record<string, unknown>;

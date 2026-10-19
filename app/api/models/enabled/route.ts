@@ -26,6 +26,8 @@ import { getModelRuntimeWithExtensions } from "@/lib/model-runtime";
 import { withDeferredProviderModels } from "@/lib/deferred-provider-models";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateModelsCache } from "@/lib/models-cache";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { loadRemoteModels, type RemoteModelCatalogue } from "@/lib/remote-models";
 
 export const dynamic = "force-dynamic";
 
@@ -91,6 +93,13 @@ async function resolveCwd(raw: string | null): Promise<{ cwd: string } | { error
 }
 
 export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // A remote device's models live in its own runtime, so neither the local cwd
+    // allow-list nor the local settings files apply here.
+    return Response.json(await buildRemoteView(deviceId));
+  }
+
   const resolved = await resolveCwd(new URL(req.url).searchParams.get("cwd"));
   if ("error" in resolved) return resolved.error;
 
@@ -101,8 +110,51 @@ export async function GET(req: Request) {
   }
 }
 
+/**
+ * The catalogue of a remote device as `Model` objects, for `buildEnabledModelsView`.
+ *
+ * Only `id`, `name`, `provider` and `contextWindow` are read from them, so the
+ * runtime-only fields of a real `Model` are irrelevant here.
+ */
+function remoteModelsForView(catalogue: RemoteModelCatalogue): readonly Model<Api>[] {
+  return catalogue.models.map((model) => ({
+    id: model.id,
+    name: model.name || model.id,
+    provider: model.provider,
+    ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+  } as unknown as Model<Api>));
+}
+
+/**
+ * `enabledModels` panel data for a remote device.
+ *
+ * pi's RPC mode cannot read that setting, so the panel shows every model the
+ * device reports as enabled, with no pins, and read-only: `editable` is forced
+ * false because the matching PUT answers 501 rather than writing to the wrong
+ * machine's settings file.
+ */
+async function buildRemoteView(deviceId: string): Promise<EnabledModelsView> {
+  const catalogue = await loadRemoteModels(deviceId);
+  const input: EnabledModelsInput = {
+    patterns: catalogue.enabledModels,
+    availableRefs: catalogue.models.map((model) => `${model.provider}/${model.id}`),
+    resolutions: [],
+  };
+  const view = buildEnabledModelsView({
+    input,
+    models: remoteModelsForView(catalogue),
+    // The RPC model list carries no provider display names.
+    providerNames: new Map<string, string>(),
+    customProviders: new Set<string>(),
+    scope: "global",
+    settingsPath: `${deviceId}:~/.pi/agent/settings.json`,
+  });
+  return { ...view, editable: false };
+}
+
 interface EnabledModelsRequest {
   cwd?: unknown;
+  deviceId?: unknown;
   op?: unknown;
   provider?: unknown;
   refs?: unknown;
@@ -184,6 +236,15 @@ export async function PUT(req: Request) {
     body = await req.json() as EnabledModelsRequest;
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  // Writing `enabledModels` for a remote device is not implemented: the RPC
+  // protocol has no settings command, and the local files belong to another
+  // machine. Refuse instead of silently editing them.
+  const requestDevice = getRequestDeviceId(req);
+  const bodyDevice = typeof body.deviceId === "string" ? body.deviceId : null;
+  if (isRemoteDevice(requestDevice) || isRemoteDevice(bodyDevice)) {
+    return Response.json({ error: "Not supported on remote devices yet" }, { status: 501 });
   }
 
   const op = body.op;

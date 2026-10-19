@@ -151,14 +151,14 @@ function parseUploadFileNames(value: unknown): string[] | null {
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ path: string[] }> }
+  { params }: { params: Promise<{ path?: string[] }> }
 ) {
   if (!isApiRequestAllowed(request)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
 
   try {
-    const { path: segments } = await params;
+    const { path: segments = [] } = (await params) ?? {};
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
     if (type === "allow-link") return allowLinkedDirectory(request, segments);
 
@@ -448,11 +448,11 @@ ${bodyHtml}
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ path: string[] }> }
+  { params }: { params: Promise<{ path?: string[] }> }
 ) {
   try {
-    const { path: segments } = await params;
-    const filePath = filePathFromApiSegments(segments);
+    const { path: segments = [] } = (await params) ?? {};
+    const filePath = segments.length > 0 ? filePathFromApiSegments(segments) : "/";
     // Authorization collapses `..` lexically, but the filesystem applies it
     // after following links, so `link/../x` names a file beside the link's
     // target, outside the roots. URL parsing already drops real `..` segments;
@@ -755,11 +755,11 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: Promise<{ path: string[] }> }
+  { params }: { params: Promise<{ path?: string[] }> }
 ) {
   try {
-    const { path: segments } = await params;
-    const filePath = filePathFromApiSegments(segments);
+    const { path: segments = [] } = (await params) ?? {};
+    const filePath = segments.length > 0 ? filePathFromApiSegments(segments) : "/";
     const deviceId = request.nextUrl.searchParams.get("deviceId") || request.headers.get("x-device-id");
     const content = await request.text();
 

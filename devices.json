@@ -2,7 +2,7 @@
   {
     "id": "wsmac",
     "name": "wsmac (Mac Mini / Local)",
-    "host": "192.168.1.114",
+    "host": "192.168.1.7",
     "port": 22,
     "username": "windsing",
     "privateKeyPath": "~/.ssh/wshome"

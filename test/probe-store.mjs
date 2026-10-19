@@ -1,0 +1,14 @@
+import { listRemoteSessions, openRemoteSessionManager } from "../lib/remote-session-store.ts";
+const t0 = Date.now();
+const sessions = await listRemoteSessions("fuckip-us", { force: true });
+console.log(`list (full): ${Date.now() - t0}ms -> ${sessions.length} sessions`);
+for (const s of sessions) console.log(` - ${s.id} | ${s.cwd} | msgs=${s.messageCount} | first=${JSON.stringify(s.firstMessage.slice(0,40))} | mod=${s.modified}`);
+const t1 = Date.now();
+const s2 = await listRemoteSessions("fuckip-us", { force: true, deferDetails: true });
+console.log(`list (deferred): ${Date.now() - t1}ms -> ${s2.length}`);
+const t2 = Date.now();
+const mgr = await openRemoteSessionManager("fuckip-us", sessions[0].id);
+console.log(`open: ${Date.now() - t2}ms entries=${mgr?.sm.getEntries().length} leaf=${mgr?.sm.getLeafId()} cwd=${mgr?.sm.getHeader()?.cwd}`);
+const t3 = Date.now();
+await openRemoteSessionManager("fuckip-us", sessions[0].id);
+console.log(`open cached: ${Date.now() - t3}ms`);
