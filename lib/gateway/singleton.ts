@@ -1,0 +1,86 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import { DeviceRegistry } from './device-registry';
+import { SSHClientPool } from './ssh-client-pool';
+import { SSHServer } from './ssh-server';
+import type { IHostDriver } from './types/host-driver';
+import type { ActiveDeviceConfig } from './types/device';
+
+export class GatewayManager {
+  readonly registry = new DeviceRegistry(true); // localhost enabled by default
+  readonly clientPool: SSHClientPool;
+  readonly sshServer: SSHServer;
+  private initialized = false;
+
+  constructor() {
+    this.clientPool = new SSHClientPool(this.registry);
+    this.sshServer = new SSHServer(this.registry, this.clientPool, {
+      port: 22222,
+      host: '0.0.0.0',
+    });
+  }
+
+  public async init(): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+
+    // Load devices.json if present
+    try {
+      const configPath = path.resolve(process.cwd(), 'devices.json');
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const list: ActiveDeviceConfig[] = JSON.parse(raw);
+        for (const item of list) {
+          const dev = { ...item, mode: item.mode || 'active_ssh' as const };
+          if (dev.mode === 'active_ssh') {
+            console.log(`[Gateway] Loading device from config: ${dev.id} (${dev.host}:${dev.port})`);
+            await this.clientPool.addDevice(dev);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[Gateway] Failed to load devices.json:', e);
+    }
+
+    // Start reverse tunnel SSH server
+    try {
+      await this.sshServer.start();
+      console.log('[Gateway] Reverse tunnel SSH server listening on 0.0.0.0:22222');
+    } catch (e: any) {
+      if (e.code !== 'EADDRINUSE') {
+        console.error('[Gateway] Failed to start reverse tunnel SSH server:', e);
+      }
+    }
+  }
+
+  public getDriver(id?: string): IHostDriver {
+    return this.registry.getDriver(id || 'localhost');
+  }
+
+  public async getOrConnectDriver(id?: string, timeoutMs = 10000): Promise<IHostDriver> {
+    const targetId = id || 'localhost';
+    if (targetId === 'localhost') return this.registry.getDriver('localhost');
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const entry = this.registry.get(targetId);
+      if (entry && entry.driver.isAlive()) {
+        return entry.driver;
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return this.registry.getDriver(targetId);
+  }
+}
+
+declare global {
+  var __piWebGateway: GatewayManager | undefined;
+}
+
+export function getGateway(): GatewayManager {
+  if (!globalThis.__piWebGateway) {
+    globalThis.__piWebGateway = new GatewayManager();
+    globalThis.__piWebGateway.init().catch(console.error);
+  }
+  return globalThis.__piWebGateway;
+}
