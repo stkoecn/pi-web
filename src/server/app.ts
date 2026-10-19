@@ -18,6 +18,8 @@ export interface AppConfig {
   httpPort?: number;
   sshPort?: number;
   host?: string;
+  httpHost?: string;
+  sshHost?: string;
   staticDir?: string;
   devicesConfigFile?: string;
 }
@@ -30,11 +32,13 @@ export class PiWebGatewayApp {
   readonly wss: WebSocketServer;
 
   private httpPort: number;
+  private httpHost: string;
   private sshPort: number;
   private devicesConfigFile: string;
 
   constructor(config: AppConfig = {}) {
     this.httpPort = config.httpPort ?? 9564;
+    this.httpHost = config.httpHost ?? config.host ?? '127.0.0.1';
     this.sshPort = config.sshPort ?? 22222;
     this.devicesConfigFile = config.devicesConfigFile ?? path.join(process.cwd(), 'devices.json');
 
@@ -42,7 +46,7 @@ export class PiWebGatewayApp {
     this.clientPool = new SSHClientPool(this.registry);
     this.sshServer = new SSHServer(this.registry, this.clientPool, {
       port: this.sshPort,
-      host: config.host ?? '0.0.0.0',
+      host: config.sshHost ?? config.host ?? '0.0.0.0',
     });
 
     const staticDir = config.staticDir ?? path.join(__dirname, '../client');
@@ -73,10 +77,10 @@ export class PiWebGatewayApp {
     });
   }
 
-  async start(): Promise<{ httpPort: number; sshPort: number }> {
+  async start(): Promise<{ httpPort: number; sshPort: number; httpHost: string }> {
     const actualSSHPort = await this.sshServer.start();
     const actualHTTPPort = await new Promise<number>((resolve, reject) => {
-      this.httpServer.listen(this.httpPort, () => {
+      this.httpServer.listen(this.httpPort, this.httpHost, () => {
         const addr = this.httpServer.address();
         const port = typeof addr === 'object' && addr ? addr.port : this.httpPort;
         resolve(port);
@@ -90,6 +94,7 @@ export class PiWebGatewayApp {
     return {
       httpPort: actualHTTPPort,
       sshPort: actualSSHPort,
+      httpHost: this.httpHost,
     };
   }
 

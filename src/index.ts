@@ -2,23 +2,25 @@ import { PiWebGatewayApp } from './server/app';
 
 async function main() {
   const httpPort = Number(process.env.HTTP_PORT || process.env.PORT || 9564);
+  const httpHost = process.env.HTTP_HOST || process.env.HOST || '127.0.0.1';
   const sshPort = Number(process.env.SSH_PORT || 22222);
-  const host = process.env.HOST || '0.0.0.0';
+  const sshHost = process.env.SSH_HOST || '0.0.0.0';
 
   console.log(`Starting Pi Web Gateway (Device Tunnel Hub)...`);
 
   const app = new PiWebGatewayApp({
     httpPort,
+    httpHost,
     sshPort,
-    host,
+    sshHost,
   });
 
   const { httpPort: actualHttpPort, sshPort: actualSshPort } = await app.start();
 
   console.log(`=======================================================`);
   console.log(`⚡ Pi Web Gateway is running!`);
-  console.log(`🌐 Web Dashboard / API:   http://localhost:${actualHttpPort}`);
-  console.log(`🔒 SSH Reverse Tunnel Hub: ssh://0.0.0.0:${actualSshPort}`);
+  console.log(`🌐 Web Dashboard / API:   http://${httpHost}:${actualHttpPort}`);
+  console.log(`🔒 SSH Reverse Tunnel Hub: ssh://${sshHost}:${actualSshPort}`);
   console.log(`💡 Connect reverse device: ssh -NR 0:localhost:22 my-device@<ip> -p ${actualSshPort}`);
   console.log(`=======================================================`);
 
