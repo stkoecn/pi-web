@@ -45,6 +45,7 @@ export async function GET(
         tail,
         excludeLeaf: Boolean(before),
         sessionId: id,
+        deviceId,
       }), transcriptNotices);
       return NextResponse.json({ context: remoteContext, tail, before: before ?? null });
     }

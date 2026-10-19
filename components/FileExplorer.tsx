@@ -20,6 +20,7 @@ import { createExpandedPathsMemory } from "@/lib/file-tree-expansion";
 import { droppedItems } from "@/hooks/useDragDrop";
 import { useI18n } from "@/hooks/useI18n";
 import { deviceHomeOrRoot } from "@/lib/device-home-client";
+import { withDeviceId } from "@/lib/device-context";
 type Translate = ReturnType<typeof useI18n>["t"];
 
 /** Why a listed entry is normally left out; only listings with `hidden=1` report it. */
@@ -128,8 +129,8 @@ async function fetchEntries(dirPath: string, showHidden = false, deviceId?: stri
 
 // Sends the target the operator was shown, so a link pointed elsewhere since
 // the listing is refused instead of granting a directory nobody looked at.
-async function allowOutsideLink(linkPath: string, target: string): Promise<void> {
-  const res = await fetch(`/api/files/${encodeFilePathForApi(linkPath)}?type=allow-link`, {
+async function allowOutsideLink(linkPath: string, target: string, deviceId?: string): Promise<void> {
+  const res = await fetch(withDeviceId(`/api/files/${encodeFilePathForApi(linkPath)}?type=allow-link`, deviceId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target }),
@@ -347,7 +348,7 @@ export function TreeNode({
     setAllowingLink(true);
     setAllowLinkError(null);
     try {
-      await allowOutsideLink(node.fullPath, pendingLinkTarget);
+      await allowOutsideLink(node.fullPath, pendingLinkTarget, deviceId);
       setAllowedLinkTarget(pendingLinkTarget);
       await loadChildren(true);
     } catch (error) {
@@ -501,7 +502,10 @@ export function TreeNode({
         )}
         {hovered && !node.isDir && (
           <a
-            href={`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
+            href={withDeviceId(
+              `/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`,
+              deviceId,
+            )}
             download
             onClick={(e) => e.stopPropagation()}
             title={t("files.download")}
@@ -781,6 +785,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const fileDragDepthRef = useRef(0);
   const prevCwdRef = useRef<string | null>(null);
   const prevDevRef = useRef<string | undefined>(deviceId);
+  // The upload callbacks are memoized without a device dependency, so they read
+  // the current device from a ref rather than closing over a stale prop.
+  const deviceIdRef = useRef(deviceId);
+  deviceIdRef.current = deviceId;
   const expandedPathsRef = useRef(expandedPaths);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
@@ -801,7 +809,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setSearchLoading(true);
     setSearchError(false);
     const timer = setTimeout(() => {
-      fetch(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`, { signal: controller.signal })
+      fetch(withDeviceId(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`, deviceId), { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<{ matches?: FileIndexEntry[] }> : Promise.reject(new Error("Search failed")))
         .then((data) => setSearchPaths((data.matches ?? []).filter((entry) => !entry.isDir).map((entry) => entry.path)))
         .catch(() => {
@@ -813,7 +821,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         .finally(() => { if (!controller.signal.aborted) setSearchLoading(false); });
     }, 150);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [cwd, fileSearchOpen, searchQuery]);
+  }, [cwd, deviceId, fileSearchOpen, searchQuery]);
 
   // Focus the search input whenever the search panel opens.
   useEffect(() => {
@@ -906,7 +914,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadPhase("uploading");
 
     try {
-      const { status, data } = await uploadFiles(directory, files, strategy, setUploadProgress);
+      const { status, data } = await uploadFiles(directory, files, strategy, setUploadProgress, deviceIdRef.current);
       if (status === 409 && data.conflicts?.length) {
         setPendingConflict({
           directory,
@@ -939,7 +947,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
     try {
       const res = await fetch(
-        `/api/files/${encodeFilePathForApi(directory)}?type=upload-check`,
+        withDeviceId(
+          `/api/files/${encodeFilePathForApi(directory)}?type=upload-check`,
+          deviceIdRef.current,
+        ),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

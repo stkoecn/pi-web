@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getSessionEntries, resolveSessionPath } from "@/lib/session-reader";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { openRemoteSessionManager } from "@/lib/remote-session-store";
 import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "@/lib/tool-result-images";
+import type { SessionEntry } from "@/lib/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -53,10 +56,19 @@ export async function GET(
   }
 
   try {
-    const filePath = await resolveSessionPath(id);
-    if (!filePath) return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    const deviceId = getRequestDeviceId(req);
+    let entries: SessionEntry[];
+    if (isRemoteDevice(deviceId)) {
+      const remote = await openRemoteSessionManager(deviceId, id);
+      if (!remote) return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      entries = remote.sm.getEntries() as unknown as SessionEntry[];
+    } else {
+      const filePath = await resolveSessionPath(id);
+      if (!filePath) return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      entries = getSessionEntries(filePath);
+    }
 
-    const entry = getSessionEntries(filePath).find((candidate) => candidate.id === entryId);
+    const entry = entries.find((candidate) => candidate.id === entryId);
     if (!entry || entry.type !== "message" || entry.message.role !== "toolResult") {
       return NextResponse.json({ error: "Tool result not found" }, { status: 404 });
     }

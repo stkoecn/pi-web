@@ -6,6 +6,8 @@ import { StatusIcon, statusColor } from "./AgentSessionPanel";
 import { buildToolResultsMap, EMPTY_TRANSCRIPT, mergeTailPage, prependOlderPage, type SubagentTranscript } from "./subagent-viewer-state";
 import { useI18n } from "@/hooks/useI18n";
 import type { SessionInfo } from "@/lib/types";
+import { withDeviceId } from "@/lib/device-context";
+import { useClientDeviceId } from "./DeviceIdContext";
 
 interface Props {
   sessionId: string;
@@ -18,10 +20,10 @@ interface Props {
 const POLL_MS = 2000;
 const TAIL = 100;
 
-function contextUrl(sessionId: string, before?: string): string {
+function contextUrl(sessionId: string, deviceId: string, before?: string): string {
   const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1", tail: String(TAIL) });
   if (before) params.set("before", before);
-  return `/api/sessions/${encodeURIComponent(sessionId)}/context?${params}`;
+  return withDeviceId(`/api/sessions/${encodeURIComponent(sessionId)}/context?${params}`, deviceId);
 }
 
 function toTranscript(page: Partial<SubagentTranscript>): SubagentTranscript {
@@ -45,6 +47,8 @@ function toTranscript(page: Partial<SubagentTranscript>): SubagentTranscript {
  */
 export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }: Props) {
   const { t, locale } = useI18n();
+  // A subagent transcript lives on the same device as its parent session.
+  const deviceId = useClientDeviceId();
   const [info, setInfo] = useState<SessionInfo | null>(null);
   const [label, setLabel] = useState(fallbackLabel);
   const [transcript, setTranscript] = useState<SubagentTranscript>(EMPTY_TRANSCRIPT);
@@ -62,10 +66,10 @@ export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }
     const controller = new AbortController();
     (async () => {
       try {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
+        const res = await fetch(
+          withDeviceId(`/api/sessions/${encodeURIComponent(sessionId)}`, deviceId),
+          { signal: controller.signal, cache: "no-store" },
+        );
         if (res.status === 404) return; // keep the fallback label; the context poll reports "starting"
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json() as { info?: SessionInfo; error?: string };
@@ -77,7 +81,7 @@ export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }
       }
     })();
     return () => controller.abort();
-  }, [sessionId, running, refreshKey, fallbackLabel]);
+  }, [sessionId, running, refreshKey, fallbackLabel, deviceId]);
 
   // Initial context load; while the subagent runs, poll for new entries. Each
   // poll is the newest page, folded into the older pages already loaded.
@@ -90,7 +94,7 @@ export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }
       if (inFlight) return;
       inFlight = true;
       try {
-        const res = await fetch(contextUrl(sessionId), { signal: controller.signal, cache: "no-store" });
+        const res = await fetch(contextUrl(sessionId, deviceId), { signal: controller.signal, cache: "no-store" });
         if (res.status === 404) {
           if (!cancelled) setNotFound(true);
           return;
@@ -124,7 +128,7 @@ export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }
       clearInterval(timer);
       controller.abort();
     };
-  }, [sessionId, running, refreshKey]);
+  }, [sessionId, running, refreshKey, deviceId]);
 
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -143,7 +147,7 @@ export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }
     pagingControllerRef.current = controller;
     setLoadingEarlier(true);
     try {
-      const res = await fetch(contextUrl(sessionId, cursor), { signal: controller.signal, cache: "no-store" });
+      const res = await fetch(contextUrl(sessionId, deviceId, cursor), { signal: controller.signal, cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { context: Partial<SubagentTranscript> };
       // A poll replaced the transcript meanwhile: this page no longer joins on.
@@ -158,7 +162,7 @@ export function SubagentViewer({ sessionId, fallbackLabel, running, onOpenFile }
       if (pagingControllerRef.current === controller) pagingControllerRef.current = null;
       if (!controller.signal.aborted) setLoadingEarlier(false);
     }
-  }, [oldestEntryId, sessionId]);
+  }, [oldestEntryId, sessionId, deviceId]);
 
   // Stick to the bottom while new entries arrive, unless the user scrolled up;
   // a prepended older page leaves what the user was reading in place.

@@ -29,6 +29,23 @@ export function readTextPreviewChunk(
     fs.closeSync(descriptor);
   }
 
+  return chunkFromBuffer(buffer, bytesRead, fileSize, offset);
+}
+
+/**
+ * Build a preview chunk from bytes already fetched for `[offset, fileSize)`.
+ *
+ * Split out of `readTextPreviewChunk` so a device file — whose bytes arrive
+ * over the gateway instead of from `fs.readSync` — produces a byte-identical
+ * chunk, including the UTF-8 sequence boundary trim that keeps a multi-byte
+ * character from being cut in half.
+ */
+export function chunkFromBuffer(
+  buffer: Buffer,
+  bytesRead: number,
+  fileSize: number,
+  offset: number,
+): TextPreviewChunk {
   let end = Math.min(bytesRead, TEXT_PREVIEW_MAX_BYTES);
   if (offset + end < fileSize) {
     let sequenceStart = end;

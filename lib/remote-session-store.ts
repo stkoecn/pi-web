@@ -15,6 +15,7 @@
 import { parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent";
 import { getGateway } from "@/lib/gateway/singleton";
 import type { IHostDriver } from "@/lib/gateway/types/host-driver";
+import { readRemoteTextFile } from "@/lib/remote-files";
 import type { SessionInfo } from "@/lib/types";
 import { attachSessionProjectInfo } from "@/lib/session-reader";
 
@@ -125,23 +126,15 @@ async function runScript(driver: IHostDriver, script: string): Promise<string> {
 }
 
 /**
- * Read a text file over the persistent shell instead of SFTP.
+ * Transcript text, over the persistent shell instead of SFTP.
  *
  * SFTP costs ~1-2.4 s for a single 8 KB file on a 257 ms-RTT link (channel
- * setup plus per-packet round trips), while `base64` over an already-open `sh`
- * costs ~0.35 s for the same file. Base64 also keeps the shell pool's byte-count
- * framing intact, since the payload has no newlines or control characters.
+ * setup plus per-packet round trips), while a shell command over an already-open
+ * `sh` costs ~0.3 s. `readRemoteTextFile` also deflates the payload on the
+ * device first, which cut a 1.2 MB transcript from 1178 KiB to 312 KiB.
  */
 async function readTextFile(driver: IHostDriver, filePath: string): Promise<string> {
-	const quoted = `'${filePath.replace(/'/g, `'\\''`)}'`;
-	// Plain `base64` on purpose: `-w0` is GNU-only (BSD/macOS rejects it), and
-	// every implementation's default wrapping is undone by the whitespace strip
-	// below. The shell pool's framing is byte-counted, so wrapped lines are safe.
-	const res = await driver.exec(`base64 ${quoted}`);
-	if (res.exitCode !== 0) {
-		throw new Error(res.stderr.trim() || `cannot read ${filePath} (exit ${res.exitCode})`);
-	}
-	return Buffer.from(res.stdout.replace(/\s+/g, ""), "base64").toString("utf8");
+	return readRemoteTextFile(driver, filePath);
 }
 
 function parseTimestamp(value: unknown): number | undefined {

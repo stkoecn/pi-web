@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { runNpx } from "@/lib/npx";
 import type { SkillInstallScope } from "@/lib/api-types";
 import { buildSkillUpdateArgs } from "@/lib/skill-updates";
@@ -8,6 +9,12 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  // Writing to a device's own settings files is not implemented yet; refusing is
+  // safer than silently writing this host's copy.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
+  }
+
   try {
     const body = await req.json() as {
       cwd?: unknown;

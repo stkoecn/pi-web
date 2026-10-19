@@ -11,6 +11,7 @@ import { checkLinkedDirectoryApproval, withOutsideLinkTargets } from "@/lib/link
 import {
   DOCX_PREVIEW_MAX_BYTES,
   IMAGE_PREVIEW_MAX_BYTES,
+  TEXT_PREVIEW_MAX_BYTES,
   documentPreviewKind,
   getAudioMime,
   getDocumentMime,
@@ -30,8 +31,17 @@ import {
 } from "@/lib/file-upload";
 import { parseFormDataWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { filePathFromApiSegments, samePath } from "@/lib/paths";
+import { joinFilePath } from "@/lib/file-paths";
 import { hasParentDirectorySegment } from "@/lib/path-security";
-import { readTextPreviewChunk } from "@/lib/text-preview";
+import { chunkFromBuffer, readTextPreviewChunk } from "@/lib/text-preview";
+import {
+  inspectRemoteUploadTargets,
+  listRemoteDirectory,
+  readRemoteBuffer,
+  readRemoteSlice,
+  statRemotePath,
+} from "@/lib/remote-files";
+import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 
 const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch"] as const;
 type FileRequestType = typeof FILE_REQUEST_TYPES[number];
@@ -40,6 +50,10 @@ const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
 // Multipart boundaries and headers are not file bytes, but must be bounded too.
 const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024;
+// A device file cannot be watched through fs.watch, so its mtime is polled. One
+// `stat` round trip costs ~300 ms on a 257 ms-RTT link, so 3 s keeps the cost
+// near 10% of a single shell while still feeling live to the reader.
+const REMOTE_WATCH_INTERVAL_MS = 3_000;
 
 // The source view highlights every language here but text, pdf and word with
 // the Prism grammar of that name (refractor/all); a name it lacks renders
@@ -149,6 +163,113 @@ function parseUploadFileNames(value: unknown): string[] | null {
   return value;
 }
 
+/**
+ * Device branch of uploads.
+ *
+ * Same request/response contract as the local branch (an `upload-check` that
+ * reports conflicts, then a multipart `upload` that writes each file), so the
+ * explorer's conflict dialog works unchanged against a device. Writes go over
+ * SFTP; the conflict probe is one shell round trip.
+ */
+async function handleRemoteUpload(
+  request: NextRequest,
+  deviceId: string,
+  directory: string,
+  type: string,
+): Promise<Response> {
+  try {
+    const { getGateway } = await import("@/lib/gateway/singleton");
+    const driver = await getGateway().getOrConnectDriver(deviceId);
+
+    if (type === "upload-check") {
+      const body = await request.json().catch(() => null) as { fileNames?: unknown } | null;
+      const fileNames = parseUploadFileNames(body?.fileNames);
+      if (!fileNames) {
+        return NextResponse.json({ error: "fileNames must be an array of strings" }, { status: 400 });
+      }
+      const validationError = validateUploadFileNames(fileNames);
+      if (validationError) {
+        return NextResponse.json({ error: validationError }, { status: 400 });
+      }
+      return NextResponse.json(await inspectRemoteUploadTargets(driver, directory, fileNames));
+    }
+
+    if (type !== "upload") {
+      return NextResponse.json({ error: "Invalid upload request type" }, { status: 400 });
+    }
+
+    const strategy = parseUploadConflictStrategy(request.nextUrl.searchParams.get("conflict"));
+    if (!strategy) {
+      return NextResponse.json({ error: "Invalid conflict strategy" }, { status: 400 });
+    }
+
+    let formData: FormData;
+    try {
+      formData = await parseFormDataWithinLimit(request, MAX_UPLOAD_REQUEST_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return NextResponse.json({ error: "Uploads must total 100MB or less" }, { status: 413 });
+      }
+      throw error;
+    }
+    const files = formData.getAll("files").filter((entry): entry is File => typeof entry !== "string");
+    if (files.some((file) => file.size > MAX_UPLOAD_FILE_BYTES)) {
+      return NextResponse.json({ error: "Each upload must be 25MB or smaller" }, { status: 413 });
+    }
+    if (files.reduce((total, file) => total + file.size, 0) > MAX_UPLOAD_TOTAL_BYTES) {
+      return NextResponse.json({ error: "Uploads must total 100MB or less" }, { status: 413 });
+    }
+    const fileNames = files.map((file) => file.name);
+    const validationError = validateUploadFileNames(fileNames);
+    if (validationError) {
+      return NextResponse.json({ error: validationError }, { status: 400 });
+    }
+
+    const inspection = await inspectRemoteUploadTargets(driver, directory, fileNames);
+    if (strategy === "error" && inspection.conflicts.length > 0) {
+      return NextResponse.json({
+        error: "One or more files already exist",
+        conflicts: inspection.conflicts,
+        nonReplaceable: inspection.nonReplaceable,
+      }, { status: 409 });
+    }
+
+    const conflictSet = new Set(inspection.conflicts);
+    const nonReplaceableSet = new Set(inspection.nonReplaceable);
+    const uploaded: string[] = [];
+    const skipped: string[] = [];
+    const errors: Array<{ name: string; error: string }> = [];
+
+    for (const file of files) {
+      if (conflictSet.has(file.name) && strategy === "skip") {
+        skipped.push(file.name);
+        continue;
+      }
+      if (conflictSet.has(file.name) && nonReplaceableSet.has(file.name)) {
+        errors.push({ name: file.name, error: "Cannot replace a directory or symbolic link" });
+        continue;
+      }
+      try {
+        const bytes = Buffer.from(await file.arrayBuffer());
+        await driver.writeFile(joinFilePath(directory, file.name), bytes);
+        uploaded.push(file.name);
+      } catch (error) {
+        errors.push({ name: file.name, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    return NextResponse.json(
+      { uploaded, skipped, errors },
+      { status: errors.length > 0 ? 207 : 200 },
+    );
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ path?: string[] }> }
@@ -161,6 +282,13 @@ export async function POST(
     const { path: segments = [] } = (await params) ?? {};
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
     if (type === "allow-link") return allowLinkedDirectory(request, segments);
+
+    // A device directory is not on this filesystem, so the local allow-list
+    // below refuses it outright. The device's own paths are its namespace.
+    const postDeviceId = request.nextUrl.searchParams.get("deviceId") || request.headers.get("x-device-id");
+    if (postDeviceId && postDeviceId !== "localhost") {
+      return await handleRemoteUpload(request, postDeviceId, filePathFromApiSegments(segments), type);
+    }
 
     const uploadDirectory = await getUploadDirectory(segments);
     if ("response" in uploadDirectory) return uploadDirectory.response;
@@ -446,6 +574,191 @@ ${bodyHtml}
 </html>`;
 }
 
+/**
+ * Device branch of the file API.
+ *
+ * Answers with the exact shapes the local branch below produces, because the
+ * explorer, the viewer and the upload dialog are the same components either
+ * way. Kept in one function so every operation stays side by side with its
+ * local twin.
+ */
+async function handleRemoteFileRequest(
+  request: NextRequest,
+  options: { deviceId: string; filePath: string; type: FileRequestType },
+): Promise<Response> {
+  const { deviceId, filePath, type } = options;
+  try {
+    const { getGateway } = await import("@/lib/gateway/singleton");
+    const driver = await getGateway().getOrConnectDriver(deviceId);
+
+    if (type === "list") {
+      const showHidden = request.nextUrl.searchParams.get("hidden") === "1";
+      const entries = await listRemoteDirectory(driver, filePath, { showHidden });
+      return NextResponse.json({ entries, path: filePath });
+    }
+
+    const stat = await statRemotePath(driver, filePath);
+
+    if (type === "read") {
+      if (!stat || stat.isDirectory) {
+        return NextResponse.json({ error: "Not a file" }, { status: 400 });
+      }
+      // Media is streamed as bytes, exactly like the local branch: the viewer
+      // points an <img>/<video> at this URL, so JSON would render nothing.
+      const imageMime = getImageMime(filePath);
+      if (imageMime) {
+        if (stat.size > IMAGE_PREVIEW_MAX_BYTES) {
+          return NextResponse.json({ error: "Image too large (>10MB)" }, { status: 413 });
+        }
+        return streamRemoteFile(driver, filePath, imageMime);
+      }
+      const mediaMime = getAudioMime(filePath) || getVideoMime(filePath) || getDocumentMime(filePath);
+      if (mediaMime) {
+        return streamRemoteFile(driver, filePath, mediaMime);
+      }
+      const rawOffset = request.nextUrl.searchParams.get("offset");
+      if (rawOffset !== null && !/^\d+$/.test(rawOffset)) {
+        return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
+      }
+      const offset = Number(rawOffset ?? 0);
+      if (!Number.isSafeInteger(offset) || offset > stat.size) {
+        return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
+      }
+      const length = Math.min(TEXT_PREVIEW_MAX_BYTES + 1, stat.size - offset);
+      const buffer = await readRemoteSlice(driver, filePath, offset, length);
+      const chunk = chunkFromBuffer(buffer, buffer.length, stat.size, offset);
+      return NextResponse.json({ ...chunk, language: getLanguage(filePath), size: stat.size });
+    }
+
+    if (type === "download") {
+      if (!stat || stat.isDirectory) {
+        return NextResponse.json({ error: "Not a file" }, { status: 400 });
+      }
+      const mime = getImageMime(filePath) || getAudioMime(filePath) || getVideoMime(filePath)
+        || getDocumentMime(filePath) || "application/octet-stream";
+      return streamRemoteFile(driver, filePath, mime, true);
+    }
+
+    if (type === "meta") {
+      if (!stat || stat.isDirectory) {
+        return NextResponse.json({ error: "Not a file" }, { status: 400 });
+      }
+      return NextResponse.json({
+        size: stat.size,
+        language: getLanguage(filePath),
+        mime: getImageMime(filePath) || getAudioMime(filePath) || getVideoMime(filePath)
+          || getDocumentMime(filePath) || "text/plain",
+        previewKind: documentPreviewKind(filePath),
+      });
+    }
+
+    if (type === "preview") {
+      if (!stat || stat.isDirectory) {
+        return NextResponse.json({ error: "Not a file" }, { status: 400 });
+      }
+      if (getFileExt(filePath) !== "docx") {
+        return NextResponse.json({ error: "Preview not available for this file type" }, { status: 400 });
+      }
+      if (stat.size > DOCX_PREVIEW_MAX_BYTES) {
+        return NextResponse.json({ error: "DOCX too large for preview (>10MB)" }, { status: 413 });
+      }
+      // mammoth needs the bytes in memory; the local branch hands it a path.
+      const bytes = await readRemoteBuffer(driver, filePath);
+      const mammoth = await import("mammoth");
+      const result = await mammoth.convertToHtml(
+        { buffer: bytes },
+        { externalFileAccess: false, convertImage: mammoth.images.dataUri },
+      );
+      const html = wrapDocxPreviewHtml(result.value, path.basename(filePath));
+      return new Response(html, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
+
+    // type === "watch": the local branch uses fs.watch, which cannot see a
+    // device. Poll the device's mtime instead and emit the same SSE events.
+    if (!stat || stat.isDirectory) {
+      return NextResponse.json({ error: "Not a file" }, { status: 400 });
+    }
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        let lastMtime = stat.mtimeMs;
+        let lastSize = stat.size;
+        const send = (eventName: string, data: Record<string, unknown>) => {
+          try {
+            controller.enqueue(encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            // client disconnected
+          }
+        };
+        send("connected", { path: filePath, size: lastSize });
+        let polling = false;
+        timer = setInterval(() => {
+          if (polling) return;
+          polling = true;
+          void statRemotePath(driver, filePath)
+            .then((next) => {
+              if (!next) {
+                send("deleted", { path: filePath });
+                return;
+              }
+              if (next.mtimeMs === lastMtime && next.size === lastSize) return;
+              lastMtime = next.mtimeMs;
+              lastSize = next.size;
+              send("change", { size: next.size, mtime: next.mtimeMs });
+            })
+            .catch(() => { /* device hiccup: try again on the next tick */ })
+            .finally(() => { polling = false; });
+        }, REMOTE_WATCH_INTERVAL_MS);
+      },
+      cancel() {
+        if (timer) clearInterval(timer);
+        timer = null;
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
+  }
+}
+
+/** Device bytes as a response body; the whole file is fetched once over SFTP. */
+async function streamRemoteFile(
+  driver: IHostDriver,
+  filePath: string,
+  mime: string,
+  asAttachment = false,
+): Promise<Response> {
+  const bytes = await readRemoteBuffer(driver, filePath);
+  const headers: Record<string, string> = {
+    "Content-Type": mime,
+    "Content-Length": String(bytes.length),
+    "Cache-Control": "no-cache",
+  };
+  if (asAttachment) {
+    headers["Content-Disposition"] = `attachment; filename="${path.basename(filePath)}"`;
+  }
+  return new Response(new Uint8Array(bytes), { headers });
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path?: string[] }> }
@@ -470,53 +783,7 @@ export async function GET(
 
     const deviceId = request.nextUrl.searchParams.get("deviceId") || request.headers.get("x-device-id");
     if (deviceId && deviceId !== "localhost") {
-      try {
-        const { getGateway } = await import("@/lib/gateway/singleton");
-        const driver = await getGateway().getOrConnectDriver(deviceId);
-        const targetPath = filePath || "/";
-        if (type === "list") {
-          const entries = await driver.readDir(targetPath);
-          return NextResponse.json({
-            entries: entries.map((e) => ({
-              name: e.name,
-              isDir: e.isDirectory,
-              size: e.size,
-            })),
-          });
-        }
-        if (type === "read") {
-          const buf = await driver.readFile(targetPath);
-          const text = buf.toString("utf8");
-          const language = getLanguage(targetPath);
-          return NextResponse.json({
-            text,
-            truncated: false,
-            language,
-            size: buf.length,
-          });
-        }
-        if (type === "download") {
-          const buf = await driver.readFile(targetPath);
-          return new Response(new Uint8Array(buf), {
-            headers: {
-              "Content-Type": "application/octet-stream",
-              "Content-Disposition": `attachment; filename="${path.basename(targetPath)}"`,
-              "Content-Length": String(buf.length),
-            },
-          });
-        }
-        if (type === "meta") {
-          const stat = await driver.stat(targetPath);
-          return NextResponse.json({
-            isDir: stat.isDirectory,
-            size: stat.size,
-            mtime: stat.mtime,
-          });
-        }
-        return NextResponse.json({ error: `Operation ${type} not supported on remote device` }, { status: 400 });
-      } catch (e: any) {
-        return NextResponse.json({ error: e.message || String(e) }, { status: 500 });
-      }
+      return await handleRemoteFileRequest(request, { deviceId, filePath: filePath || "/", type });
     }
 
     const sessionId = request.nextUrl.searchParams.get("sessionId");
@@ -764,8 +1031,14 @@ export async function PUT(
     const content = await request.text();
 
     if (deviceId && deviceId !== "localhost") {
+      // A remote save must not silently create the file in a local directory.
       const { getGateway } = await import("@/lib/gateway/singleton");
       const driver = await getGateway().getOrConnectDriver(deviceId);
+      const parent = filePath.slice(0, filePath.lastIndexOf("/")) || "/";
+      const exists = await statRemotePath(driver, parent);
+      if (!exists || !exists.isDirectory) {
+        return NextResponse.json({ error: "Directory does not exist" }, { status: 400 });
+      }
       await driver.writeFile(filePath, content);
       return NextResponse.json({ success: true, size: Buffer.byteLength(content) });
     }

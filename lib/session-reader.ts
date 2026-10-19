@@ -16,6 +16,7 @@ import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-res
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { checkSessionMembership, listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
+import { withDeviceId } from "@/lib/device-context";
 
 export { getAgentDir };
 
@@ -707,6 +708,12 @@ export interface BuildSessionContextOptions {
   excludeLeaf?: boolean;
   /** Session id used to build lazy URLs for historical tool-result images. */
   sessionId?: string;
+  /**
+   * Device the transcript lives on. Deferred image URLs are fetched by the
+   * browser long after this response, so the device has to be baked into the
+   * URL here — the fetch has no other way to know it.
+   */
+  deviceId?: string;
 }
 
 export function buildSessionContext(
@@ -870,6 +877,7 @@ function deferToolResultBase64Images(
   message: AgentMessage,
   sessionId: string | undefined,
   entryId: string,
+  deviceId?: string,
 ): AgentMessage {
   if (message.role !== "toolResult") return message;
 
@@ -892,7 +900,10 @@ function deferToolResultBase64Images(
       const source: ImageContent["source"] = {
         type: "url",
         media_type: image.mime,
-        url: `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/tool-result-image?blockIndex=${blockIndex}`,
+        url: withDeviceId(
+          `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/tool-result-image?blockIndex=${blockIndex}`,
+          deviceId,
+        ),
       };
       return [{ type: "image", source } satisfies ImageContent];
     }
@@ -931,7 +942,7 @@ function entryToUiMessage(
       if (entry.message.role === "system") return null;
       const displayMessage = withoutMessageSignatures(entry.message);
       let message = options.deferToolResultImages
-        ? deferToolResultBase64Images(normalizeToolCalls(displayMessage), options.sessionId, entry.id)
+        ? deferToolResultBase64Images(normalizeToolCalls(displayMessage), options.sessionId, entry.id, options.deviceId)
         : normalizeToolCalls(displayMessage);
       const legacyContent = message.role === "assistant" ? (message as { content: unknown }).content : undefined;
       if (typeof legacyContent === "string") {

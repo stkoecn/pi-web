@@ -226,13 +226,17 @@ export class SSHHostDriver implements IHostDriver {
     });
   }
 
-  async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult> {
+  async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<ExecResult> {
     if (!this.alive) throw new Error(`Device ${this.deviceId} is not connected`);
 
     const command = [cmd, ...args.map(a => `"${a.replace(/"/g, '\\"')}"`)].join(' ');
 
     try {
-      const result = await this.getShellPool().exec(command, { cwd: opts?.cwd, env: opts?.env });
+      const result = await this.getShellPool().exec(command, {
+        cwd: opts?.cwd,
+        env: opts?.env,
+        ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+      });
       return result;
     } catch (error) {
       // The shell channel can die (remote sshd restart, network blip). Fall back

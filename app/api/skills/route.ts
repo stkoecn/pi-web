@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import path from "path";
@@ -16,6 +17,17 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const cwd = searchParams.get("cwd");
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // Skills are loaded from the device's own ~/.pi/agent and project dirs.
+    try {
+      const { readRemoteSkills } = await import("@/lib/remote-settings");
+      const target = cwd || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
+      return NextResponse.json(await readRemoteSkills(deviceId, target));
+    } catch (e) {
+      return NextResponse.json({ error: String(e) }, { status: 500 });
+    }
+  }
   if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
 
   try {

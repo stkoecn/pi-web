@@ -570,8 +570,11 @@ export function PluginsConfig({
   onReloaded,
   embedded = false,
   trust,
+  deviceId = "localhost",
 }: {
   cwd: string;
+  /** Gateway device whose configured packages are listed. */
+  deviceId?: string;
   sessionId: string | null;
   onClose: () => void;
   onReloaded?: () => void;
@@ -615,7 +618,9 @@ export function PluginsConfig({
     setError(null);
     setGroupStatus(null);
     try {
-      const res = await fetch(`/api/plugins?cwd=${encodeURIComponent(cwd)}`);
+      const pluginsUrl = new URLSearchParams({ cwd });
+      if (deviceId && deviceId !== "localhost") pluginsUrl.set("deviceId", deviceId);
+      const res = await fetch(`/api/plugins?${pluginsUrl.toString()}`);
       const next = (await res.json()) as PluginsResponse & { error?: string };
       if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
       setData(next);

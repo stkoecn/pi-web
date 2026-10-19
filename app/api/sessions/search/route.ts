@@ -11,11 +11,26 @@ export async function GET(request: Request) {
   if (query.length > 200) {
     return NextResponse.json({ error: "Search query exceeds 200 characters" }, { status: 400, headers });
   }
-  // Content search reads transcript bytes off this host. For a remote device the
-  // only correct answer available today is "nothing found": searching the local
-  // catalogue would surface unrelated localhost sessions.
-  if (isRemoteDevice(getRequestDeviceId(request))) {
-    return NextResponse.json({ results: [], truncated: false } satisfies SessionSearchResponse, { headers });
+  // Content search reads transcript bytes off this host, so a remote device is
+  // searched by its own grep rather than by scanning the local catalogue.
+  const deviceId = getRequestDeviceId(request);
+  if (isRemoteDevice(deviceId)) {
+    if (!query) return NextResponse.json({ results: [], truncated: false } satisfies SessionSearchResponse, { headers });
+    try {
+      const [{ getGateway }, { listRemoteSessions }, { searchRemoteSessionContents }] = await Promise.all([
+        import("@/lib/gateway/singleton"),
+        import("@/lib/remote-session-store"),
+        import("@/lib/session-search"),
+      ]);
+      const driver = await getGateway().getOrConnectDriver(deviceId);
+      const sessions = await listRemoteSessions(deviceId);
+      return NextResponse.json(
+        await searchRemoteSessionContents(driver, sessions, query, request.signal),
+        { headers },
+      );
+    } catch (error) {
+      return NextResponse.json({ error: String(error) }, { status: 500, headers });
+    }
   }
   try {
     // Paths come only from the same catalog used by the sidebar. `allowStale`

@@ -58,6 +58,7 @@ import { providerBadgeLabel } from "./enabled-models-helpers";
 import { OAuthPastePanel } from "./OAuthPastePanel";
 import { ProviderIcon } from "./ProviderIcon";
 import { ProviderUsageSummary } from "./ProviderUsageSummary";
+import { withDeviceId } from "@/lib/device-context";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1858,13 +1859,15 @@ function AddProviderPicker({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
+export function ModelsConfig({ onClose, embedded = false, cwd = null, deviceId = "localhost" }: {
   onClose: () => void; embedded?: boolean; cwd?: string | null;
+  /** Gateway device whose models.json / settings.json are edited. */
+  deviceId?: string;
 }) {
   const { t } = useI18n();
   // `enabledModels` lives in pi's settings, not models.json, so these switches
   // apply immediately instead of waiting for this panel's Save button.
-  const enabledModels = useEnabledModels(cwd);
+  const enabledModels = useEnabledModels(cwd, deviceId);
   const [config, setConfig] = useState<ModelsJson>({ providers: {} });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1906,7 +1909,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
   }, []);
 
   useEffect(() => {
-    fetch("/api/models-config")
+    fetch(withDeviceId("/api/models-config", deviceId))
       .then(async (r) => {
         const d = await r.json() as ModelsJson & { error?: string };
         if (!r.ok || d.error) throw new Error(d.error ?? `HTTP ${r.status}`);
@@ -1927,7 +1930,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
       .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
     refreshAuthProviders();
-  }, [refreshAuthProviders]);
+  }, [deviceId, refreshAuthProviders]);
 
   useEffect(() => {
     if (selection) setLastSettingsSelection("models", JSON.stringify(selection));
@@ -2087,7 +2090,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
     }
     try {
       draft = normalizeContextWindowOverrides(draft);
-      const res = await fetch("/api/models-config", {
+      const res = await fetch(withDeviceId("/api/models-config", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draft),

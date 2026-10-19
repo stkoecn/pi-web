@@ -18,6 +18,8 @@ import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thin
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
+import { withDeviceId } from "@/lib/device-context";
+import { useClientDeviceId } from "./DeviceIdContext";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
 import { CODEMODE_TOOL_NAME, codemodeCalls, codemodeScript, codemodeScriptPreview, stripCodemodeHeader } from "@/lib/codemode-view";
 import { CodemodeCallList } from "./CodemodeToolView";
@@ -159,8 +161,15 @@ function SafeMarkdownBody({ children, className, ...props }: React.ComponentProp
 // push the conversation off screen; overflow scrolls inside the bubble.
 const USER_BUBBLE_MAX_HEIGHT = 300;
 
-function loadThinkingContent(sessionId: string, entryId: string, blockIndex: number): Promise<string> {
-  const key = `${sessionId}:${entryId}:${blockIndex}`;
+function loadThinkingContent(
+  sessionId: string,
+  entryId: string,
+  blockIndex: number,
+  deviceId: string,
+): Promise<string> {
+  // The device is part of the key: two devices may hold a session with the same
+  // id, and a deferred thinking block is read from whichever one is showing.
+  const key = `${deviceId}:${sessionId}:${entryId}:${blockIndex}`;
   const cached = thinkingContentCache.get(key);
   if (cached) {
     thinkingContentCache.delete(key);
@@ -169,7 +178,10 @@ function loadThinkingContent(sessionId: string, entryId: string, blockIndex: num
   }
 
   const request = fetch(
-    `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/thinking?blockIndex=${blockIndex}`,
+    withDeviceId(
+      `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/thinking?blockIndex=${blockIndex}`,
+      deviceId,
+    ),
   ).then(async (response) => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json() as { thinking?: unknown };
@@ -1037,7 +1049,8 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
   const [error, setError] = useState<string | null>(null);
   // The block outlives a change of entry id (a message of this run gets its id
   // when the file is read again, #1184): what was loaded for another entry goes.
-  const loadKey = `${sessionId}:${entryId}:${blockIndex}`;
+  const deviceId = useClientDeviceId();
+  const loadKey = `${deviceId}:${sessionId}:${entryId}:${blockIndex}`;
   const [loadedKey, setLoadedKey] = useState(loadKey);
   if (loadedKey !== loadKey) {
     setLoadedKey(loadKey);
@@ -1069,7 +1082,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
     let cancelled = false;
     setLoading(true);
     setError(null);
-    loadThinkingContent(sessionId, entryId, blockIndex)
+    loadThinkingContent(sessionId, entryId, blockIndex, deviceId)
       .then((value) => {
         if (!cancelled) {
           setContent(value);
@@ -1085,7 +1098,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
     return () => {
       cancelled = true;
     };
-  }, [expanded, block.deferred, content, sessionId, entryId, blockIndex]);
+  }, [expanded, block.deferred, content, sessionId, entryId, blockIndex, deviceId]);
 
   return (
     <div style={{
@@ -2105,8 +2118,12 @@ function BashExecutionView({ message, sessionId }: { message: BashExecutionMessa
 
   const isPending = !message.output && message.exitCode === undefined && !message.cancelled;
   const isError = message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0);
+  const deviceId = useClientDeviceId();
   const fullOutputUrl = sessionId && message.fullOutputPath
-    ? `/api/agent/${encodeURIComponent(sessionId)}/bash-output?path=${encodeURIComponent(message.fullOutputPath)}`
+    ? withDeviceId(
+        `/api/agent/${encodeURIComponent(sessionId)}/bash-output?path=${encodeURIComponent(message.fullOutputPath)}`,
+        deviceId,
+      )
     : null;
   const showFullButton = message.truncated && fullOutputUrl && fullOutput === null;
   const displayOutput = fullOutput ?? message.output;

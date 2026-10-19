@@ -51,7 +51,7 @@ export interface IHostDriver {
   stat(targetPath: string): Promise<FileEntry>;
 
   // 3. Execution (Git, utilities, tools)
-  exec(cmd: string, args?: string[], opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult>;
+  exec(cmd: string, args?: string[], opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<ExecResult>;
 
   // 4. Remote Pi Agent RPC channel (pi --mode rpc)
   spawnPiRpc(opts?: {

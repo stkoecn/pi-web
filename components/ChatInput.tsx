@@ -32,6 +32,7 @@ import { useEnterSendMode } from "@/hooks/useEnterSendMode";
 import { useI18n } from "@/hooks/useI18n";
 import { useChatAppearance } from "@/hooks/useChatAppearance";
 import { useFontPreferences } from "@/hooks/useFontPreferences";
+import { withDeviceId } from "@/lib/device-context";
 import type { ToolPreset } from "@/lib/tool-presets";
 import { SelectorRow } from "./SelectorRow";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
@@ -98,6 +99,8 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  /** Gateway device the cwd lives on; the @ menu lists that device's files. */
+  deviceId?: string;
   /** Files picked with the attach button, handled like files dropped onto the chat. Without it the button takes images only. */
   onAttachFiles?: (files: File[]) => void;
 }
@@ -661,6 +664,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  deviceId = "localhost",
   onAttachFiles,
   compact = false,
 }: Props, ref) {
@@ -1148,7 +1152,10 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     const fetchCwd = cwd;
     const query = atQueryText;
     const timer = setTimeout(() => {
-      fetch(`/api/file-index?cwd=${encodeURIComponent(fetchCwd)}&q=${encodeURIComponent(query)}`)
+      fetch(withDeviceId(
+        `/api/file-index?cwd=${encodeURIComponent(fetchCwd)}&q=${encodeURIComponent(query)}`,
+        deviceId,
+      ))
         .then((res) => {
           if (!res.ok) throw new Error(`file search failed: ${res.status}`);
           return res.json() as Promise<{ matches?: FileIndexEntry[] }>;
@@ -1159,7 +1166,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         });
     }, 150);
     return () => clearTimeout(timer);
-  }, [needsServerSearch, atQueryText, cwd]);
+  }, [needsServerSearch, atQueryText, cwd, deviceId]);
 
   const serverResultInUse = needsServerSearch
     && atServerResult !== null
@@ -1191,7 +1198,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     fileIndexFetchingRef.current = cwd;
     const fetchCwd = cwd;
     setFileIndexLoading(true);
-    fetch(`/api/file-index?cwd=${encodeURIComponent(fetchCwd)}`)
+    fetch(withDeviceId(`/api/file-index?cwd=${encodeURIComponent(fetchCwd)}`, deviceId))
       .then((res) => {
         if (!res.ok) throw new Error(`file index failed: ${res.status}`);
         return res.json() as Promise<{ files?: string[]; truncated?: boolean }>;
@@ -1208,7 +1215,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         fileIndexFetchingRef.current = null;
         setFileIndexLoading(false);
       });
-  }, [atTokenActive, cwd]);
+  }, [atTokenActive, cwd, deviceId]);
 
   const applyAtCompletion = useCallback((entry: FileIndexEntry) => {
     if (!atQuery) return;
@@ -1579,7 +1586,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     const requestCwd = cwd;
     let cancelled = false;
     setSkillDormancyState({ cwd: requestCwd, values: {} });
-    fetch(`/api/skills?cwd=${encodeURIComponent(requestCwd)}`)
+    fetch(withDeviceId(`/api/skills?cwd=${encodeURIComponent(requestCwd)}`, deviceId))
       .then((res) => {
         if (!res.ok) throw new Error(`skills fetch failed: ${res.status}`);
         return res.json() as Promise<Partial<SkillsResponse>>;
@@ -1596,7 +1603,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     return () => {
       cancelled = true;
     };
-  }, [slashMenuOpen, cwd]);
+  }, [slashMenuOpen, cwd, deviceId]);
 
   useEffect(() => {
     if (slashActiveIndex >= displayedSlashCommands.length) {

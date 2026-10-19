@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import {
   readSubagentSettings,
@@ -9,7 +10,21 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: Request) {
+  // The switch lives in the device's own agent directory, so a remote read must
+  // come from that host rather than from this process's settings file.
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    try {
+      const { readRemoteSubagentSettings } = await import("@/lib/remote-settings");
+      return NextResponse.json(await readRemoteSubagentSettings(deviceId));
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
   try {
     const settings = readSubagentSettings();
     return NextResponse.json({ enabled: settings.builtInEnabled, maxConcurrent: settings.maxConcurrent });

@@ -833,14 +833,20 @@ function isMcpResponse(value: unknown): value is McpResponse {
 }
 
 /** The URL of the overview: the global file alone without a project. */
-export function mcpOverviewUrl(cwd: string | null): string {
-  return cwd ? `/api/mcp?cwd=${encodeURIComponent(cwd)}` : "/api/mcp";
+export function mcpOverviewUrl(cwd: string | null, deviceId?: string): string {
+  const params = new URLSearchParams();
+  if (cwd) params.set("cwd", cwd);
+  // A remote device's servers are its own; without this the panel describes
+  // this host's mcp.json.
+  if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
+  const query = params.toString();
+  return query ? `/api/mcp?${query}` : "/api/mcp";
 }
 
-async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, signal?: AbortSignal): Promise<McpLoadResult> {
+async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, signal?: AbortSignal, deviceId?: string): Promise<McpLoadResult> {
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await fetchImpl(mcpOverviewUrl(cwd), { cache: "no-store", signal });
+    response = await fetchImpl(mcpOverviewUrl(cwd, deviceId), { cache: "no-store", signal });
   } catch (error) {
     return { ok: false, error: { error: error instanceof Error ? error.message : String(error) } };
   }
@@ -856,10 +862,10 @@ async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, sign
 
 const CWD_REFUSALS = new Set<McpRefusalReason>(["cwd-invalid", "cwd-denied", "cwd-not-directory"]);
 
-async function loadWithin(cwd: string | null, fetchImpl: FetchLike, signal: AbortSignal): Promise<McpLoadResult> {
-  const first = await requestMcpOverview(cwd, fetchImpl, signal);
+async function loadWithin(cwd: string | null, fetchImpl: FetchLike, signal: AbortSignal, deviceId?: string): Promise<McpLoadResult> {
+  const first = await requestMcpOverview(cwd, fetchImpl, signal, deviceId);
   if (first.ok || !cwd || !first.error.reason || !CWD_REFUSALS.has(first.error.reason)) return first;
-  const global = await requestMcpOverview(null, fetchImpl, signal);
+  const global = await requestMcpOverview(null, fetchImpl, signal, deviceId);
   return global.ok ? { ...global, projectError: first.error } : global;
 }
 
@@ -876,9 +882,10 @@ export async function loadMcpOverview(
   fetchImpl: FetchLike = (input, init) => fetch(input, init),
   signal?: AbortSignal,
   timeoutMs: number = MCP_OVERVIEW_TIMEOUT_MS,
+  deviceId?: string,
 ): Promise<McpLoadResult> {
   return withinDeadline<McpLoadResult>(
-    (deadlineSignal) => loadWithin(cwd, fetchImpl, deadlineSignal),
+    (deadlineSignal) => loadWithin(cwd, fetchImpl, deadlineSignal, deviceId),
     () => ({ ok: false, error: { error: `GET /api/mcp did not answer within ${timeoutMs} ms`, timedOut: true } }),
     timeoutMs,
     signal,

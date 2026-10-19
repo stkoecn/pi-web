@@ -33,7 +33,11 @@ export async function POST(req: Request) {
         if (!stat.isDirectory) {
           return NextResponse.json({ error: `Path is not a directory: ${cwd}` }, { status: 400 });
         }
+        // `cwd` is what the client reads back and applies; without it the
+        // picker reported `HTTP 200` and kept the previous (local) path.
         return NextResponse.json({
+          success: true,
+          cwd,
           normalized: cwd,
           projectRoot: cwd,
           projectKey: `device:${deviceId}:${cwd}`,

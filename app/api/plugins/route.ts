@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { existsSync, readFileSync, statSync } from "fs";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import {
@@ -406,6 +407,17 @@ function readScope(scope: unknown): PluginScope {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const cwd = searchParams.get("cwd");
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // Configured packages live in the device's settings.json, not this host's.
+    try {
+      const { readRemotePlugins } = await import("@/lib/remote-settings");
+      const target = cwd || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
+      return NextResponse.json(await readRemotePlugins(deviceId, target));
+    } catch (error) {
+      return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
+  }
   if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
 
   try {
@@ -428,6 +440,10 @@ export async function POST(req: Request) {
   }
   if (!hasJsonContentType(req)) {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
+  // Installing into a device's own pi install is not implemented yet.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
   }
 
   try {

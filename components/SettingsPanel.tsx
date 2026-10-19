@@ -50,6 +50,8 @@ interface Props {
   onOpenTrustDialog?: () => void;
   /** Settings › MCP added a project server, which changed `cwd`'s trust (and may have trusted a fresh folder). */
   onProjectTrustChanged?: (cwd: string, status: ProjectTrustStatus) => void;
+  /** Gateway device whose settings are shown; "localhost" (or unset) means this host. */
+  deviceId?: string;
 }
 
 export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: { section: SettingsSection; size?: number; strokeWidth?: number }) {
@@ -513,6 +515,7 @@ export function SettingsPanel({
   projectTrust,
   onOpenTrustDialog,
   onProjectTrustChanged,
+  deviceId = "localhost",
 }: Props) {
   const { t } = useI18n();
   const [section, setSection] = useState<SettingsSection>(initialSection);
@@ -619,14 +622,14 @@ export function SettingsPanel({
 
         <main className="settings-dialog-main">
           {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
-          {sectionHost("models", <ModelsConfig embedded cwd={cwd} onClose={onClose} />)}
+          {sectionHost("models", <ModelsConfig embedded cwd={cwd} deviceId={deviceId} onClose={onClose} />)}
           {/* Visited sections stay mounted, so the ones whose answer depends on trust take the page's
               status and load again in place when trusting from Settings › MCP changes it. */}
-          {cwd && sectionHost("skills", <SkillsConfig embedded key={cwd} cwd={cwd} trust={projectTrust} onClose={onClose} />)}
-          {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} sessionId={sessionId} trust={projectTrust} onClose={onClose} onReloaded={onSessionReloaded} />)}
-          {cwd && sectionHost("plugins", <PluginsConfig embedded key={cwd} cwd={cwd} sessionId={sessionId} trust={projectTrust} onClose={onClose} onReloaded={onSessionReloaded} />)}
+          {cwd && sectionHost("skills", <SkillsConfig embedded key={cwd} cwd={cwd} deviceId={deviceId} trust={projectTrust} onClose={onClose} />)}
+          {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} deviceId={deviceId} sessionId={sessionId} trust={projectTrust} onClose={onClose} onReloaded={onSessionReloaded} />)}
+          {cwd && sectionHost("plugins", <PluginsConfig embedded key={cwd} cwd={cwd} deviceId={deviceId} sessionId={sessionId} trust={projectTrust} onClose={onClose} onReloaded={onSessionReloaded} />)}
           {/* No project needed: the global mcp.json is listed alone, and a project adds its group. */}
-          {sectionHost("mcp", <McpConfig embedded key={cwd ?? ""} cwd={cwd} trust={projectTrust} onTrustProject={onOpenTrustDialog} onProjectTrustChanged={onProjectTrustChanged} onClose={onClose} />)}
+          {sectionHost("mcp", <McpConfig embedded key={cwd ?? ""} cwd={cwd} deviceId={deviceId} trust={projectTrust} onTrustProject={onOpenTrustDialog} onProjectTrustChanged={onProjectTrustChanged} onClose={onClose} />)}
         </main>
       </div>
     </div>

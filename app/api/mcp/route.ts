@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { getAgentDir, type McpExposure } from "@earendil-works/pi-coding-agent";
 import type {
   McpActionItemResult,
@@ -110,6 +111,21 @@ async function validateProject(value: unknown): Promise<Project | Refusal> {
 
 // GET /api/mcp?cwd=<absolute project folder>
 export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // The servers a remote device runs are the device's own: read them from
+    // there instead of describing this machine's mcp.json.
+    const value = new URL(req.url).searchParams.get("cwd");
+    try {
+      const { readRemoteMcpOverview } = await import("@/lib/remote-settings");
+      const cwd = value || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
+      void cwd;
+      return NextResponse.json(await readRemoteMcpOverview(deviceId));
+    } catch (error) {
+      return refusal(500, "internal", errorMessage(error));
+    }
+  }
+
   const value = new URL(req.url).searchParams.get("cwd");
   let project: Project | undefined;
   if (value !== null) {
@@ -590,6 +606,10 @@ async function addServer(
 // `cwd` is the panel's project: required for a project server, and the
 // overview in the answer covers it.
 export async function POST(req: Request) {
+  // Every action here writes the device's own mcp.json / settings.json.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return refusal(501, "remote-unsupported", "Not supported on remote devices yet");
+  }
   if (!isApiRequestAllowed(req)) return refusal(403, "request-denied", "Untrusted API request");
   if (!hasJsonContentType(req)) return refusal(415, "content-type", "Content-Type must be application/json");
   let body: unknown;

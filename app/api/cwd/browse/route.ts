@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stat } from "fs/promises";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { deviceHomeOrDefault } from "@/lib/device-home";
+import { listRemoteDirectory } from "@/lib/remote-files";
 import {
   createDirectory,
   getBrowseStartDirectory,
@@ -12,9 +15,50 @@ import {
 } from "@/lib/directory-browser";
 
 // GET /api/cwd/browse?path=...：列出文件系统中的可读子目录。
+/**
+ * Remote browse: the picker must walk the *device's* filesystem, so this goes
+ * through the gateway instead of fs/promises. Parent paths are derived with
+ * POSIX semantics because every gateway device is Unix-like.
+ */
+async function browseRemote(deviceId: string, requested: string | undefined): Promise<NextResponse> {
+  const { getGateway } = await import("@/lib/gateway/singleton");
+  const driver = await getGateway().getOrConnectDriver(deviceId);
+  const home = await deviceHomeOrDefault(deviceId);
+
+  let target = requested?.trim() || home;
+  if (target === "~") target = home;
+  else if (target.startsWith("~/")) target = `${home}/${target.slice(2)}`;
+  if (!target.startsWith("/")) target = `${home}/${target}`.replace(/\/{2,}/g, "/");
+
+  // `listRemoteDirectory` answers existence, type, names and sizes in ONE shell
+  // round trip; `driver.stat` + `driver.readDir` were two SFTP round trips and
+  // measured 3.9 s on the 257 ms link for a directory of the same size.
+  let entries;
+  try {
+    entries = await listRemoteDirectory(driver, target);
+  } catch {
+    return NextResponse.json({ error: "Directory does not exist" }, { status: 404 });
+  }
+
+  const directories = entries
+    .filter((entry) => entry.isDir)
+    .map((entry) => ({
+      name: entry.name,
+      path: target === "/" ? `/${entry.name}` : `${target}/${entry.name}`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const parentPath = target === "/" ? null : target.slice(0, target.lastIndexOf("/")) || "/";
+  return NextResponse.json({ path: target, parentPath, directories });
+}
+
 export async function GET(request: NextRequest) {
   try {
     const requested = request.nextUrl.searchParams.get("path")?.trim();
+    const deviceId = getRequestDeviceId(request);
+    if (isRemoteDevice(deviceId)) {
+      return await browseRemote(deviceId, requested);
+    }
 
     if (shouldShowWindowsDrivePicker(requested)) {
       return NextResponse.json({
@@ -62,15 +106,36 @@ export async function POST(request: Request) {
   }
 
   try {
-    const body = await request.json() as { path?: unknown; name?: unknown };
+    const body = await request.json() as { path?: unknown; name?: unknown; deviceId?: unknown };
     const parentPath = typeof body.path === "string" ? body.path.trim() : "";
     const name = typeof body.name === "string" ? body.name.trim() : "";
+    const bodyDeviceId = typeof body.deviceId === "string" ? body.deviceId.trim() : "";
+    const deviceId = isRemoteDevice(bodyDeviceId) ? bodyDeviceId : getRequestDeviceId(request);
 
     if (!parentPath) {
       return NextResponse.json({ error: "Parent path is required" }, { status: 400 });
     }
     if (!name) {
       return NextResponse.json({ error: "Directory name is required" }, { status: 400 });
+    }
+
+    if (isRemoteDevice(deviceId)) {
+      // mkdir over the gateway: the directory must appear on the device, not here.
+      if (!name || name === "." || name === ".." || /[\/]/.test(name)) {
+        return NextResponse.json({ error: "Directory name must be a single folder name" }, { status: 400 });
+      }
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const driver = await getGateway().getOrConnectDriver(deviceId);
+      const parentStat = await driver.stat(parentPath).catch(() => null);
+      if (!parentStat?.isDirectory) {
+        return NextResponse.json({ error: "Parent path is not a directory" }, { status: 400 });
+      }
+      const createdPath = parentPath === "/" ? `/${name}` : `${parentPath}/${name}`;
+      const res = await driver.exec(`mkdir -p -- ${JSON.stringify(createdPath)}`);
+      if (res.exitCode !== 0) {
+        return NextResponse.json({ error: res.stderr.trim() || "Failed to create directory" }, { status: 500 });
+      }
+      return NextResponse.json({ success: true, path: createdPath });
     }
 
     const createdPath = await createDirectory(parentPath, name);

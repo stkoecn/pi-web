@@ -769,7 +769,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
       return;
     }
     try {
-      const { status, data } = await uploadFiles(cwd, files, "skip");
+      const { status, data } = await uploadFiles(cwd, files, "skip", undefined, deviceId);
       if (status !== 200 && status !== 207) throw new Error(data.error ?? `HTTP ${status}`);
       const uploaded = data.uploaded ?? [];
       const skipped = data.skipped ?? [];
@@ -788,7 +788,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
     } catch (uploadError) {
       addNotice({ type: "error", message: t("chat.dropFailed", { message: uploadError instanceof Error ? uploadError.message : String(uploadError) }) });
     }
-  }, [addNotice, chatInputRef, newSessionCwd, onFilesUploaded, session?.cwd, t]);
+  }, [addNotice, chatInputRef, deviceId, newSessionCwd, onFilesUploaded, session?.cwd, t]);
 
   const onDrop = useCallback((items: DroppedItem[]) => {
     const { images, files, folders } = splitDroppedItems(items);

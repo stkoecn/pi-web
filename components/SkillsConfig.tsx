@@ -628,12 +628,15 @@ export function SkillsConfig({
   onClose,
   embedded = false,
   trust,
+  deviceId = "localhost",
 }: {
   cwd: string;
   onClose: () => void;
   embedded?: boolean;
   /** The page's trust status for `cwd`; a new decision loads the list again. */
   trust?: ProjectTrustStatus | null;
+  /** Gateway device whose skills are listed; "localhost" means this host. */
+  deviceId?: string;
 }) {
   const { t } = useI18n();
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -657,7 +660,9 @@ export function SkillsConfig({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/skills?cwd=${encodeURIComponent(cwd)}`);
+      const skillsUrl = new URLSearchParams({ cwd });
+      if (deviceId && deviceId !== "localhost") skillsUrl.set("deviceId", deviceId);
+      const res = await fetch(`/api/skills?${skillsUrl.toString()}`);
       const d = (await res.json()) as Partial<SkillsResponse> & { error?: string };
       if (!res.ok || d.error) throw new Error(d.error ?? `HTTP ${res.status}`);
       const list = d.skills ?? [];

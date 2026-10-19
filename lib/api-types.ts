@@ -598,6 +598,8 @@ export type McpRefusalReason =
   | "invalid-request"
   /** MCP is off on this server (`PI_WEB_DISABLE_MCP`, or the SDK's MCP modules cannot load), so Pi Web neither writes `mcp.json` nor connects a server. */
   | "mcp-off"
+  /** The target is a gateway device: its own `mcp.json`/`settings.json` are not written over the gateway yet. */
+  | "remote-unsupported"
   /** A project entry, and no decision trusts the project, so its `.pi/mcp.json` is neither written nor connected. */
   | "project-untrusted"
   /** The file to write is not JSON; it was left as it is (`path`). */

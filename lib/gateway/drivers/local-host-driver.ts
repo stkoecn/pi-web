@@ -114,7 +114,7 @@ export class LocalHostDriver implements IHostDriver {
     };
   }
 
-  async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult> {
+  async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<ExecResult> {
     try {
       const { stdout, stderr } = await execFileAsync(cmd, args, {
         cwd: opts?.cwd || process.cwd(),

@@ -129,6 +129,9 @@ export async function GET(
         deferToolResultImages,
         tail,
         sessionId: id,
+        // Lazy tool-result image URLs must carry the device: the browser fetches
+        // them later, when nothing else remembers which host the session is on.
+        deviceId,
       }), transcriptNotices);
       const totalActiveMs = computeSessionTotalActiveMs(entries);
       const stats = computeSessionStats(entries as unknown as SessionEntry[]);

@@ -2879,6 +2879,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     >
       {customPathOpen && (
         <DirectoryPicker
+          deviceId={deviceId}
           initialPath={customPathValue}
           busy={customPathValidating}
           error={customPathError}
@@ -3016,6 +3017,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           selectedSessionId={selectedSessionId}
           onSelectSession={handleSelectSessionFromList}
           archivedSessionIds={archiveIndex.ids}
+          deviceId={deviceId}
         >
           {/* The tree and the archive view share one cell: the archive
               slides in over the tree and away from it again. */}

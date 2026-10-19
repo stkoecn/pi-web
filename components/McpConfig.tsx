@@ -299,8 +299,11 @@ export function McpConfig({
   trust,
   onTrustProject,
   onProjectTrustChanged,
+  deviceId = "localhost",
 }: {
   cwd: string | null;
+  /** Gateway device whose MCP servers are listed. */
+  deviceId?: string;
   onClose: () => void;
   embedded?: boolean;
   /** The page's trust status for `cwd`; a change reloads the panel. */
@@ -354,7 +357,7 @@ export function McpConfig({
     const controller = new AbortController();
     controllerRef.current = controller;
     setRefreshing(true);
-    const result = await loadMcpOverview(cwd, undefined, controller.signal);
+    const result = await loadMcpOverview(cwd, undefined, controller.signal, undefined, deviceId);
     if (request !== requestRef.current) return;
     setRefreshing(false);
     if (!result.ok) {
@@ -363,7 +366,7 @@ export function McpConfig({
     }
     setLoad({ state: "loaded", data: result.data, ...(result.projectError ? { projectError: result.projectError } : {}) });
     setSelected((current) => pickMcpSelection(mcpServerGroups(result.data, Boolean(cwd)), current));
-  }, [cwd]);
+  }, [cwd, deviceId]);
 
   // A new trust decision for the folder (the trust dialog trusted it, or read
   // one made elsewhere) loads the panel again, in place, so the project's

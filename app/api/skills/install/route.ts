@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { runNpx } from "@/lib/npx";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
@@ -11,6 +12,12 @@ const ANSI_RE = /\x1B\[[0-9;]*m/g;
 
 // POST /api/skills/install  body: { package: string; scope: "global" | "project"; cwd?: string }
 export async function POST(req: Request) {
+  // Writing to a device's own settings files is not implemented yet; refusing is
+  // safer than silently writing this host's copy.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
+  }
+
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }

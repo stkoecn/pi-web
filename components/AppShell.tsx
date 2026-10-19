@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { deviceAwareHref, withDeviceId } from "@/lib/device-context";
+import { DeviceIdProvider } from "./DeviceIdContext";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar, type SelectSessionOptions, type SessionSidebarControl } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
@@ -2069,6 +2070,7 @@ export function AppShell() {
   };
 
   return (
+    <DeviceIdProvider deviceId={selectedDeviceId}>
     <>
     <style>{`
       @keyframes session-info-pop {
@@ -2781,6 +2783,7 @@ export function AppShell() {
               filePath={activeFileTab.filePath}
               cwd={activeCwd ?? undefined}
               sourceSessionId={activeFileTab.sourceSessionId}
+              deviceId={selectedDeviceId}
               gitRefreshKey={explorerRefreshKey}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialPage={activeFileTab.page}
@@ -2830,6 +2833,7 @@ export function AppShell() {
     </div>
     {settingsSection && (
       <SettingsPanel
+        deviceId={selectedDeviceId}
         cwd={projectTrustCwd}
         sessionId={selectedSession?.id ?? null}
         initialSection={settingsSection}
@@ -2856,8 +2860,10 @@ export function AppShell() {
         }}
         onConfirm={() => void handleTrustProject()}
         onStatus={setProjectTrust}
+        deviceId={selectedDeviceId}
       />
     )}
     </>
+    </DeviceIdProvider>
   );
 }

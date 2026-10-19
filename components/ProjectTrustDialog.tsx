@@ -24,6 +24,7 @@ import {
   revealHiddenCharacters,
 } from "@/lib/mcp-server-display";
 import { openStackedDialog } from "@/lib/stacked-dialog";
+import { withDeviceId } from "@/lib/device-context";
 
 /** How long the dialog waits for the listing before it stops holding Trust back. */
 export const MCP_LISTING_TIMEOUT_MS = 10_000;
@@ -114,6 +115,7 @@ export function ProjectTrustDialog({
   onCancel,
   onConfirm,
   onStatus,
+  deviceId,
 }: {
   cwd: string;
   busy: boolean;
@@ -122,6 +124,8 @@ export function ProjectTrustDialog({
   onConfirm: () => void;
   /** The fresh status the dialog read, so the page's restricted-mode banner can follow it. */
   onStatus?: (status: ProjectTrustStatus) => void;
+  /** Gateway device the project lives on; trust is recorded on that host. */
+  deviceId?: string;
 }) {
   const [listing, setListing] = useState<ProjectTrustMcpListing>({ state: "loading" });
   // Read through a ref, so a new callback on every page render does not fetch again.
@@ -139,7 +143,7 @@ export function ProjectTrustDialog({
       timedOut = true;
       controller.abort();
     }, MCP_LISTING_TIMEOUT_MS);
-    fetch(`/api/project-trust?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal, cache: "no-store" })
+    fetch(withDeviceId(`/api/project-trust?cwd=${encodeURIComponent(cwd)}`, deviceId), { signal: controller.signal, cache: "no-store" })
       .then(async (response) => {
         const data = await response.json() as Partial<ProjectTrustResponse & McpErrorResponse>;
         if (!active) return;
@@ -157,7 +161,7 @@ export function ProjectTrustDialog({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [cwd]);
+  }, [cwd, deviceId]);
 
   return (
     <ProjectTrustDialogView
