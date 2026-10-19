@@ -170,8 +170,9 @@ class PiWebClient {
       for (const dev of this.devices) {
         const opt = document.createElement('option');
         opt.value = dev.id;
+        const statusBadge = dev.status === 'online' ? '🟢' : (dev.status === 'connecting' ? '🟡' : '🔴');
         const modeBadge = dev.mode === 'reverse_tunnel' ? '[反向隧道]' : (dev.id === 'localhost' ? '[本地]' : '[主动SSH]');
-        opt.textContent = `${dev.name || dev.id} ${modeBadge} (${dev.remoteAddr})`;
+        opt.textContent = `${statusBadge} ${dev.name || dev.id} ${modeBadge} (${dev.remoteAddr})`;
         this.deviceSelect.appendChild(opt);
       }
 

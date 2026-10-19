@@ -81,7 +81,7 @@ D:/proj/pi-web/
 ### 1. 运行网关服务
 
 默认端口：
-- **Web 控制台 / API**：`http://localhost:30150`
+- **Web 控制台 / API**：`http://localhost:9564`
 - **SSH 反向隧道接入端口**：`0.0.0.0:22222`
 
 使用 Bun：
@@ -96,7 +96,31 @@ bun dev
 npm run start:node
 ```
 
-### 2. 连接设备
+### 2. 预设设备配置文件 (`devices.json`)
+
+系统启动时会自动读取根目录的 `devices.json` 并发起连接与注册，支持私钥路径（自动展开 `~`）与自动断线指数退避重连：
+```json
+[
+  {
+    "id": "wsmac",
+    "name": "wsmac (Mac Mini / Local)",
+    "host": "192.168.1.114",
+    "port": 22,
+    "username": "windsing",
+    "privateKeyPath": "~/.ssh/wshome"
+  },
+  {
+    "id": "fuckip-us",
+    "name": "fuckip-us (US VPS)",
+    "host": "155.103.66.113",
+    "port": 35683,
+    "username": "root",
+    "privateKeyPath": "~/.ssh/wshome"
+  }
+]
+```
+
+### 3. 连接设备
 
 #### 模式 A：被动反向隧道（无公网 IP 设备）
 
@@ -110,7 +134,7 @@ ssh -NR 0:localhost:22 node-device-01@<gateway-ip> -p 22222
 
 在 Web 界面点击 **“+ 添加主动 SSH 设备”**，或通过 HTTP API 调用：
 ```bash
-curl -X POST http://localhost:30150/api/devices/connect \
+curl -X POST http://localhost:9564/api/devices/connect \
   -H "Content-Type: application/json" \
   -d '{
     "id": "vps-01",

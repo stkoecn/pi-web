@@ -1,0 +1,18 @@
+[
+  {
+    "id": "wsmac",
+    "name": "wsmac (Mac Mini / Local)",
+    "host": "192.168.1.114",
+    "port": 22,
+    "username": "windsing",
+    "privateKeyPath": "~/.ssh/wshome"
+  },
+  {
+    "id": "fuckip-us",
+    "name": "fuckip-us (US VPS)",
+    "host": "155.103.66.113",
+    "port": 35683,
+    "username": "root",
+    "privateKeyPath": "~/.ssh/wshome"
+  }
+]

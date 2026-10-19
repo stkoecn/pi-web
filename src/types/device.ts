@@ -19,6 +19,7 @@ export interface ActiveDeviceConfig {
   port: number;
   username: string;
   privateKey?: string | Buffer;
+  privateKeyPath?: string;
   password?: string;
   defaultCwd?: string;
 }

@@ -1,7 +1,7 @@
 import { PiWebGatewayApp } from './server/app';
 
 async function main() {
-  const httpPort = Number(process.env.HTTP_PORT || process.env.PORT || 30150);
+  const httpPort = Number(process.env.HTTP_PORT || process.env.PORT || 9564);
   const sshPort = Number(process.env.SSH_PORT || 22222);
   const host = process.env.HOST || '0.0.0.0';
 

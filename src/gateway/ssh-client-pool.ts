@@ -3,6 +3,10 @@ import type { Client, ConnectConfig } from 'ssh2';
 import type { ActiveDeviceConfig } from '../types/device';
 import { DeviceRegistry } from './device-registry';
 import { SSHHostDriver } from './drivers/ssh-host-driver';
+import { OfflineHostDriver } from './drivers/offline-host-driver';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 const SSHClientClass = ssh2.Client;
 
@@ -19,6 +23,23 @@ export class SSHClientPool {
 
   async addDevice(config: ActiveDeviceConfig): Promise<void> {
     this.configs.set(config.id, config);
+
+    // Initial placeholder registration so device appears in list
+    const existing = this.registry.get(config.id);
+    if (!existing) {
+      this.registry.register(
+        {
+          id: config.id,
+          name: config.name,
+          mode: 'active_ssh',
+          remoteAddr: `${config.host}:${config.port}`,
+          status: 'connecting',
+          lastSeen: Date.now(),
+        },
+        new OfflineHostDriver(config.id, `Connecting to ${config.host}:${config.port}...`)
+      );
+    }
+
     await this.connectDevice(config);
   }
 
@@ -53,6 +74,16 @@ export class SSHClientPool {
 
     if (config.privateKey) {
       connectConfig.privateKey = config.privateKey;
+    } else if (config.privateKeyPath) {
+      let resolved = config.privateKeyPath;
+      if (resolved.startsWith('~')) {
+        resolved = path.join(os.homedir(), resolved.slice(1));
+      }
+      try {
+        connectConfig.privateKey = fs.readFileSync(resolved);
+      } catch (err: any) {
+        console.warn(`[SSHClientPool] Failed to read private key for ${config.id} at ${resolved}: ${err.message}`);
+      }
     } else if (config.password) {
       connectConfig.password = config.password;
     }
@@ -79,7 +110,18 @@ export class SSHClientPool {
       );
     });
 
-    client.on('error', () => {
+    client.on('error', (err) => {
+      const existing = this.registry.get(config.id);
+      if (existing && existing.info.mode === 'active_ssh') {
+        this.registry.register(
+          {
+            ...existing.info,
+            status: 'offline',
+            lastSeen: Date.now(),
+          },
+          new OfflineHostDriver(config.id, `Connection error: ${err.message}`)
+        );
+      }
       this.scheduleReconnect(config, retryCount);
     });
 
@@ -87,7 +129,14 @@ export class SSHClientPool {
       this.activeClients.delete(config.id);
       const existing = this.registry.get(config.id);
       if (existing && existing.info.mode === 'active_ssh') {
-        this.registry.unregister(config.id);
+        this.registry.register(
+          {
+            ...existing.info,
+            status: 'offline',
+            lastSeen: Date.now(),
+          },
+          new OfflineHostDriver(config.id, 'Connection closed. Reconnecting...')
+        );
         this.scheduleReconnect(config, retryCount);
       }
     });
