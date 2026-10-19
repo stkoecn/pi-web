@@ -135,13 +135,12 @@ export function createHttpHandler(
       }
 
       // 5. Serve static files for the Frontend
-      if (req.method === 'GET') {
-        let filePath = pathname === '/' ? '/index.html' : pathname;
-        filePath = path.join(staticDir, filePath);
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const cleanPath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+        const filePath = path.join(staticDir, cleanPath);
         try {
           const stats = await fs.stat(filePath);
           if (stats.isFile()) {
-            const data = await fs.readFile(filePath);
             const ext = path.extname(filePath);
             const mimeTypes: Record<string, string> = {
               '.html': 'text/html; charset=utf-8',
@@ -151,7 +150,12 @@ export function createHttpHandler(
               '.svg': 'image/svg+xml',
             };
             res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain' });
-            res.end(data);
+            if (req.method === 'HEAD') {
+              res.end();
+            } else {
+              const data = await fs.readFile(filePath);
+              res.end(data);
+            }
             return;
           }
         } catch {}
