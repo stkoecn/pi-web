@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pi Web Gateway</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- xterm.js CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">⚡</span>
+        <span class="title">Pi Web Gateway</span>
+      </div>
+
+      <div class="device-controls">
+        <label for="deviceSelect">目标设备：</label>
+        <select id="deviceSelect" class="select-input">
+          <option value="localhost">localhost (本地)</option>
+        </select>
+        <span id="deviceStatusDot" class="status-dot online"></span>
+        <button id="addDeviceBtn" class="btn btn-secondary">+ 添加主动 SSH 设备</button>
+        <button id="refreshBtn" class="btn btn-icon" title="刷新设备列表">🔄</button>
+      </div>
+
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="terminal">🖥️ 终端</button>
+        <button class="tab-btn" data-tab="agent">🤖 Pi Agent</button>
+        <button class="tab-btn" data-tab="files">📁 远程文件</button>
+        <button class="tab-btn" data-tab="git">🔀 Git 状态</button>
+      </nav>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="workspace">
+      <!-- 1. Terminal Tab -->
+      <section id="terminalTab" class="tab-pane active">
+        <div class="pane-toolbar">
+          <span class="toolbar-label">SSH 交互式终端 (xterm.js)</span>
+          <div class="toolbar-actions">
+            <input id="termCmdInput" type="text" placeholder="初始命令 (如: pi shell 或 bash)" class="input-text">
+            <button id="reconnectTermBtn" class="btn btn-sm">重启终端</button>
+            <button id="clearTermBtn" class="btn btn-sm btn-ghost">清屏</button>
+          </div>
+        </div>
+        <div id="terminalContainer" class="terminal-container"></div>
+      </section>
+
+      <!-- 2. Pi Agent RPC Tab -->
+      <section id="agentTab" class="tab-pane">
+        <div class="pane-toolbar">
+          <span class="toolbar-label">Pi Agent 控制台 (通过 SSH 通道对接远端 pi --mode rpc)</span>
+          <div class="toolbar-actions">
+            <button id="abortAgentBtn" class="btn btn-sm btn-danger" disabled>⏹️ 中止 (Abort)</button>
+            <button id="clearAgentBtn" class="btn btn-sm btn-ghost">清空记录</button>
+          </div>
+        </div>
+        <div class="agent-layout">
+          <div id="agentMessages" class="agent-messages">
+            <div class="system-message">💡 选择目标机器并输入 Prompt，远端服务器将就地执行 pi agent 并流式回传事件。</div>
+          </div>
+          <div class="agent-input-box">
+            <textarea id="promptInput" placeholder="向远端 Pi 发送指令，例如：检查当前目录并列出待重构文件..."></textarea>
+            <button id="sendPromptBtn" class="btn btn-primary">发送 ↵</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Remote Files Tab -->
+      <section id="filesTab" class="tab-pane">
+        <div class="pane-toolbar">
+          <span class="toolbar-label">远程文件浏览器 (SFTP 通道)</span>
+          <div class="toolbar-actions">
+            <input id="filePathInput" type="text" value="." class="input-text">
+            <button id="loadFilesBtn" class="btn btn-sm">浏览目录</button>
+          </div>
+        </div>
+        <div class="files-layout">
+          <div id="fileList" class="file-list"></div>
+          <div class="file-preview">
+            <div id="filePreviewHeader" class="file-preview-header">请选择文件进行查看</div>
+            <pre id="filePreviewBody" class="file-preview-body"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Git Status Tab -->
+      <section id="gitTab" class="tab-pane">
+        <div class="pane-toolbar">
+          <span class="toolbar-label">远程 Git 状态与 Diff</span>
+          <div class="toolbar-actions">
+            <input id="gitCwdInput" type="text" value="." class="input-text" placeholder="仓库工作目录">
+            <button id="refreshGitBtn" class="btn btn-sm">查询 Git 状态</button>
+          </div>
+        </div>
+        <div class="git-layout">
+          <h3>Git Status</h3>
+          <pre id="gitStatusPre" class="code-box">点击刷新查询当前机器 Git 状态...</pre>
+          <h3>Git Diff</h3>
+          <pre id="gitDiffPre" class="code-box">无 Diff</pre>
+        </div>
+      </section>
+    </main>
+
+    <!-- Add Device Modal -->
+    <div id="addDeviceModal" class="modal-overlay hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>添加主动 SSH 设备</h3>
+          <button id="closeModalBtn" class="btn-close">&times;</button>
+        </div>
+        <form id="addDeviceForm" class="modal-body">
+          <div class="form-row">
+            <label>设备标识 (ID)：</label>
+            <input type="text" name="id" placeholder="如: dev-vps-1" required>
+          </div>
+          <div class="form-row">
+            <label>设备名称：</label>
+            <input type="text" name="name" placeholder="如: 阿里云开发机">
+          </div>
+          <div class="form-row">
+            <label>主机地址 (Host)：</label>
+            <input type="text" name="host" placeholder="1.2.3.4" required>
+          </div>
+          <div class="form-row">
+            <label>SSH 端口：</label>
+            <input type="number" name="port" value="22" required>
+          </div>
+          <div class="form-row">
+            <label>用户名：</label>
+            <input type="text" name="username" value="root" required>
+          </div>
+          <div class="form-row">
+            <label>密码 (留空则使用密钥)：</label>
+            <input type="password" name="password">
+          </div>
+          <div class="form-row">
+            <label>私钥 PEM (可选)：</label>
+            <textarea name="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
+          </div>
+          <div class="modal-footer">
+            <button type="button" id="cancelModalBtn" class="btn btn-ghost">取消</button>
+            <button type="submit" class="btn btn-primary">立即连接</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

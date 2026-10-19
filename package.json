@@ -1,0 +1,27 @@
+{
+  "name": "pi-web",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "start": "bun src/index.ts",
+    "start:node": "npx --yes tsx src/index.ts",
+    "test": "bun test/e2e-verification.ts",
+    "test:node": "npx --yes tsx test/e2e-verification.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^26.6.5",
+    "@types/ssh2": "^1.15.6",
+    "@types/ws": "^8.18.2"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0",
+    "ws": "^8.22.0"
+  }
+}
