@@ -15,6 +15,7 @@ import {
 } from "@/lib/rpc-manager";
 import { startServerPerf } from "@/lib/perf";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
 import { listRemoteSessions } from "@/lib/remote-session-store";
 
 export const dynamic = "force-dynamic";
@@ -99,6 +100,14 @@ export async function GET(req: Request) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    // The sidebar polls this route, so a device mid-reconnect must not answer
+    // 500 (that reads as a broken app): 503 says the device, not the app, is away.
+    if (error instanceof DeviceOfflineError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code, deviceId: error.deviceId },
+        { status: 503, headers: { "Cache-Control": "no-store" } },
+      );
+    }
     return NextResponse.json(
       { error: String(error) },
       { status: 500, headers: { "Cache-Control": "no-store" } },

@@ -75,7 +75,9 @@ export function invalidateRemoteSettings(deviceId?: string): void {
 }
 
 async function driverFor(deviceId: string): Promise<IHostDriver> {
-  return getGateway().getOrConnectDriver(deviceId);
+  // Same rule as the session read path: a device mid-reconnect answers at once
+  // instead of making the settings panel wait ten seconds to fail.
+  return getGateway().getDriverForRequest(deviceId);
 }
 
 /** Run a command on the device and return stdout, or null when it failed. */

@@ -279,7 +279,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    loading, error, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
+    loading, error, offline, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -1025,6 +1025,19 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {offline && (
+        // The device dropped while this session was open. Its transcript is
+        // still in memory, so the chat below stays readable; this strip only
+        // says why nothing new arrives. It sits above the message list, so it
+        // cannot be scrolled away with the transcript.
+        <div
+          role="status"
+          className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+        >
+          <span aria-hidden="true">⚠</span>
+          <span>{t("chat.deviceOffline")}</span>
+        </div>
+      )}
       {isDragOver && (
         <div className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[rgba(37,99,235,0.06)] backdrop-blur-[1px]">
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

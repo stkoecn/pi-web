@@ -104,8 +104,16 @@ export function invalidateRemoteSessionCache(deviceId?: string) {
 	}
 }
 
+/**
+ * The device's driver for a read the user is waiting on.
+ *
+ * `getDriverForRequest` still waits out a first connect (a page load may
+ * legitimately arrive before the pool's first handshake) but answers at once
+ * for a device whose connection dropped, instead of adding ten seconds to a
+ * request that the pool's own reconnect is going to satisfy later anyway.
+ */
 async function getDriver(deviceId: string): Promise<IHostDriver> {
-	return getGateway().getOrConnectDriver(deviceId);
+	return getGateway().getDriverForRequest(deviceId);
 }
 
 /**

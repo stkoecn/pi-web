@@ -483,6 +483,7 @@ export const enLocale: LocalePlugin = {
     "files.checking": "Checking files",
     "files.uploading": "Uploading, {progress}%",
     "files.dropToUpload": "Release to upload to {directory}",
+    "chat.deviceOffline": "The device is offline. Reconnect it, then reload.",
     "chat.loadingSession": "Loading session...",
     "chat.runningTool": "Running tool...",
     "chat.generatingToolInput": "Generating parameters...",

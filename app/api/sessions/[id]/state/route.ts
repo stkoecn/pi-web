@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
 import { getRemoteRpcSession } from "@/lib/remote-agent-manager";
 import { openRemoteSessionManager } from "@/lib/remote-session-store";
 
@@ -40,6 +41,14 @@ export async function GET(
     }
     return NextResponse.json({ running: false });
   } catch (error) {
+    // A device mid-reconnect answers at once with a state the client can act on
+    // instead of a 500 after the pool's ten-second connect wait.
+    if (error instanceof DeviceOfflineError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code, deviceId: error.deviceId },
+        { status: 503 },
+      );
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

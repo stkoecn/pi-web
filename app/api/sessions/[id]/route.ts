@@ -24,6 +24,7 @@ import { attachTranscriptNotices, readSessionTranscriptNotices } from "@/lib/tra
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { invalidateRemoteSession, openRemoteSessionManager } from "@/lib/remote-session-store";
 import { deviceHomeOrDefault } from "@/lib/device-home";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
 
 export async function GET(
   req: Request,
@@ -356,6 +357,15 @@ export async function GET(
       },
     );
   } catch (error) {
+    // An offline device is a state the user can act on, not a server fault: the
+    // client shows a reconnect hint instead of the ten-second wait and a 500.
+    if (error instanceof DeviceOfflineError) {
+      return jsonResponse(
+        req,
+        { error: error.message, code: error.code, deviceId: error.deviceId },
+        { status: 503 },
+      );
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

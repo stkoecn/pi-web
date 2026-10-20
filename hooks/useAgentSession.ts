@@ -358,6 +358,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [data, setData] = useState<SessionData | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string | null>(null);
+  // The device went away mid-read (503 device-offline). Kept apart from `error`
+  // because it is a state the user can fix, not a failure of this app.
+  const [offline, setOffline] = useState(false);
   const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [activeToolResults, setActiveToolResults] = useState<Map<string, ToolResultMessage>>(new Map());
@@ -688,8 +691,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         deleteSessionViewSnapshot(sid);
         return null;
       }
+      if (res.status === 503) {
+        // The device is offline: say so and keep what is on screen, rather than
+        // showing a bare "HTTP 503" and dropping the transcript.
+        setOffline(true);
+        return null;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
+      setOffline(false);
       if (sessionIdRef.current !== sid) return null;
       // Freshness check: when the disk snapshot is unchanged (same opaque
       // revision), keep any history the user already paged in instead of
@@ -2818,7 +2828,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   return {
     // State
-    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
+    data, loading, error, offline, activeLeafId, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats, autoCompactionEnabled,

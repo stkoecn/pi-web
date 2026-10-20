@@ -483,6 +483,7 @@ export const zhCNLocale: LocalePlugin = {
     "files.checking": "正在检查文件",
     "files.uploading": "正在上传，{progress}%",
     "files.dropToUpload": "松开鼠标，上传到 {directory}",
+    "chat.deviceOffline": "设备已离线。请重新连接后再加载。",
     "chat.loadingSession": "正在加载会话...",
     "chat.runningTool": "正在运行工具...",
     "chat.generatingToolInput": "正在生成参数...",

@@ -6,6 +6,23 @@ import { SSHServer } from './ssh-server';
 import type { IHostDriver } from './types/host-driver';
 import type { ActiveDeviceConfig } from './types/device';
 
+/**
+ * A device that is known to the gateway but not connected right now.
+ *
+ * Its own class, not a bare Error: routes answer 503 with a code the client can
+ * act on ("reconnect the device"), and must not report it as a server fault.
+ */
+export class DeviceOfflineError extends Error {
+  readonly deviceId: string;
+  readonly code = 'device-offline';
+
+  constructor(deviceId: string) {
+    super(`Device '${deviceId}' is not connected or offline`);
+    this.name = 'DeviceOfflineError';
+    this.deviceId = deviceId;
+  }
+}
+
 export class GatewayManager {
   readonly registry = new DeviceRegistry(true); // localhost enabled by default
   readonly clientPool: SSHClientPool;
@@ -87,9 +104,37 @@ export class GatewayManager {
     if (targetId === 'localhost') return this.registry.getDriver('localhost');
     const entry = this.registry.get(targetId);
     if (!entry || !entry.driver.isAlive()) {
-      throw new Error(`Device '${targetId}' is not connected or offline`);
+      throw new DeviceOfflineError(targetId);
     }
     return entry.driver;
+  }
+
+  /**
+   * The device's driver, connecting first when it has never connected.
+   *
+   * Only a device this gateway knows and has not reached yet waits — a first
+   * connect legitimately takes seconds. A device whose connection dropped is
+   * already being retried by the SSH pool on its own backoff, so waiting here
+   * would only add ten seconds to a request that is going to fail anyway.
+   */
+  public async getDriverForRequest(id?: string, timeoutMs = 10000): Promise<IHostDriver> {
+    const targetId = id || 'localhost';
+    if (targetId === 'localhost') return this.registry.getDriver('localhost');
+    const entry = this.registry.get(targetId);
+    // No entry means no device by that id is configured, so there is nothing to
+    // wait for. Every configured device has a placeholder entry before the
+    // first request is served (SSHClientPool.addDevice registers it), which is
+    // what makes this test the same as "unknown to this gateway".
+    if (!entry) throw new DeviceOfflineError(targetId);
+    if (entry.driver.isAlive()) return entry.driver;
+    if (entry.info.status !== 'connecting') throw new DeviceOfflineError(targetId);
+    try {
+      return await this.getOrConnectDriver(targetId, timeoutMs);
+    } catch (error) {
+      // getOrConnectDriver ends with registry.getDriver, whose own refusal is a
+      // plain Error; normalise it so callers can recognise the state.
+      throw error instanceof DeviceOfflineError ? error : new DeviceOfflineError(targetId);
+    }
   }
 }
 
