@@ -4,17 +4,21 @@ import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 import { deviceHomeOrDefault } from "@/lib/device-home";
 import { shellQuote } from "@/lib/shell-quote";
 import { stripJsonComments } from "@/lib/jsonc";
-import { readRemoteTextFile } from "@/lib/remote-files";
 import { CODEMODE_INLINE_BUDGET_DEFAULT, CODEMODE_INLINE_BUDGET_MAX } from "@/lib/codemode-settings";
-import type {
+import {
   McpResponse,
   PluginsResponse,
   SkillsResponse,
   SkillInfo,
+  McpScope,
+  McpServerInfo,
+  McpServerStatus,
+  McpTestResult,
   PluginPackageInfo,
   PluginResourceCounts,
   PluginStandaloneExtensionInfo,
 } from "@/lib/api-types";
+import { readMcpStatus, recordMcpStatus } from "@/lib/mcp-status";
 
 /**
  * Settings panes (models / skills / subagents / plugins / MCP) read pi's own
@@ -211,10 +215,19 @@ interface RemoteMcpServer {
 /**
  * Settings › MCP for a remote device.
  *
- * Prefers `pi mcp list --json`, which reports each server's live connection state
- * and tool list — data this process could never obtain by reading files. Falls
- * back to the device's `mcp.json` when the device's pi is too old for `--json`,
- * so the pane still lists what is configured.
+ * The pane is answered from the device's files, in ONE round trip. The device's
+ * own `pi mcp list --json` is authoritative — it connects every server and
+ * prints each one's state and tools — but it boots a whole Node process there
+ * (1.44 s measured on a 1-vCPU VPS), which is most of what made this pane slow.
+ * Its live state only feeds the status dots, so it refreshes those in the
+ * background (`refreshMcpStateFromCli`) and the pane never waits for it.
+ *
+ * The listing therefore comes from `~/.pi/agent/mcp.json` (and the project's
+ * `.pi/mcp.json`, listed for its existence), which holds everything the panel
+ * renders: the names, their scope, whether they are enabled, their command, and
+ * how they are exposed. The CLI is still the source when the files hold nothing
+ * a listing can be built from (an unreadable file, or a device whose pi knows
+ * servers this code cannot see).
  */
 export async function readRemoteMcpOverview(
   deviceId: string,
@@ -225,34 +238,185 @@ export async function readRemoteMcpOverview(
   // are per folder, so one device can legitimately have several answers.
   const key = `${deviceId}\u0000${cwd ?? ""}`;
   const store = cache();
+  // Statuses are attached on every read rather than baked into the cached
+  // value: the background refresh can land between two reads of the same
+  // files, and that is exactly when the dots should change.
   const cached = store.mcp.get(key);
-  if (!options.force && cached && cached.expiresAt > Date.now()) return cached.value;
+  if (!options.force && cached && cached.expiresAt > Date.now()) return attachStatuses(cached.value);
 
   const driver = await driverFor(deviceId);
-  // `pi mcp list --json` boots a whole Node process on the device (1.5 s on a
-  // 1-vCPU VPS) while the settings read is one short command. Running them at
-  // the same time hides the settings read inside the CLI's own latency.
-  const cliPromise = runOnDevice(driver, "pi mcp list --json");
   const agentDir = await getRemoteAgentDir(deviceId);
-  const { settings, path: settingsPath } = await readRemoteGlobalSettings(driver, agentDir);
+  const settingsPath = `${agentDir}/settings.json`;
+  const globalMcpPath = `${agentDir}/mcp.json`;
+  const projectMcpPath = cwd ? `${cwd}/.pi/mcp.json` : null;
+
+  // One round trip for the settings the Code-mode pane shows and both mcp.json
+  // files, where it used to be one per file.
+  const files = await readFilesAtOnce(
+    driver,
+    projectMcpPath ? [settingsPath, globalMcpPath, projectMcpPath] : [settingsPath, globalMcpPath],
+  );
+  const settings = parseJsonObject(files.get(settingsPath));
 
   const remember = (value: McpResponse): McpResponse => {
     store.mcp.set(key, { value, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
-    return value;
+    return attachStatuses(value);
   };
 
-  const cli = await cliPromise;
-  if (cli && cli.exitCode === 0 && cli.stdout.trim()) {
-    try {
-      const parsed = JSON.parse(cli.stdout) as { servers?: RemoteMcpServer[] };
-      const servers = Array.isArray(parsed.servers) ? parsed.servers : [];
-      return remember(toMcpResponse(servers, agentDir, deviceId, settings, settingsPath, cwd));
-    } catch {
-      // Not JSON (older pi, or a warning printed first): fall through to the file.
-    }
+  const listing = mcpResponseFromFiles(
+    files.get(globalMcpPath) ?? null,
+    projectMcpPath ? files.get(projectMcpPath) ?? null : null,
+    agentDir,
+    deviceId,
+    settings,
+    settingsPath,
+    cwd,
+  );
+  if (listing.servers.length > 0) {
+    // The files describe servers: answer now, and let the CLI fill the dots in
+    // while the user is already reading the list.
+    void refreshMcpStateFromCli(deviceId, driver, cwd, agentDir);
+    return remember(listing);
   }
 
-  return remember(await readMcpFromFile(driver, agentDir, deviceId, settings, settingsPath, cwd));
+  // Nothing listable in the files: the CLI is the other source, and waiting for
+  // it is what made this pane take 1.5–2.7 s on a device that has no `mcp.json`
+  // at all. So it runs in the background and the pane answers empty now; when it
+  // lands with servers they go into the cache, which the pane's quiet read-back
+  // reads a moment later. A device whose servers live where these files cannot
+  // see them therefore appears one read late instead of costing every open a
+  // Node process to boot on the device.
+  void refreshMcpStateFromCli(deviceId, driver, cwd, agentDir)
+    .then((servers) => {
+      if (!servers || servers.length === 0) return;
+      remember(toMcpResponse(servers, agentDir, deviceId, settings, settingsPath, cwd));
+    })
+    .catch(() => {});
+
+  return remember(listing);
+}
+
+/** A JSON object read from the device, or `{}` when it is missing or not one. */
+function parseJsonObject(raw: string | undefined): Record<string, unknown> {
+  if (raw === undefined) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Every server of this device is keyed by its file entry, so the background CLI refresh and the file listing agree. */
+function remoteMcpConfigKey(deviceId: string, name: string): string {
+  return `remote:${deviceId}:file:${name}`;
+}
+
+/**
+ * The cached listing with each server's last known state attached.
+ *
+ * `GET /api/mcp` for a local folder does the same through `withMcpStatuses`.
+ * The state comes from the device's `pi mcp list --json`
+ * (`refreshMcpStateFromCli`), recorded under the same key the listing uses, so
+ * a row whose entry changed reads as untested again.
+ */
+function attachStatuses(value: McpResponse): McpResponse {
+  if (value.servers.length === 0) return value;
+  return {
+    ...value,
+    servers: value.servers.map((server) => {
+      const status = readMcpStatus(
+        { scope: server.scope, sourcePath: server.sourcePath, name: server.name },
+        server.configKey,
+      );
+      return status ? { ...server, status } : server;
+    }),
+  };
+}
+
+/**
+ * The CLI listings on their way, by device and folder.
+ *
+ * Module scope, not `globalThis`: an in-flight promise belongs to this process
+ * and a hot reload must not share one with the module instance it replaces.
+ * Concurrent reads of one device (the panel loads once, but a refresh can
+ * overlap it) join the same CLI instead of each booting a Node process there.
+ */
+const inflightCliListings = new Map<string, Promise<RemoteMcpServer[] | null>>();
+
+/**
+ * Refresh the status dots from the device's own `pi mcp list --json`.
+ *
+ * Best effort and never awaited for its own sake when the files already answered:
+ * the pane is on screen and this only fills the dots. A device that cannot run
+ * the CLI (old pi, no shell) simply leaves the rows untested, which is what the
+ * panel showed before.
+ *
+ * Returns the servers the CLI listed, or null when it could not answer — the
+ * caller with an empty file listing is the one place that needs them.
+ */
+function refreshMcpStateFromCli(
+  deviceId: string,
+  driver: IHostDriver,
+  cwd: string | null,
+  agentDir: string,
+): Promise<RemoteMcpServer[] | null> {
+  const key = `${deviceId}\u0000${cwd ?? ""}`;
+  const existing = inflightCliListings.get(key);
+  if (existing) return existing;
+  const run = (async (): Promise<RemoteMcpServer[] | null> => {
+    const started = Date.now();
+    const cli = await runOnDevice(driver, "pi mcp list --json", cwd ? { cwd } : {});
+    const durationMs = Date.now() - started;
+    if (!cli || cli.exitCode !== 0 || !cli.stdout.trim()) return null;
+    const parsed = JSON.parse(cli.stdout) as { servers?: RemoteMcpServer[] };
+    if (!Array.isArray(parsed.servers)) return null;
+    recordCliStatuses(parsed.servers, agentDir, deviceId, durationMs);
+    return parsed.servers;
+  })()
+    .catch(() => {
+      // Malformed output (a warning line before the JSON, an older pi): the
+      // files already answered, so there is nothing to report.
+      return null;
+    })
+    .finally(() => inflightCliListings.delete(key));
+  inflightCliListings.set(key, run);
+  return run;
+}
+
+/** Record what the device's CLI saw of each server, under the key the file listing uses. */
+function recordCliStatuses(
+  servers: RemoteMcpServer[],
+  agentDir: string,
+  deviceId: string,
+  durationMs: number,
+): void {
+  const testedAt = Date.now();
+  for (const server of servers) {
+    const name = String(server.name ?? "");
+    if (!name) continue;
+    const sourcePath = String(server.source ?? "") || `${agentDir}/mcp.json`;
+    const scope: McpScope = server.scope === "project" ? "project" : "global";
+    const tools = Array.isArray(server.tools) ? server.tools : [];
+    // `pi mcp list` connected to each server to read its state and tools, which
+    // is what a Test does, so the row shows it as one — with the CLI's own
+    // duration, since that is how long the connection took to report.
+    const status: McpServerStatus = {
+      origin: "test",
+      state: server.state === "connected" ? "connected" : server.state === "needs-auth" ? "needs-auth" : "failed",
+      ...(server.error ? { error: String(server.error) } : {}),
+      tools: tools.map((tool) => ({ name: String(tool) })) as McpTestResult["tools"],
+      toolCount: tools.length,
+      ...(server.resources ? { resources: true as const } : {}),
+      durationMs,
+      testedAt,
+    };
+    recordMcpStatus(
+      { scope, sourcePath, name },
+      remoteMcpConfigKey(deviceId, name),
+      status,
+    );
+  }
 }
 
 /**
@@ -303,21 +467,6 @@ function remoteCodemodeInfo(
   return info;
 }
 
-/** The global `settings.json` of a device, or `{}` when it cannot be read. */
-async function readRemoteGlobalSettings(
-  driver: IHostDriver,
-  agentDir: string,
-): Promise<{ settings: Record<string, unknown>; path: string }> {
-  const path = `${agentDir}/settings.json`;
-  try {
-    const raw = await readRemoteTextFile(driver, path);
-    const parsed = JSON.parse(raw) as unknown;
-    return { settings: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}, path };
-  } catch {
-    return { settings: {}, path };
-  }
-}
-
 /** Shape `pi mcp list --json` output like the local route's `McpResponse`. */
 function toMcpResponse(
   servers: RemoteMcpServer[],
@@ -331,7 +480,6 @@ function toMcpResponse(
     const name = String(server.name ?? "");
     const scope: McpResponse["servers"][number]["scope"] = server.scope === "project" ? "project" : "global";
     const exposure = server.exposure === "codemode" ? "codemode" as const : "direct" as const;
-    const connected = server.state === "connected";
     // `pi mcp list` reports where a server lives but not how it is launched, so
     // the command is all the transport detail there is. The arrays the panel
     // reads unconditionally (`envNames`, `headerNames`, `commandFields`,
@@ -341,7 +489,9 @@ function toMcpResponse(
       name,
       scope,
       sourcePath: String(server.source ?? ""),
-      configKey: `remote:${deviceId}:${name}`,
+      // The same key the file listing and the status records use, so a row read
+      // from either source carries the state the CLI reported for it.
+      configKey: remoteMcpConfigKey(deviceId, name),
       enabled: server.enabled !== false,
       validated: true,
       transport: "stdio" as const,
@@ -381,82 +531,81 @@ function toMcpResponse(
   } as unknown as McpResponse;
 }
 
-async function readMcpFromFile(
-  driver: IHostDriver,
+/**
+ * The pane's answer built from the device's files alone: no round trip of its own.
+ *
+ * `raw` is the global `mcp.json` (null when it does not exist) and
+ * `projectFileExists` says whether the folder's `.pi/mcp.json` is there. What the
+ * files cannot say — whether each server actually connects, and which tools it
+ * offers — arrives later through `refreshMcpStateFromCli`, which is why the
+ * servers start out as untested rows.
+ */
+function mcpResponseFromFiles(
+  raw: string | null,
+  projectRaw: string | null,
   agentDir: string,
   deviceId: string,
   settings: Record<string, unknown>,
   settingsPath: string,
   cwd: string | null,
-): Promise<McpResponse> {
-  // The global file and the project file's existence, in one round trip.
+): McpResponse {
   const globalMcpPath = `${agentDir}/mcp.json`;
   const projectMcpPath = cwd ? `${cwd}/.pi/mcp.json` : null;
-  const mcpFiles = await readFilesAtOnce(
-    driver,
-    projectMcpPath ? [globalMcpPath, projectMcpPath] : [globalMcpPath],
-  );
-  const raw: string | null = mcpFiles.get(globalMcpPath) ?? null;
 
-  let servers: RemoteMcpServer[] = [];
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { servers?: Record<string, unknown> } | Record<string, unknown>;
-      const map = (parsed as { servers?: Record<string, unknown> }).servers ?? parsed;
-      if (map && typeof map === "object") {
-        servers = Object.entries(map as Record<string, unknown>).map(([name, value]) => {
-          const entry = (value ?? {}) as Record<string, unknown>;
-          return {
-            name,
-            scope: "global",
-            source: `${agentDir}/mcp.json`,
-            enabled: entry.enabled !== false,
-            exposure: typeof entry.exposure === "string" ? entry.exposure : "direct",
-            transport: typeof entry.command === "string"
-              ? entry.command
-              : (typeof entry.url === "string" ? entry.url : ""),
-            state: "unknown",
-          };
-        });
-      }
-    } catch {
-      // Malformed file: report the file as present but unreadable.
-    }
-  }
+  // Both files hold `{ "mcpServers": { name: entry } }`; a file that puts the
+  // map at the top level is accepted too, which is what the previous reader did.
+  const readServers = (content: string | null, scope: McpScope, source: string): McpResponse["servers"] => {
+    const parsed = parseJsonObject(content ?? undefined);
+    const map = (parsed.mcpServers ?? parsed.servers ?? parsed) as Record<string, unknown>;
+    if (!map || typeof map !== "object") return [];    return Object.entries(map).map(([name, value]) => {
+      const entry = (value ?? {}) as Record<string, unknown>;
+      const command = typeof entry.command === "string" ? entry.command : "";
+      const url = typeof entry.url === "string" ? entry.url : "";
+      return {
+        name,
+        scope,
+        sourcePath: source,
+        configKey: remoteMcpConfigKey(deviceId, name),
+        enabled: entry.enabled !== false,
+        validated: true,
+        // An entry with a `url` talks HTTP; one with a command runs it.
+        transport: (url ? "http" : "stdio") as McpServerInfo["transport"],
+        exposure: entry.exposure === "codemode" ? "codemode" as const : "direct" as const,
+        ...(command ? { command } : {}),
+        ...(url ? { url } : {}),
+        ...(typeof entry.description === "string" ? { description: entry.description } : {}),
+        envNames: Object.keys((entry.env ?? {}) as Record<string, unknown>),
+        // Header names only: the values can hold tokens, and the local route
+        // masks them too.
+        headerNames: Object.keys((entry.headers ?? {}) as Record<string, unknown>),
+        // The SDK signs an HTTP server in with OAuth when it answers 401.
+        usesOAuth: Boolean(url),
+        commandFields: [],
+        variableReferences: [],
+        masked: false,
+      } satisfies McpServerInfo;
+    });
+  };
+
+  const servers = [
+    ...readServers(raw, "global", globalMcpPath),
+    ...readServers(projectRaw, "project", projectMcpPath ?? ""),
+  ];
 
   const files: McpResponse["files"] = [
-    { path: `${agentDir}/mcp.json`, scope: "global", exists: raw !== null, problems: [] },
+    { path: globalMcpPath, scope: "global", exists: raw !== null, problems: [] },
   ];
   if (projectMcpPath) {
-    files.push({
-      path: projectMcpPath,
-      scope: "project",
-      exists: mcpFiles.has(projectMcpPath),
-      problems: [],
-    });
+    files.push({ path: projectMcpPath, scope: "project", exists: projectRaw !== null, problems: [] });
   }
 
   return {
     mcp: { available: true },
     codemode: remoteCodemodeInfo(settings, settingsPath),
     files,
-    servers: servers.map((server) => ({
-      name: String(server.name ?? ""),
-      scope: "global" as const,
-      sourcePath: `${agentDir}/mcp.json`,
-      configKey: `remote:${deviceId}:file:${server.name}`,
-      enabled: server.enabled !== false,
-      validated: true,
-      transport: "stdio" as const,
-      exposure: server.exposure === "codemode" ? "codemode" as const : "direct" as const,
-      command: String(server.transport ?? ""),
-      envNames: [] as string[],
-      headerNames: [] as string[],
-      usesOAuth: false,
-      commandFields: [],
-      variableReferences: [],
-      masked: false,
-    })),
+    servers,
+    // A device decides trust for its own folders; reporting the folder without
+    // a trust verdict keeps the panel from offering a Trust button it cannot act on.
     ...(cwd ? { project: { cwd, trustFolder: { allowed: true } } } : {}),
     remote: { deviceId, source: "file" },
   } as unknown as McpResponse;

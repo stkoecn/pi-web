@@ -173,6 +173,18 @@ import { projectTrustReloadKey } from "./settings-ui-helpers";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
+/**
+ * How long after a remote device's listing the panel reads it back once, to
+ * pick up the states its own `pi mcp list --json` reports.
+ *
+ * That CLI boots a Node process on the device (1.4 s measured on a 1-vCPU VPS),
+ * so the listing is answered from the device's files first and the states arrive
+ * afterwards; this is long enough for them to have landed. It is a single
+ * read-back, never a poll: a device slower than this shows its rows untested
+ * until Refresh, which is what the pane showed before at all times.
+ */
+const REMOTE_STATUS_REFETCH_MS = 2500;
+
 /** What the panel has loaded; a project the route refused leaves the global listing and `projectError`. */
 export type McpConfigLoad =
   | { state: "loading" }
@@ -350,13 +362,42 @@ export function McpConfig({
   const mountedRef = useRef(true);
   const loadRef = useRef(load);
   loadRef.current = load;
+  // A remote device answers from its files first and fills the status dots in
+  // from its own `pi mcp list --json` afterwards, so one quiet read-back shows
+  // them. At most once per device and folder: the status of a server does not
+  // change on its own, and polling it would boot a Node process on the device
+  // for every round.
+  const statusRefetchRef = useRef<string | null>(null);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The load running now, reachable from the read-back timer without making it
+  // a dependency of `refresh` (which would re-make the callback and reload).
+  const refreshRef = useRef<(options?: { quiet?: boolean }) => Promise<void>>(async () => {});
 
-  const refresh = useCallback(async () => {
+  const scheduleStatusRefetch = useCallback((data: McpResponse) => {
+    if (!deviceId || deviceId === "localhost") return;
+    // Every row already says what its connection did: nothing to wait for.
+    if (data.servers.length > 0 && data.servers.every((server) => server.status !== undefined)) return;
+    const key = `${deviceId}\u0000${cwd ?? ""}`;
+    if (statusRefetchRef.current === key) return;
+    statusRefetchRef.current = key;
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    // Long enough for the device's CLI to have answered (1.4 s there, plus a
+    // round trip); a device slower than this shows untested rows until Refresh.
+    // An empty list is read back too: the device's files may name no server
+    // while its own `pi mcp list` still knows some, and that answer is cached
+    // only once the CLI has finished.
+    statusTimerRef.current = setTimeout(() => {
+      statusTimerRef.current = null;
+      void refreshRef.current({ quiet: true });
+    }, REMOTE_STATUS_REFETCH_MS);
+  }, [cwd, deviceId]);
+
+  const refresh = useCallback(async (options: { quiet?: boolean } = {}) => {
     const request = ++requestRef.current;
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    setRefreshing(true);
+    if (!options.quiet) setRefreshing(true);
     const result = await loadMcpOverview(cwd, undefined, controller.signal, undefined, deviceId);
     if (request !== requestRef.current) return;
     setRefreshing(false);
@@ -366,7 +407,12 @@ export function McpConfig({
     }
     setLoad({ state: "loaded", data: result.data, ...(result.projectError ? { projectError: result.projectError } : {}) });
     setSelected((current) => pickMcpSelection(mcpServerGroups(result.data, Boolean(cwd)), current));
-  }, [cwd, deviceId]);
+    scheduleStatusRefetch(result.data);
+  }, [cwd, deviceId, scheduleStatusRefetch]);
+  refreshRef.current = refresh;
+  useEffect(() => () => {
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+  }, []);
 
   // A new trust decision for the folder (the trust dialog trusted it, or read
   // one made elsewhere) loads the panel again, in place, so the project's
