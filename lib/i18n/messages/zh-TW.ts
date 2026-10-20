@@ -768,6 +768,7 @@ export const zhTWLocale: LocalePlugin = {
     "mcp.reason.web-password": "它引用了 PI_WEB_PASSWORD，因此 Pi Web 不會開啟它。",
     "mcp.reason.undo-unavailable": "這次移除已無法復原。",
     "mcp.reason.undo-name-taken": "該檔案又定義了同名的伺服器，因此沒有復原這次移除。",
+    "mcp.reason.remote-unsupported": "該伺服器屬於遠端裝置，Pi Web 無法從這裡修改它。",
     "mcp.reason.name-taken": "該檔案已定義了同名的伺服器。",
     "mcp.reason.link-dangling": "該檔案是指向不存在目標的符號連結，Pi Web 不會寫入它。",
     "mcp.reason.link-outside": "該檔案是指向 Pi Web 可讀取的資料夾之外的符號連結，Pi Web 不會寫入它。",

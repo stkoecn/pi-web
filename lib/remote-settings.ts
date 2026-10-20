@@ -4,6 +4,8 @@ import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 import { deviceHomeOrDefault } from "@/lib/device-home";
 import { shellQuote } from "@/lib/shell-quote";
 import { stripJsonComments } from "@/lib/jsonc";
+import { readRemoteTextFile } from "@/lib/remote-files";
+import { CODEMODE_INLINE_BUDGET_DEFAULT, CODEMODE_INLINE_BUDGET_MAX } from "@/lib/codemode-settings";
 import type {
   McpResponse,
   PluginsResponse,
@@ -146,31 +148,100 @@ interface RemoteMcpServer {
  */
 export async function readRemoteMcpOverview(
   deviceId: string,
+  cwd: string | null = null,
   options: { force?: boolean } = {},
 ): Promise<McpResponse> {
+  // The cache key carries the cwd: the project file and the Code-mode override
+  // are per folder, so one device can legitimately have several answers.
+  const key = `${deviceId}\u0000${cwd ?? ""}`;
   const store = cache();
-  const cached = store.mcp.get(deviceId);
+  const cached = store.mcp.get(key);
   if (!options.force && cached && cached.expiresAt > Date.now()) return cached.value;
 
   const driver = await driverFor(deviceId);
   const agentDir = await getRemoteAgentDir(deviceId);
+  const { settings, path: settingsPath } = await readRemoteGlobalSettings(driver, agentDir);
+
+  const remember = (value: McpResponse): McpResponse => {
+    store.mcp.set(key, { value, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
+    return value;
+  };
 
   const cli = await runOnDevice(driver, "pi mcp list --json");
   if (cli && cli.exitCode === 0 && cli.stdout.trim()) {
     try {
       const parsed = JSON.parse(cli.stdout) as { servers?: RemoteMcpServer[] };
       const servers = Array.isArray(parsed.servers) ? parsed.servers : [];
-      const value = toMcpResponse(servers, agentDir, deviceId);
-      store.mcp.set(deviceId, { value, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
-      return value;
+      return remember(toMcpResponse(servers, agentDir, deviceId, settings, settingsPath, cwd));
     } catch {
       // Not JSON (older pi, or a warning printed first): fall through to the file.
     }
   }
 
-  const value = await readMcpFromFile(driver, agentDir, deviceId);
-  store.mcp.set(deviceId, { value, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
-  return value;
+  return remember(await readMcpFromFile(driver, agentDir, deviceId, settings, settingsPath, cwd));
+}
+
+/**
+ * The `McpResponse` fields a remote device can answer, filled to the same shape
+ * the local route produces.
+ *
+ * `McpConfig` validates the payload before rendering (`isMcpResponse`), and it
+ * requires `mcp`, `codemode`, `files` and `servers` — the first remote version
+ * omitted `mcp`/`codemode` and carried a bare `capabilities`, so the panel
+ * rejected the answer and showed a load failure while the data was fine.
+ *
+ * What genuinely differs on a device is stated rather than guessed:
+ * `capabilities`/`diagnostics` are not part of `McpResponse` at all; Code mode
+ * settings are read from the device's own `settings.json`; the sandbox state is
+ * `not-checked` because the self-test runs inside a session on the device and
+ * this process never sees it; and the project file is listed only when a cwd
+ * was asked for, since the device decides trust for its own folders.
+ */
+function remoteCodemodeInfo(
+  settings: Record<string, unknown>,
+  settingsPath: string,
+): McpResponse["codemode"] {
+  const codemode = (settings.codemode ?? {}) as Record<string, unknown>;
+  const defaultTools = Array.isArray(settings.defaultTools) ? settings.defaultTools as unknown[] : [];
+  const entries = defaultTools.filter((entry): entry is string => typeof entry === "string");
+  const rawMode = codemode.mode;
+  const rawBudget = codemode.inlineBudget;
+  const info: McpResponse["codemode"] = {
+    // The self-test runs inside a session on the device; this process has no
+    // way to observe it, and "not-checked" is the honest answer.
+    sandbox: { state: "not-checked" },
+    builtinDisabled: entries.some((entry) => entry === "-builtin:codemode"),
+    preference: entries.includes("codemode") ? "always" : "automatic",
+    mode: rawMode === "only"
+      ? { value: "only", settingsPath }
+      : rawMode === undefined || rawMode === "on"
+        ? { value: "on", settingsPath }
+        : { value: "on", invalid: JSON.stringify(rawMode), settingsPath },
+    inlineBudget: {
+      settingsPath,
+      default: CODEMODE_INLINE_BUDGET_DEFAULT,
+      max: CODEMODE_INLINE_BUDGET_MAX,
+      ...(typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget >= 0
+        ? { value: rawBudget }
+        : rawBudget === undefined ? {} : { invalid: JSON.stringify(rawBudget) }),
+    },
+  };
+  return info;
+}
+
+/** The global `settings.json` of a device, or `{}` when it cannot be read. */
+async function readRemoteGlobalSettings(
+  driver: IHostDriver,
+  agentDir: string,
+): Promise<{ settings: Record<string, unknown>; path: string }> {
+  const path = `${agentDir}/settings.json`;
+  try {
+    const raw = await readRemoteTextFile(driver, path);
+    const parsed = JSON.parse(raw) as unknown;
+    return { settings: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}, path };
+  } catch {
+    return { settings: {}, path };
+  }
 }
 
 /** Shape `pi mcp list --json` output like the local route's `McpResponse`. */
@@ -178,41 +249,60 @@ function toMcpResponse(
   servers: RemoteMcpServer[],
   agentDir: string,
   deviceId: string,
+  settings: Record<string, unknown>,
+  settingsPath: string,
+  cwd: string | null,
 ): McpResponse {
-  const infos = servers.map((server) => {
+  const infos: McpResponse["servers"] = servers.map((server) => {
     const name = String(server.name ?? "");
-    const scope = server.scope === "project" ? "project" : "global";
-    const exposure = server.exposure === "codemode" ? "codemode" : "direct";
+    const scope: McpResponse["servers"][number]["scope"] = server.scope === "project" ? "project" : "global";
+    const exposure = server.exposure === "codemode" ? "codemode" as const : "direct" as const;
     const connected = server.state === "connected";
+    // `pi mcp list` reports where a server lives but not how it is launched, so
+    // the command is all the transport detail there is. The arrays the panel
+    // reads unconditionally (`envNames`, `headerNames`, `commandFields`,
+    // `variableReferences`) are present and empty rather than absent: the local
+    // route always sends them, and a missing one crashes the detail view.
     return {
       name,
       scope,
-      exposure,
-      transport: { kind: "stdio" as const, command: String(server.transport ?? "") },
-      source: String(server.source ?? ""),
+      sourcePath: String(server.source ?? ""),
+      configKey: `remote:${deviceId}:${name}`,
       enabled: server.enabled !== false,
-      ...(connected ? { tools: server.tools ?? [] } : {}),
-      ...(server.error ? { error: String(server.error) } : {}),
-      status: connected ? "connected" : (server.error ? "error" : "unknown"),
+      validated: true,
+      transport: "stdio" as const,
+      exposure,
+      command: String(server.transport ?? ""),
+      envNames: [],
+      headerNames: [],
+      usesOAuth: false,
+      commandFields: [],
+      variableReferences: [],
+      masked: false,
+      ...(server.error ? { invalidError: String(server.error) } : {}),
     };
   });
 
+  const files: McpResponse["files"] = [
+    {
+      path: `${agentDir}/mcp.json`,
+      scope: "global",
+      exists: servers.some((server) => server.scope !== "project"),
+      problems: [],
+    },
+  ];
+  if (cwd) {
+    files.push({ path: `${cwd}/.pi/mcp.json`, scope: "project", exists: false, problems: [] });
+  }
+
   return {
+    mcp: { available: true },
+    codemode: remoteCodemodeInfo(settings, settingsPath),
+    files,
     servers: infos,
-    files: [
-      {
-        path: `${agentDir}/mcp.json`,
-        scope: "global",
-        exists: servers.some((server) => server.scope !== "project"),
-      },
-    ],
-    // The device is authoritative about its own MCP support; if `pi mcp list`
-    // answered, MCP is available there.
-    capabilities: { mcp: true, codemode: true, validator: false },
-    diagnostics: [],
-    // Project scope would need a trusted-project decision on the device, which
-    // this process cannot make. Reported as not loaded rather than guessed.
-    projectResourcesLoaded: false,
+    // A device decides trust for its own folders; reporting the folder without
+    // a trust verdict keeps the panel from offering a Trust button it cannot act on.
+    ...(cwd ? { project: { cwd, trustFolder: { allowed: true } } } : {}),
     remote: { deviceId, source: "pi-cli" },
   } as unknown as McpResponse;
 }
@@ -221,6 +311,9 @@ async function readMcpFromFile(
   driver: IHostDriver,
   agentDir: string,
   deviceId: string,
+  settings: Record<string, unknown>,
+  settingsPath: string,
+  cwd: string | null,
 ): Promise<McpResponse> {
   let raw: string | null = null;
   try {
@@ -255,22 +348,43 @@ async function readMcpFromFile(
     }
   }
 
+  const files: McpResponse["files"] = [
+    { path: `${agentDir}/mcp.json`, scope: "global", exists: raw !== null, problems: [] },
+  ];
+  if (cwd) {
+    const projectPath = `${cwd}/.pi/mcp.json`;
+    let projectExists = false;
+    try {
+      await driver.stat(projectPath);
+      projectExists = true;
+    } catch {
+      projectExists = false;
+    }
+    files.push({ path: projectPath, scope: "project", exists: projectExists, problems: [] });
+  }
+
   return {
+    mcp: { available: true },
+    codemode: remoteCodemodeInfo(settings, settingsPath),
+    files,
     servers: servers.map((server) => ({
       name: String(server.name ?? ""),
       scope: "global" as const,
-      exposure: server.exposure === "codemode" ? "codemode" as const : "direct" as const,
-      transport: { kind: "stdio" as const, command: String(server.transport ?? "") },
-      source: `${agentDir}/mcp.json`,
+      sourcePath: `${agentDir}/mcp.json`,
+      configKey: `remote:${deviceId}:file:${server.name}`,
       enabled: server.enabled !== false,
-      status: "unknown",
+      validated: true,
+      transport: "stdio" as const,
+      exposure: server.exposure === "codemode" ? "codemode" as const : "direct" as const,
+      command: String(server.transport ?? ""),
+      envNames: [] as string[],
+      headerNames: [] as string[],
+      usesOAuth: false,
+      commandFields: [],
+      variableReferences: [],
+      masked: false,
     })),
-    files: [{ path: `${agentDir}/mcp.json`, scope: "global", exists: raw !== null }],
-    capabilities: { mcp: true, codemode: true, validator: false },
-    diagnostics: raw === null
-      ? []
-      : [],
-    projectResourcesLoaded: false,
+    ...(cwd ? { project: { cwd, trustFolder: { allowed: true } } } : {}),
     remote: { deviceId, source: "file" },
   } as unknown as McpResponse;
 }

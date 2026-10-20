@@ -14,6 +14,7 @@
 
 import { projectNameOf, type SidebarFamilyStatus, type SidebarProject, type SidebarRow } from "./session-tree";
 import type { SessionUiStateRequest } from "./session-ui-state-shared";
+import { withDeviceId } from "./device-context";
 
 export type SessionMenuActionId =
   | "open-new-tab"
@@ -133,12 +134,13 @@ export interface ProjectSessionsDeleteOutcome {
 export async function deleteProjectSessions(
   ids: readonly string[],
   fetchImpl: typeof fetch,
+  deviceId?: string,
 ): Promise<ProjectSessionsDeleteOutcome> {
   const outcome: ProjectSessionsDeleteOutcome = { deletedRoots: [], deleted: [], running: [], error: null };
   for (let start = 0; start < ids.length; start += PROJECT_DELETE_IDS_PER_REQUEST) {
     const part = ids.slice(start, start + PROJECT_DELETE_IDS_PER_REQUEST);
     try {
-      const res = await fetchImpl("/api/sessions/delete", {
+      const res = await fetchImpl(withDeviceId("/api/sessions/delete", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: part }),

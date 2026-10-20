@@ -834,13 +834,15 @@ function isMcpResponse(value: unknown): value is McpResponse {
 
 /** The URL of the overview: the global file alone without a project. */
 export function mcpOverviewUrl(cwd: string | null, deviceId?: string): string {
-  const params = new URLSearchParams();
-  if (cwd) params.set("cwd", cwd);
+  // `encodeURIComponent`, not `URLSearchParams`: a path's spaces must stay %20
+  // in the URL the panel has always requested (the route decodes either form,
+  // but the tests and any cached URL key on this exact spelling).
+  const parts: string[] = [];
+  if (cwd) parts.push(`cwd=${encodeURIComponent(cwd)}`);
   // A remote device's servers are its own; without this the panel describes
   // this host's mcp.json.
-  if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
-  const query = params.toString();
-  return query ? `/api/mcp?${query}` : "/api/mcp";
+  if (deviceId && deviceId !== "localhost") parts.push(`deviceId=${encodeURIComponent(deviceId)}`);
+  return parts.length > 0 ? `/api/mcp?${parts.join("&")}` : "/api/mcp";
 }
 
 async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, signal?: AbortSignal, deviceId?: string): Promise<McpLoadResult> {

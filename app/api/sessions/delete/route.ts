@@ -34,9 +34,15 @@ export async function POST(req: Request) {
   if (!ids.every((id) => typeof id === "string" && SESSION_ID_PATTERN.test(id))) return refusal(400, "ids must be session ids");
 
   // Deleting on this host would remove a local session the user never pointed
-  // at: refuse instead of doing the wrong thing silently.
+  // at: delete it on the device instead.
   if (isRemoteDevice(getRequestDeviceId(req))) {
-    return refusal(501, "Not supported on remote devices yet");
+    try {
+      const { deleteRemoteSessions } = await import("@/lib/remote-session-delete");
+      const result = await deleteRemoteSessions(getRequestDeviceId(req), ids as string[], { keepRunning: true });
+      return NextResponse.json(result satisfies SessionDeleteResult, { headers: NO_STORE });
+    } catch (error) {
+      return refusal(500, error instanceof Error ? error.message : String(error));
+    }
   }
 
   try {

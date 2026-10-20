@@ -768,6 +768,7 @@ export const enLocale: LocalePlugin = {
     "mcp.reason.web-password": "It references PI_WEB_PASSWORD, so Pi Web does not turn it on.",
     "mcp.reason.undo-unavailable": "The removal can no longer be undone.",
     "mcp.reason.undo-name-taken": "The file defines a server of the same name again, so the removal was not undone.",
+    "mcp.reason.remote-unsupported": "This server belongs to a remote device, so Pi Web cannot change it from here.",
     "mcp.reason.name-taken": "The file already defines a server of that name.",
     "mcp.reason.link-dangling": "The file is a symbolic link to nothing, so Pi Web does not write it.",
     "mcp.reason.link-outside": "The file is a symbolic link outside the folders Pi Web may read, so Pi Web does not write it.",

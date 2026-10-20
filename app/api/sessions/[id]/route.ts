@@ -398,9 +398,27 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  // Deleting here would remove a local session the user never pointed at.
+  // Deleting here would remove a local session the user never pointed at:
+  // delete it on the device instead.
   if (isRemoteDevice(getRequestDeviceId(req))) {
-    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
+    const deviceId = getRequestDeviceId(req);
+    try {
+      const { deleteRemoteSessions } = await import("@/lib/remote-session-delete");
+      const { missing } = await deleteRemoteSessions(deviceId, [id]);
+      if (missing.length > 0) {
+        return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      }
+      return NextResponse.json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A device that is offline is a state the user can act on, not a server
+      // fault: say so, and say it at once (see getOnlineDriver).
+      const offline = message.includes("is not connected or offline");
+      return NextResponse.json(
+        { error: offline ? "The device is offline. Reconnect it, then delete again." : message, code: offline ? "device-offline" : undefined },
+        { status: offline ? 503 : 500 },
+      );
+    }
   }
   try {
     const { missing } = await deleteSessions([id]);

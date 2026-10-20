@@ -71,6 +71,26 @@ export class GatewayManager {
     }
     return this.registry.getDriver(targetId);
   }
+
+  /**
+   * The device's driver only while it is already connected.
+   *
+   * `getOrConnectDriver` polls for up to ten seconds, which is right for a
+   * request that can afford to wait for a first connect (a page load). An
+   * action the user is watching cannot: deleting a session on a device that is
+   * mid-reconnect sat on a spinner for ten seconds and then failed anyway,
+   * because the pool reconnects on its own schedule. Those callers ask here and
+   * get an answer at once.
+   */
+  public getOnlineDriver(id?: string): IHostDriver {
+    const targetId = id || 'localhost';
+    if (targetId === 'localhost') return this.registry.getDriver('localhost');
+    const entry = this.registry.get(targetId);
+    if (!entry || !entry.driver.isAlive()) {
+      throw new Error(`Device '${targetId}' is not connected or offline`);
+    }
+    return entry.driver;
+  }
 }
 
 declare global {

@@ -119,8 +119,7 @@ export async function GET(req: Request) {
     try {
       const { readRemoteMcpOverview } = await import("@/lib/remote-settings");
       const cwd = value || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
-      void cwd;
-      return NextResponse.json(await readRemoteMcpOverview(deviceId));
+      return NextResponse.json(await readRemoteMcpOverview(deviceId, cwd));
     } catch (error) {
       return refusal(500, "internal", errorMessage(error));
     }

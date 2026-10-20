@@ -1958,13 +1958,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setConfirmDeleteRootId((current) => (current === session.id ? null : current));
     try {
       // The server deletes the family's subagent sessions with it.
-      await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(session.id)}`, deviceIdRef.current), { method: "DELETE" });
+      const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(session.id)}`, deviceIdRef.current), { method: "DELETE" });
+      if (!res.ok) {
+        // A refused delete used to vanish silently: the row stayed and the next
+        // refresh showed the session still there, with no reason given. An
+        // offline device also needs the list resynced, so the row's running
+        // badge does not outlive the connection that justified it.
+        const data = await res.json().catch(() => ({})) as { error?: string; code?: string };
+        if (data.code === "device-offline") void loadSessions();
+        showToast(t("sidebar.deleteFailed", { error: data.error ?? `HTTP ${res.status}` }));
+        return;
+      }
       onSessionDeleted?.(session.id);
       void loadSessions();
-    } catch {
-      // The row stays; the next refresh shows what happened.
+    } catch (error) {
+      showToast(t("sidebar.deleteFailed", { error: error instanceof Error ? error.message : String(error) }));
     }
-  }, [loadSessions, onSessionDeleted]);
+  }, [loadSessions, onSessionDeleted, showToast, t]);
 
   // Only Shift skips the confirmation (Shift+click, Shift+Enter or Shift+D in the menu).
   const requestDelete = useCallback((family: SessionFamily, shiftKey: boolean) => {
@@ -2175,7 +2185,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     deletingRunsRef.current.add(runKey);
     showToast(t("sidebar.deletingSessions"));
     try {
-      const outcome = await deleteProjectSessions(ids, fetch);
+      const outcome = await deleteProjectSessions(ids, fetch, deviceIdRef.current);
       for (const id of outcome.deleted) onSessionDeleted?.(id);
       // A group goes with its last session (in the tree, unless it is
       // current or pinned): focus that fell to the page with it moves on.
