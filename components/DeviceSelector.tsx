@@ -5,6 +5,9 @@ import React, { useState, useEffect, useRef } from "react";
 /** Background refresh cadence for the device list (visible tabs only). */
 const DEVICES_POLL_MS = 15000;
 
+/** Square size of the compact (phone) button, matching the top bar's icons. */
+const COMPACT_BUTTON_SIZE = 36;
+
 export interface DeviceInfo {
   id: string;
   name: string;
@@ -18,12 +21,20 @@ interface Props {
   selectedDeviceId: string;
   onSelectDevice: (deviceId: string) => void;
   onOpenTerminalOnDevice?: (deviceId: string) => void;
+  /**
+   * Icon-only form for the phone top bar, where the device name has no room:
+   * the server glyph plus the status dot, one square button. The dropdown
+   * itself is unchanged, so switching hosts on a phone reaches every device
+   * and the same Terminal action.
+   */
+  compact?: boolean;
 }
 
 export function DeviceSelector({
   selectedDeviceId,
   onSelectDevice,
   onOpenTerminalOnDevice,
+  compact = false,
 }: Props) {
   const [devices, setDevices] = useState<DeviceInfo[]>([
     { id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" },
@@ -86,8 +97,19 @@ export function DeviceSelector({
     status: "offline" as const,
   };
 
+  const statusColor =
+    currentDevice.status === "online"
+      ? "#22c55e"
+      : currentDevice.status === "connecting"
+      ? "#eab308"
+      : "#ef4444";
+
   return (
-    <div ref={dropdownRef} style={{ position: "relative", display: "inline-block", height: "100%" }}>
+    <div
+      ref={dropdownRef}
+      data-device-selector={selectedDeviceId}
+      style={{ position: "relative", display: "inline-block", height: "100%" }}
+    >
       <button
         type="button"
         onClick={() => {
@@ -95,12 +117,17 @@ export function DeviceSelector({
           if (!open) fetchDevices();
         }}
         title={`Current Device: ${currentDevice.name} (${currentDevice.status})`}
+        aria-label={`Current Device: ${currentDevice.name} (${currentDevice.status})`}
+        aria-expanded={open}
+        data-device-selector-button="true"
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 6,
+          justifyContent: compact ? "center" : undefined,
+          gap: compact ? 0 : 6,
           height: "100%",
-          padding: "0 10px",
+          padding: compact ? 0 : "0 10px",
+          width: compact ? COMPACT_BUTTON_SIZE : undefined,
           background: open ? "var(--bg-selected, rgba(255,255,255,0.08))" : "none",
           border: "none",
           borderRight: "1px solid var(--border)",
@@ -127,49 +154,49 @@ export function DeviceSelector({
           <line x1="6" x2="6.01" y1="18" y2="18" />
         </svg>
 
-        {/* Status dot */}
+        {/* Status dot. On a phone it rides the corner of the glyph instead of
+            taking a slot in the row: the icon alone would not show offline. */}
         <span
           style={{
-            width: 7,
-            height: 7,
+            width: compact ? 6 : 7,
+            height: compact ? 6 : 7,
             borderRadius: "50%",
-            backgroundColor:
-              currentDevice.status === "online"
-                ? "#22c55e"
-                : currentDevice.status === "connecting"
-                ? "#eab308"
-                : "#ef4444",
-            boxShadow:
-              currentDevice.status === "online"
-                ? "0 0 6px rgba(34, 197, 94, 0.6)"
-                : "none",
+            backgroundColor: statusColor,
+            boxShadow: currentDevice.status === "online" ? "0 0 6px rgba(34, 197, 94, 0.6)" : "none",
             display: "inline-block",
             flexShrink: 0,
+            ...(compact
+              ? { position: "absolute" as const, right: 7, bottom: 7, pointerEvents: "none" as const }
+              : null),
           }}
         />
 
-        <span style={{ maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis" }}>
-          {currentDevice.id === "localhost" ? "Local" : currentDevice.name || currentDevice.id}
-        </span>
+        {!compact && (
+          <>
+            <span style={{ maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {currentDevice.id === "localhost" ? "Local" : currentDevice.name || currentDevice.id}
+            </span>
 
-        {/* Caret */}
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{
-            opacity: 0.6,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 0.15s",
-          }}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+            {/* Caret */}
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                opacity: 0.6,
+                transform: open ? "rotate(180deg)" : "none",
+                transition: "transform 0.15s",
+              }}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </>
+        )}
       </button>
 
       {open && (

@@ -1212,6 +1212,34 @@ export function AppShell() {
     handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
   }, [handleOpenFile, selectedSession?.id]);
 
+  const handleSelectDevice = useCallback((id: string) => {
+    setSelectedDeviceId(id);
+    const isRemote = id !== "localhost";
+    // Not `/root`: a macOS device answers `/Users/<name>`. Start at
+    // its home (already cached when the sidebar listed it, `/` until
+    // the lookup lands) and correct the workspace once it resolves.
+    const nextCwd = isRemote ? deviceHomeOrRoot(id) : null;
+    setActiveCwd(nextCwd);
+    setSelectedSession(null);
+    setNewSessionCwd(nextCwd);
+    setExplorerRefreshKey((k) => k + 1);
+    clearTabOpenSession();
+    // On a phone the drawer covers the chat, and picking a host is a request to
+    // look at what it has, so the drawer closes on the answer.
+    if (isMobile) setSidebarOpen(false);
+    if (isRemote) {
+      router.replace(deviceHref({ deviceId: id, cwd: nextCwd ?? "/" }, "/"), { scroll: false });
+      void loadHome(id).then((home) => {
+        if (!home || home === nextCwd) return;
+        setActiveCwd((current) => (current === nextCwd ? home : current));
+        setNewSessionCwd((current) => (current === nextCwd ? home : current));
+        router.replace(deviceHref({ deviceId: id, cwd: home }, "/"), { scroll: false });
+      });
+    } else {
+      router.replace(deviceHref(null, "/"), { scroll: false });
+    }
+  }, [deviceHref, isMobile, router]);
+
   const handleOpenTerminal = useCallback((cwd: string, targetDeviceId?: string) => {
     const devId = targetDeviceId ?? selectedDeviceId;
     const existing = terminalTabs.find((tab) => tab.cwd === cwd && (tab.deviceId ?? "localhost") === devId);
@@ -2254,11 +2282,20 @@ export function AppShell() {
                 height: "100%",
               }}
             >
+              {/* The host switcher stays in the phone top bar: it is the only
+                  way to change device, and hiding it behind the More overlay
+                  left phones unable to leave localhost at all. Icon-only, with
+                  the status dot on the glyph's corner. */}
+              <DeviceSelector
+                selectedDeviceId={selectedDeviceId}
+                onSelectDevice={handleSelectDevice}
+                onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                compact
+              />
               {isNarrowMobile && (
                 <button
                   type="button"
-                  onClick={handleMobileToolbarMoreToggle}
-                  title={mobileToolbarMoreOpen ? translate("chat.close") : translate("chat.moreControls")}
+                  onClick={handleMobileToolbarMoreToggle}                  title={mobileToolbarMoreOpen ? translate("chat.close") : translate("chat.moreControls")}
                   aria-label={mobileToolbarMoreOpen ? translate("chat.close") : translate("chat.moreControls")}
                   aria-controls="mobile-toolbar-actions"
                   aria-expanded={mobileToolbarMoreOpen}
@@ -2288,8 +2325,7 @@ export function AppShell() {
               {!isNarrowMobile && renderChatToolbarActions(true)}
               {renderSessionStatsButton(true)}
               {renderMainFileToggle(true)}
-              {isNarrowMobile && mobileToolbarMoreOpen && (
-                <div
+              {isNarrowMobile && mobileToolbarMoreOpen && (                <div
                   id="mobile-toolbar-actions"
                   role="toolbar"
                   aria-label={translate("chat.moreControls")}
@@ -2317,30 +2353,7 @@ export function AppShell() {
             <>
               <DeviceSelector
                 selectedDeviceId={selectedDeviceId}
-                onSelectDevice={(id) => {
-                  setSelectedDeviceId(id);
-                  const isRemote = id !== "localhost";
-                  // Not `/root`: a macOS device answers `/Users/<name>`. Start at
-                  // its home (already cached when the sidebar listed it, `/` until
-                  // the lookup lands) and correct the workspace once it resolves.
-                  const nextCwd = isRemote ? deviceHomeOrRoot(id) : null;
-                  setActiveCwd(nextCwd);
-                  setSelectedSession(null);
-                  setNewSessionCwd(nextCwd);
-                  setExplorerRefreshKey((k) => k + 1);
-                  clearTabOpenSession();
-                  if (isRemote) {
-                    router.replace(deviceHref({ deviceId: id, cwd: nextCwd ?? "/" }, "/"), { scroll: false });
-                    void loadHome(id).then((home) => {
-                      if (!home || home === nextCwd) return;
-                      setActiveCwd((current) => (current === nextCwd ? home : current));
-                      setNewSessionCwd((current) => (current === nextCwd ? home : current));
-                      router.replace(deviceHref({ deviceId: id, cwd: home }, "/"), { scroll: false });
-                    });
-                  } else {
-                    router.replace(deviceHref(null, "/"), { scroll: false });
-                  }
-                }}
+                onSelectDevice={handleSelectDevice}
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
               />
               {renderProjectTrustWarning(false)}
