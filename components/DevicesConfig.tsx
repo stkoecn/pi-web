@@ -328,7 +328,10 @@ export function DevicesConfig({
                     </ConfigDetailTitle>
                     {!addMode && (
                       <code className="config-detail-subtitle">
-                        {runtime.get(draft.id)?.remoteAddr ?? `${draft.host}:${draft.port}`}
+                        {runtime.get(draft.id)?.remoteAddr ||
+                          (draft.mode === "reverse_tunnel"
+                            ? t("devices.mode.reverse_tunnel")
+                            : `${draft.host}:${draft.port}`)}
                       </code>
                     )}
                   </ConfigDetailHeaderInfo>
@@ -347,10 +350,44 @@ export function DevicesConfig({
                 <div className="settings-device-form">
                   {field(t("devices.field.id"), "id", { placeholder: "my-vps", disabled: !addMode })}
                   {field(t("devices.field.name"), "name", { placeholder: "My VPS", mono: false })}
-                  <div className="settings-device-row">
-                    {field(t("devices.field.host"), "host", { placeholder: "203.0.113.10" })}
-                    {field(t("devices.field.port"), "port", { placeholder: "22" })}
-                  </div>
+                  {/* Which side opens the connection decides whether the fields
+                      below are even knowable, so it is asked first. */}
+                  <ConfigField label={t("devices.field.mode")}>
+                    <div className="settings-device-modes" data-device-field="mode">
+                      {(["active_ssh", "reverse_tunnel"] as const).map((mode) => (
+                        <label
+                          key={mode}
+                          className="settings-device-mode"
+                          data-device-mode={mode}
+                          data-selected={draft.mode === mode}
+                        >
+                          <input
+                            type="radio"
+                            name="device-mode"
+                            checked={draft.mode === mode}
+                            onChange={() => {
+                              setDraft((current) => (current ? { ...current, mode } : current));
+                            }}
+                          />
+                          <span>{t(`devices.mode.${mode}`)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </ConfigField>
+                  {draft.mode === "reverse_tunnel" ? (
+                    <ConfigNotice>
+                      {t("devices.modeHint.reverse_tunnel")}
+                      <code className="settings-device-command">
+                        <span className="settings-device-command-label">{t("devices.tunnelCommand")}</span>
+                        {`ssh -N -R 0:localhost:22 ${draft.id.trim() || "<id>"}@<gateway> -p 22222`}
+                      </code>
+                    </ConfigNotice>
+                  ) : (
+                    <div className="settings-device-row">
+                      {field(t("devices.field.host"), "host", { placeholder: "203.0.113.10" })}
+                      {field(t("devices.field.port"), "port", { placeholder: "22" })}
+                    </div>
+                  )}
                   {field(t("devices.field.username"), "username", { placeholder: "root" })}
                   {field(t("devices.field.privateKeyPath"), "privateKeyPath", { placeholder: "~/.ssh/id_ed25519" })}
                   <ConfigField label={t("devices.field.password")}>

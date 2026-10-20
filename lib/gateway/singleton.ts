@@ -8,7 +8,7 @@ import {
   type DeviceFileIssue,
 } from './device-config-file';
 import type { IHostDriver } from './types/host-driver';
-import type { ActiveDeviceConfig } from './types/device';
+import type { ActiveDeviceConfig, DeviceInfo } from './types/device';
 
 /**
  * A device that is known to the gateway but not connected right now.
@@ -40,6 +40,15 @@ export class GatewayManager {
     this.sshServer = new SSHServer(this.registry, this.clientPool, {
       port: 22222,
       host: '0.0.0.0',
+      // A device that dials in identifies itself with the SSH username of its
+      // tunnel, which must equal the id in devices.json. Nothing else can tell
+      // the gateway which configured machine just connected, and a tunnel from
+      // an unknown name would otherwise become a device that fails every request.
+      resolveTunnelDevice: (tunnelUsername) => {
+        return this.configuredDevices.find(
+          (config) => config.id === tunnelUsername && (config.mode ?? 'active_ssh') === 'reverse_tunnel',
+        );
+      },
     });
   }
 
@@ -56,9 +65,18 @@ export class GatewayManager {
     // Connect every configured device in parallel. Each handshake takes 2-3 s
     // on a WAN link, and doing them one after another left the last device
     // unusable for ten seconds after every restart.
+    //
+    // A `reverse_tunnel` device is the opposite of a dial-out target: it is one
+    // we cannot reach, and it connects to us. Dialling its `host` would either
+    // fail or, worse, succeed against something else entirely, so it is skipped
+    // here and appears only once it actually dials in.
     const devices = loaded.configs.filter((dev) => (dev.mode ?? 'active_ssh') === 'active_ssh');
     for (const dev of devices) {
       console.log(`[Gateway] Loading device from config: ${dev.id} (${dev.host}:${dev.port})`);
+    }
+    const tunnels = loaded.configs.filter((dev) => (dev.mode ?? 'active_ssh') === 'reverse_tunnel');
+    for (const dev of tunnels) {
+      console.log(`[Gateway] Waiting for reverse tunnel device: ${dev.id} (ssh -R as user "${dev.id}")`);
     }
     this.configuredDevices = loaded.configs;
     await Promise.allSettled(devices.map((dev) => this.clientPool.addDevice(dev)));
@@ -84,6 +102,34 @@ export class GatewayManager {
   }
 
   /**
+   * Every device the user can pick, including one that has not dialled in yet.
+   *
+   * The registry only knows devices that are connected or dialling, so a
+   * `reverse_tunnel` entry vanished completely between gateway restarts: the
+   * user could not see it, could not select it, and had no way to learn that it
+   * was waiting for its own `ssh -R` to arrive. A configured device is a device
+   * the user asked for, so it is listed offline rather than not at all.
+   */
+  public listDevices(): DeviceInfo[] {
+    const live = this.registry.list();
+    const known = new Set(live.map((device) => device.id));
+    const waiting: DeviceInfo[] = this.configuredDevices
+      .filter((config) => (config.mode ?? 'active_ssh') === 'reverse_tunnel')
+      .filter((config) => !known.has(config.id))
+      .map((config) => ({
+        id: config.id,
+        name: config.name,
+        mode: 'reverse_tunnel' as const,
+        // Not an address: this device has none until it dials in. Saying so
+        // keeps the switcher from showing a stale or invented host.
+        remoteAddr: '',
+        status: 'offline' as const,
+        lastSeen: 0,
+      }));
+    return [...live, ...waiting];
+  }
+
+  /**
    * Make the live pool match a list: connect what is new, drop what is gone,
    * and reconnect only what actually changed.
    *
@@ -101,15 +147,37 @@ export class GatewayManager {
     const removed: string[] = [];
     for (const id of previous.keys()) {
       if (next.has(id) || id === 'localhost') continue;
-      this.clientPool.removeDevice(id);
+      // Which half owned this device decides how it is torn down: a dialled
+      // device has a client in the pool, a reversed one has a forwarder and an
+      // inner connection in the tunnel server.
+      if ((previous.get(id)?.mode ?? 'active_ssh') === 'reverse_tunnel') {
+        await this.sshServer.closeTunnel(id);
+      } else {
+        this.clientPool.removeDevice(id);
+      }
       removed.push(id);
     }
 
     const connected: string[] = [];
     const unchanged: string[] = [];
     for (const config of configs) {
-      if ((config.mode ?? 'active_ssh') !== 'active_ssh') continue;
+      const mode = config.mode ?? 'active_ssh';
       const before = previous.get(config.id);
+      if (mode === 'reverse_tunnel') {
+        // A device switched from dialled to dialled-in must lose its client, or
+        // both connections would keep writing to the same registry entry.
+        if (before && (before.mode ?? 'active_ssh') !== 'reverse_tunnel') {
+          this.clientPool.removeDevice(config.id);
+        }
+        // Nothing to dial. A device that is already dialled in just takes the
+        // new label and credentials; one that is not waits for its own tunnel.
+        const applied = await this.sshServer.updateTunnelConfig(config);
+        (applied ? unchanged : connected).push(config.id);
+        continue;
+      }
+      if (before && (before.mode ?? 'active_ssh') === 'reverse_tunnel') {
+        await this.sshServer.closeTunnel(config.id);
+      }
       if (before && sameConnection(before, config)) {
         // The connection is unchanged, but the label may not be: a rename must
         // show up in the switcher without paying for a new handshake.
@@ -143,6 +211,11 @@ export class GatewayManager {
       ? { connected: [], removed: [], unchanged: [] }
       : await this.syncDevices(loaded.configs);
     return { path: loaded.path, configs: loaded.configs, issues: loaded.issues, error: loaded.error, sync };
+  }
+
+  /** Devices currently dialled in over a reverse tunnel. */
+  public listTunnels(): { deviceId: string; boundPort: number }[] {
+    return this.sshServer.listTunnels();
   }
 
   /** The file the gateway reads. Kept in one place so a route never guesses it. */

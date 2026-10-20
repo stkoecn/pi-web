@@ -4,9 +4,7 @@ import type { ActiveDeviceConfig } from './types/device';
 import { DeviceRegistry } from './device-registry';
 import { SSHHostDriver } from './drivers/ssh-host-driver';
 import { OfflineHostDriver } from './drivers/offline-host-driver';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { buildConnectConfig } from './ssh-connect-config';
 
 const SSHClientClass = ssh2.Client;
 
@@ -95,29 +93,10 @@ export class SSHClientPool {
     this.connectingClients.set(config.id, client);
 
     const connectConfig: ConnectConfig = {
+      ...buildConnectConfig(live).config,
       host: live.host,
       port: live.port,
-      username: live.username,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 3,
-      readyTimeout: 15000,
     };
-
-    if (live.privateKey) {
-      connectConfig.privateKey = live.privateKey;
-    } else if (live.privateKeyPath) {
-      let resolved = live.privateKeyPath;
-      if (resolved.startsWith('~')) {
-        resolved = path.join(os.homedir(), resolved.slice(1));
-      }
-      try {
-        connectConfig.privateKey = fs.readFileSync(resolved);
-      } catch (err: any) {
-        console.warn(`[SSHClientPool] Failed to read private key for ${config.id} at ${resolved}: ${err.message}`);
-      }
-    } else if (live.password) {
-      connectConfig.password = live.password;
-    }
 
     client.on('ready', () => {
       if (superseded()) {
@@ -144,7 +123,6 @@ export class SSHClientPool {
       const existing = this.registry.get(config.id);
       const mode = existing ? existing.info.mode : 'active_ssh';
       const boundPort = existing ? existing.info.boundPort : undefined;
-
       this.registry.register(
         {
           id: config.id,

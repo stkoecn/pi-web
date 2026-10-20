@@ -28,13 +28,16 @@ function failure(error: unknown, status = 500) {
  * appears. The file path and the saved entries are included so the settings
  * pane can show and edit the file itself. Passwords and key contents never
  * leave this process; a saved device reports `hasPassword` instead.
+ *
+ * `devices` includes configured devices that have not connected yet, so a
+ * reverse-tunnel host the user added is visible while it waits to dial in.
  */
 export async function GET() {
   try {
     const gateway = getGateway();
     const file = readDevicesFile(gateway.configPath());
     return NextResponse.json({
-      devices: gateway.registry.list(),
+      devices: gateway.listDevices(),
       configPath: file.path,
       configs: file.configs.map(publicDeviceConfig),
       issues: file.issues,

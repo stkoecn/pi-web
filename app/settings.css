@@ -2673,6 +2673,58 @@ select.mcp-add-input {
   font-size: 10px;
 }
 
+/* Two mutually exclusive answers to "who opens the connection?", so they read
+   as one control rather than a field with an implicit default. */
+.settings-device-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-device-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt, transparent);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.settings-device-mode[data-selected="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.settings-device-mode input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* The command is the only thing a dialled-in host needs, so it is shown as
+   copyable text instead of being described in prose. */
+.settings-device-command {
+  display: block;
+  margin-top: 6px;
+  overflow-x: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.settings-device-command-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-dim);
+  font-family: var(--font-sans, inherit);
+  font-size: 11px;
+}
+
 @media (max-width: 640px) {
   /* The two-field row would leave each box too narrow to read an address. */
   .settings-device-row {

@@ -17,6 +17,21 @@ let configured = [];
 const gateway = {
   configPath: () => file,
   registry: { list: () => [{ id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" }] },
+  // Mirrors the real gateway: connected devices plus configured reverse-tunnel
+  // devices that have not dialled in, so a waiting host still appears.
+  listDevices: () => [
+    { id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" },
+    ...configured
+      .filter((c) => c.mode === "reverse_tunnel")
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        mode: "reverse_tunnel",
+        remoteAddr: "",
+        status: "offline",
+        lastSeen: 0,
+      })),
+  ],
   listConfiguredDevices: () => configured.map((c) => ({ ...c })),
   syncDevices: async (configs) => {
     syncs.push(configs.map((c) => c.id));
@@ -163,4 +178,29 @@ test("a file that cannot be parsed is reported instead of overwritten", async ()
   // Writing over a file we could not read would throw away every device in it.
   assert.equal((await POST(request("POST", { id: "x", host: "h", username: "u" }))).status, 409);
   assert.equal(readFileSync(file, "utf8"), "{ broken");
+});
+
+test("a reverse-tunnel device that has not dialled in is still listed", async () => {
+  const res = await POST(request("POST", {
+    id: "home", name: "Home (dial-in)", mode: "reverse_tunnel", username: "windsing",
+  }));
+  assert.equal(res.status, 200);
+
+  const body = await (await GET()).json();
+  const waiting = body.devices.find((d) => d.id === "home");
+  // Absent would mean the user cannot see or select the host they just added.
+  assert.ok(waiting, "configured reverse-tunnel device must appear");
+  assert.equal(waiting.status, "offline");
+  assert.equal(waiting.mode, "reverse_tunnel");
+  // No address is invented: nothing is known until it connects.
+  assert.equal(waiting.remoteAddr, "");
+});
+
+test("a reverse-tunnel device needs no host or port in the file", async () => {
+  const res = await POST(request("POST", { id: "home", mode: "reverse_tunnel", username: "windsing" }));
+  assert.equal(res.status, 200);
+  const entry = saved().find((c) => c.id === "home");
+  assert.equal(entry.mode, "reverse_tunnel");
+  assert.equal(entry.port, 0);
+  assert.equal(entry.host, "127.0.0.1");
 });

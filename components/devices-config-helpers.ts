@@ -56,6 +56,12 @@ export interface DeviceReloadResponse {
 export interface DeviceDraft {
   id: string;
   name: string;
+  /**
+   * Which half of the gateway owns this device. A dialled device has an address
+   * to reach; a dialled-in one does not, and asking for a host it cannot have
+   * is the difference between "wrong password" and an unfillable form.
+   */
+  mode: "active_ssh" | "reverse_tunnel";
   host: string;
   port: string;
   username: string;
@@ -72,6 +78,7 @@ export function emptyDraft(): DeviceDraft {
   return {
     id: "",
     name: "",
+    mode: "active_ssh",
     host: "",
     port: DEFAULT_PORT,
     username: "",
@@ -86,6 +93,7 @@ export function draftFromConfig(config: DeviceConfigEntry): DeviceDraft {
   return {
     id: config.id,
     name: config.name ?? "",
+    mode: config.mode === "reverse_tunnel" ? "reverse_tunnel" : "active_ssh",
     host: config.host,
     port: String(config.port ?? DEFAULT_PORT),
     username: config.username,
@@ -103,6 +111,7 @@ export function draftToBody(draft: DeviceDraft): Record<string, unknown> {
   const body: Record<string, unknown> = {
     id: draft.id.trim(),
     name: draft.name.trim(),
+    mode: draft.mode,
     host: draft.host.trim(),
     port: draft.port.trim(),
     username: draft.username.trim(),
@@ -123,10 +132,16 @@ export function draftToBody(draft: DeviceDraft): Record<string, unknown> {
 export function draftProblem(draft: DeviceDraft): string | null {
   if (!draft.id.trim()) return "devices.problem.id";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(draft.id.trim())) return "devices.problem.idFormat";
-  if (!draft.host.trim()) return "devices.problem.host";
+  // A dialled-in device has no address of its own until it connects: the gateway
+  // learns the address when the tunnel arrives, so demanding a host and port
+  // here would ask for values the user cannot know.
+  const dialled = draft.mode !== "reverse_tunnel";
+  if (dialled && !draft.host.trim()) return "devices.problem.host";
   if (!draft.username.trim()) return "devices.problem.username";
-  const port = Number(draft.port.trim());
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return "devices.problem.port";
+  if (dialled) {
+    const port = Number(draft.port.trim());
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return "devices.problem.port";
+  }
   return null;
 }
 

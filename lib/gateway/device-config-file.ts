@@ -54,6 +54,12 @@ function asString(value: unknown): string | undefined {
  * Validation is strict on purpose: a half-valid entry would be connected with
  * a guessed port or user, which fails as a confusing authentication error
  * instead of as "this line is wrong".
+ *
+ * The two modes need different fields. An `active_ssh` entry is a host the
+ * gateway dials, so `host` and `port` are required. A `reverse_tunnel` entry is
+ * a machine that dials *in*, so it has no address of its own to dial: only the
+ * identity (`id`, which must match the tunnel's SSH username) and the
+ * credentials for the connection the tunnel carries.
  */
 export function parseDeviceEntry(
   value: unknown,
@@ -67,13 +73,23 @@ export function parseDeviceEntry(
   if (!DEVICE_ID_PATTERN.test(id)) {
     return { reason: `id "${id}" may use only letters, digits, dot, dash and underscore` };
   }
-  const host = asString(raw.host);
-  if (!host) return { reason: "missing host" };
+  const mode = raw.mode === "reverse_tunnel" ? "reverse_tunnel" : "active_ssh";
   const username = asString(raw.username);
   if (!username) return { reason: "missing username" };
 
-  const port = raw.port === undefined ? 22 : Number(raw.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  // A tunnel entry's address is always the gateway's own loopback: the port is
+  // chosen when the device connects, so whatever `host`/`port` it carries would
+  // be a guess. Rejecting the file over an address it cannot use would make the
+  // entry look wrong when it is only irrelevant.
+  const host = mode === "reverse_tunnel" ? (asString(raw.host) ?? "127.0.0.1") : asString(raw.host);
+  if (!host) return { reason: "missing host" };
+
+  const defaultPort = mode === "reverse_tunnel" ? 0 : 22;
+  const port = raw.port === undefined ? defaultPort : Number(raw.port);
+  const portValid = mode === "reverse_tunnel"
+    ? port === 0 || (Number.isInteger(port) && port >= 1 && port <= 65535)
+    : Number.isInteger(port) && port >= 1 && port <= 65535;
+  if (!portValid) {
     return { reason: `port ${String(raw.port)} is not between 1 and 65535` };
   }
 
@@ -85,7 +101,6 @@ export function parseDeviceEntry(
     return { reason: "set either privateKeyPath or password, not both" };
   }
 
-  const mode = raw.mode === "reverse_tunnel" ? "reverse_tunnel" : "active_ssh";
   const config: ActiveDeviceConfig = {
     id,
     name: asString(raw.name) ?? id,
@@ -198,6 +213,7 @@ export interface DeviceConfigInput {
   privateKeyPath?: unknown;
   password?: unknown;
   defaultCwd?: unknown;
+  mode?: unknown;
 }
 
 /** A config as the browser may see it: the secret itself is never sent, only whether one is set. */
@@ -243,13 +259,21 @@ function mergeConfig(current: ActiveDeviceConfig, input: DeviceConfigInput): { c
     if (typeof port !== "number" || Number.isNaN(port)) return { reason: `port ${String(input.port)} is not a number` };
     merged.port = port;
   }
+  // A mode switch is a real edit: an `active_ssh` device that becomes
+  // `reverse_tunnel` must stop being dialled out for, and vice versa.
+  if (input.mode !== undefined) {
+    if (input.mode !== "active_ssh" && input.mode !== "reverse_tunnel") {
+      return { reason: `mode must be "active_ssh" or "reverse_tunnel"` };
+    }
+    merged.mode = input.mode;
+  }
 
   return parseDeviceEntry(merged);
 }
 
 function toConfig(input: DeviceConfigInput, id: string): { config: ActiveDeviceConfig } | { reason: string } {
   const entry: Record<string, unknown> = { id };
-  for (const field of ["name", "host", "port", "username", "privateKeyPath", "password", "defaultCwd"] as const) {
+  for (const field of ["name", "host", "port", "username", "privateKeyPath", "password", "defaultCwd", "mode"] as const) {
     const value = input[field];
     if (typeof value === "string" && value.trim().length > 0) entry[field] = value.trim();
     else if (typeof value === "number") entry[field] = value;

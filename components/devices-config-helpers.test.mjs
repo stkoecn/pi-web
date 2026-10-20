@@ -49,6 +49,7 @@ test("the port travels as the text in the field, and blank visible fields are se
 test("an empty draft fills the default port and passes only once the rest is filled", () => {
   const draft = emptyDraft();
   assert.equal(draft.port, "22");
+  assert.equal(draft.mode, "active_ssh");
   assert.equal(draftProblem(draft), "devices.problem.id");
   assert.equal(draftProblem({ ...draft, id: "vps" }), "devices.problem.host");
   assert.equal(draftProblem({ ...draft, id: "vps", host: "h" }), "devices.problem.username");
@@ -64,6 +65,25 @@ test("an empty draft fills the default port and passes only once the rest is fil
     draftProblem({ ...draft, id: "vps", host: "h", username: "root", port: "22" }),
     null,
   );
+});
+
+test("a dialled-in device is valid with no address at all", () => {
+  // Nothing is known about a reverse-tunnel host until it connects, so a form
+  // that insisted on host/port could never be completed for one.
+  const draft = { ...emptyDraft(), mode: "reverse_tunnel", id: "home", username: "windsing" };
+  assert.equal(draftProblem(draft), null);
+  const body = draftToBody(draft);
+  assert.equal(body.mode, "reverse_tunnel");
+  // Whatever address the file happens to hold is not checked for this mode:
+  // the gateway cannot dial it, so a stale value must not block a save.
+  assert.equal(draftProblem({ ...draft, host: "h", port: "0" }), null);
+});
+
+test("the mode travels with every save so switching direction is a real edit", () => {
+  assert.equal(draftToBody(draftFromConfig(saved)).mode, "active_ssh");
+  const reverse = draftFromConfig({ ...saved, mode: "reverse_tunnel" });
+  assert.equal(reverse.mode, "reverse_tunnel");
+  assert.equal(draftToBody(reverse).mode, "reverse_tunnel");
 });
 
 test("an id must be usable in a URL and as a map key", () => {
