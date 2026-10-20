@@ -16,7 +16,7 @@ import {
 import { startServerPerf } from "@/lib/perf";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { DeviceOfflineError } from "@/lib/gateway/singleton";
-import { listRemoteSessions } from "@/lib/remote-session-store";
+import { getRemoteSessionListVersion, listRemoteSessions } from "@/lib/remote-session-store";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +34,10 @@ export async function GET(req: Request) {
       // Same key set as the local branch, same `SessionInfo` shape: the sidebar
       // cannot tell the two apart. `lib/remote-session-store.ts` does the whole
       // catalogue in one round trip (find + one awk pass), not one exec per file.
-      const { getAllRemoteRpcSessions } = await import("@/lib/remote-agent-manager");
+      const {
+        getAwaitingInputRemoteRpcSessionIdsForDevice,
+        getRunningRemoteRpcSessionIdsForDevice,
+      } = await import("@/lib/remote-agent-manager");
       // An offline device must answer immediately: `getOrConnectDriver` polls for
       // 10 s before it gives up, and the sidebar polls this route. An empty
       // catalogue plus `deviceOnline: false` lets the UI say "offline" at once
@@ -45,7 +48,7 @@ export async function GET(req: Request) {
       if (!online) {
         return jsonResponse(req, {
           sessions: [],
-          sessionListVersion: getSessionListVersion(),
+          sessionListVersion: getRemoteSessionListVersion(deviceId),
           runningSessionIds: [],
           awaitingInputSessionIds: [],
           completionNotificationSuppressedSessionIds: [],
@@ -56,11 +59,11 @@ export async function GET(req: Request) {
       perf?.span("remote-scan");
       return jsonResponse(req, {
         sessions,
-        sessionListVersion: getSessionListVersion(),
-        runningSessionIds: getAllRemoteRpcSessions()
-          .filter((s) => s.deviceId === deviceId)
-          .map((s) => s.sessionId),
-        awaitingInputSessionIds: [],
+        // The device's own counter (see getRemoteSessionListVersion): the local
+        // one never moves for a remote device, so no tab would ever reload.
+        sessionListVersion: getRemoteSessionListVersion(deviceId),
+        runningSessionIds: getRunningRemoteRpcSessionIdsForDevice(deviceId),
+        awaitingInputSessionIds: getAwaitingInputRemoteRpcSessionIdsForDevice(deviceId),
         completionNotificationSuppressedSessionIds: [],
         deviceOnline: true,
       }, { headers: { "Cache-Control": "no-store" } });

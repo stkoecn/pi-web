@@ -16,7 +16,7 @@ import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-res
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { checkSessionMembership, listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
-import { withDeviceId } from "@/lib/device-context";
+import { withDeviceId } from "./device-context";
 
 export { getAgentDir };
 
@@ -155,7 +155,15 @@ function readSessionRelationEntries(filePath: string): SessionEntry[] {
   ];
 }
 
-export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise<SessionInfo[]> {
+export async function attachSessionProjectInfo(
+  sessions: SessionInfo[],
+  /**
+   * `platform` picks the path flavour used to derive `projectKey`. A remote
+   * device's `/Users/name` must not be normalized as a Windows path: the key
+   * would come out as `\users\name` and never match the folder it came from.
+   */
+  options: { platform?: NodeJS.Platform } = {},
+): Promise<SessionInfo[]> {
   const uniqueCwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
   const projectByCwd = new Map<string, ProjectInfo>();
   await Promise.all(uniqueCwds.map(async (cwd) => {
@@ -168,7 +176,7 @@ export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise
     return {
       ...session,
       projectRoot,
-      projectKey: projectIdentityKey(projectRoot),
+      projectKey: projectIdentityKey(projectRoot, options.platform),
       ...(project?.branch ? { branch: project.branch } : {}),
       ...(project?.isWorktree ? { isWorktree: true } : {}),
     };

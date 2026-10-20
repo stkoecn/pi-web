@@ -1,6 +1,8 @@
 import { getGateway } from "@/lib/gateway/singleton";
 import type { RPCChannel } from "@/lib/gateway/types/host-driver";
 import { deviceHomeOrDefault } from "@/lib/device-home";
+import { isBlockingExtensionUiRequest } from "@/lib/extension-ui-queue";
+import type { ExtensionUiRequest } from "@/lib/types";
 
 export interface RemoteRpcSession {
   sessionId: string;
@@ -11,6 +13,22 @@ export interface RemoteRpcSession {
   createdAt: number;
   /** Last message seen on the channel; the idle sweeper reaps stale sessions. */
   lastActivityAt: number;
+  /**
+   * Blocking extension dialogs still unanswered on this session, by request id.
+   *
+   * Tracked here rather than read from `state`: pi's `get_state` does not report
+   * them, and the sidebar needs to tell a run parked on a person from one that
+   * is still working.
+   */
+  pendingUiRequestIds: Set<string>;
+  /**
+   * A turn is in flight, as reported by pi's own events.
+   *
+   * Kept apart from `state.isStreaming`: `get_state` polling replaces `state`
+   * wholesale, and pi's `isStreaming` dips to false between a prompt landing and
+   * the first token, which would make the sidebar flicker out of "running".
+   */
+  runActive: boolean;
   /**
    * Tool loadout requested at spawn time. pi's RPC mode has no `set_tools`, so the
    * selection is pinned on the transcript by the `set_tools` command handler.
@@ -97,11 +115,47 @@ function requestOnChannel(
  * A session that is streaming is never a candidate: closing it would abort a
  * turn the user is watching.
  */
+/**
+ * Keep a remote session's run state honest.
+ *
+ * `get_state` reports `isStreaming`, which is false while a turn sits on an
+ * extension dialog and false again the instant a turn ends, so it cannot answer
+ * "is this run going?". pi's own event stream can: `agent_start` begins a run,
+ * `agent_end` / `agent_settled` end it, and a blocking `extension_ui_request`
+ * parks it until the matching `extension_ui_response` goes back.
+ */
+function trackRemoteRunState(session: RemoteRpcSession, msg: any): void {
+  if (!msg || typeof msg.type !== "string") return;
+
+  if (msg.type === "agent_start") {
+    session.runActive = true;
+    session.state = { ...(session.state ?? {}), isStreaming: true };
+    return;
+  }
+  if (msg.type === "agent_end" || msg.type === "agent_settled" || msg.type === "session_shutdown") {
+    session.runActive = false;
+    session.state = { ...(session.state ?? {}), isStreaming: false };
+    session.pendingUiRequestIds.clear();
+    return;
+  }
+  if (msg.type === "extension_ui_request" && typeof msg.id === "string") {
+    if (isBlockingExtensionUiRequest(msg as unknown as ExtensionUiRequest)) {
+      session.pendingUiRequestIds.add(msg.id);
+    }
+    return;
+  }
+  // The answer travels the other way (client -> pi), so it never appears here;
+  // clearing on `agent_end` is what releases a parked run.
+}
+
 function enforceDeviceSessionCap(deviceId: string): void {
   const own = getAllRemoteRpcSessions().filter((session) => session.deviceId === deviceId);
   if (own.length < REMOTE_SESSION_MAX_PER_DEVICE) return;
+  // Never evict a session that is mid-turn: closing it would abort a run the
+  // user is watching. `isRemoteSessionRunning` covers a run parked on a dialog,
+  // which `state.isStreaming` reports as idle.
   const candidates = own
-    .filter((session) => !session.state?.isStreaming)
+    .filter((session) => !isRemoteSessionRunning(session))
     .sort((a, b) => a.lastActivityAt - b.lastActivityAt);
   let excess = own.length - REMOTE_SESSION_MAX_PER_DEVICE + 1;
   for (const candidate of candidates) {
@@ -184,6 +238,8 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
     listeners,
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
+    pendingUiRequestIds: new Set<string>(),
+    runActive: false,
   };
 
   let resolveInit: (value: { sessionId: string; data: any }) => void = () => {};
@@ -227,6 +283,7 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
   // Single fan-out: activity tracking, init detection, then every listener.
   channel.onMessage((msg) => {
     sessionObj.lastActivityAt = Date.now();
+    trackRemoteRunState(sessionObj, msg);
 
     if (!settled && msg?.type === "response" && msg.command === "get_state" && msg.success) {
       resolvedSessionId = msg.data?.sessionId || `remote-${Date.now()}`;
@@ -320,7 +377,10 @@ export async function getRemoteRpcSessionState(sessionId: string): Promise<any |
   if (!session) return undefined;
   const response = await requestOnChannel(session.channel, { type: "get_state" });
   if (response?.success && response.data) {
-    session.state = response.data;
+    // `isStreaming` comes from our own event tracking, not from the reply: a
+    // `get_state` taken while a turn is starting reports false, and overwriting
+    // the flag here made the sidebar drop the spinner mid-run.
+    session.state = { ...response.data, isStreaming: isRemoteSessionRunning(session) };
   }
   return session.state;
 }
@@ -341,11 +401,54 @@ export function getAllRemoteRpcSessions(): RemoteRpcSession[] {
   return [...new Set(remoteSessions.values())];
 }
 
-/** In-memory remote sessions for one device (used by /api/agent/running). */
+/**
+ * Remote sessions on this device with a live `pi` process, running or idle.
+ *
+ * Deletion needs this list rather than the running one: an idle process still
+ * rewrites its transcript, so it has to be closed before the file is unlinked.
+ */
 export function getRemoteRpcSessionIdsForDevice(deviceId: string): string[] {
   return getAllRemoteRpcSessions()
     .filter((session) => session.deviceId === deviceId)
     .map((session) => session.sessionId);
+}
+
+/**
+ * Remote sessions on this device that are actually running a turn.
+ *
+ * Not the same as "has a live channel": every session the user has opened keeps
+ * a `pi` process (that is what makes reopening it instant), so listing all of
+ * them made idle sessions show the running spinner forever. Same rule as the
+ * local `isRunning()`: a run is in flight, or a blocking dialog is unanswered.
+ */
+export function getRunningRemoteRpcSessionIdsForDevice(deviceId: string): string[] {
+  return getAllRemoteRpcSessions()
+    .filter((session) => session.deviceId === deviceId && isRemoteSessionRunning(session))
+    .map((session) => session.sessionId);
+}
+
+/** Remote sessions on this device parked on an unanswered extension dialog. */
+export function getAwaitingInputRemoteRpcSessionIdsForDevice(deviceId: string): string[] {
+  return getAllRemoteRpcSessions()
+    .filter((session) => session.deviceId === deviceId && session.pendingUiRequestIds.size > 0)
+    .map((session) => session.sessionId);
+}
+
+export function isRemoteSessionRunning(session: RemoteRpcSession): boolean {
+  if (session.pendingUiRequestIds.size > 0) return true;
+  return session.runActive;
+}
+
+/**
+ * Forget an answered dialog.
+ *
+ * The answer travels client -> pi, so it never shows up on the channel this
+ * process reads; without this the session would stay "awaiting input" until the
+ * turn ended.
+ */
+export function clearRemotePendingUiRequest(sessionId: string, requestId: unknown): void {
+  if (typeof requestId !== "string") return;
+  remoteSessions.get(sessionId)?.pendingUiRequestIds.delete(requestId);
 }
 
 /**

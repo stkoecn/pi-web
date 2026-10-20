@@ -78,7 +78,7 @@ export async function GET(
             messageCount: typeof live.state?.messageCount === "number" ? live.state.messageCount : 0,
             firstMessage: "(no messages)",
             transient: true,
-          }]))[0],
+          }], { platform: "linux" }))[0],
           leafId: null,
           tree: [],
           ...(summaryTree ? { treeFormat: "summary" as const } : {}),
@@ -185,7 +185,9 @@ export async function GET(
             : {}),
         // The file exists — on the remote host. existsSync() would be false here.
         transient: false,
-      }]))[0] : null;
+      // `platform: "linux"`: the cwd is a remote path, so the project key has to
+      // be normalized with POSIX rules instead of this host's.
+      }], { platform: "linux" }))[0] : null;
 
       return perf?.attach(jsonResponse(
         req,

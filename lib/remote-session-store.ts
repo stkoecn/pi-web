@@ -70,6 +70,9 @@ declare global {
 	var __piWebRemoteCatalogue: Map<string, CatalogueCache> | undefined;
 	var __piWebRemoteContent: Map<string, ContentCache> | undefined;
 	var __piWebRemoteManagers: Map<string, { size: number; mtimeMs: number; manager: RemoteSessionManager }> | undefined;
+	/** Bumped when a device's catalogue really changed, so the sidebar can reload. */
+	var __piWebRemoteCatalogueVersion: Map<string, number> | undefined;
+	var __piWebRemoteCatalogueFingerprint: Map<string, string> | undefined;
 }
 
 const catalogues: Map<string, CatalogueCache> =
@@ -78,6 +81,33 @@ const contents: Map<string, ContentCache> =
 	globalThis.__piWebRemoteContent ?? (globalThis.__piWebRemoteContent = new Map());
 const managers: Map<string, { size: number; mtimeMs: number; manager: RemoteSessionManager }> =
 	globalThis.__piWebRemoteManagers ?? (globalThis.__piWebRemoteManagers = new Map());
+const catalogueVersions: Map<string, number> =
+	globalThis.__piWebRemoteCatalogueVersion ?? (globalThis.__piWebRemoteCatalogueVersion = new Map());
+const catalogueFingerprints: Map<string, string> =
+	globalThis.__piWebRemoteCatalogueFingerprint ?? (globalThis.__piWebRemoteCatalogueFingerprint = new Map());
+
+/**
+ * A counter that only moves when a device's session set really changed.
+ *
+ * The sidebar reloads its list when this differs from the value it last saw
+ * (that is how the local `getSessionListVersion()` drives every open tab). The
+ * remote version cannot be a filesystem generation, so it is derived from the
+ * catalogue itself: a rescan that finds the same files with the same sizes and
+ * mtimes keeps the number, so a mere poll does not make every tab reload.
+ */
+export function getRemoteSessionListVersion(deviceId: string): number {
+	return catalogueVersions.get(deviceId) ?? 0;
+}
+
+function noteCatalogue(deviceId: string, entries: CatalogueEntry[]): void {
+	const fingerprint = entries
+		.map((entry) => `${entry.file.path}:${entry.file.size}:${entry.file.mtimeMs}`)
+		.sort()
+		.join("\n");
+	if (catalogueFingerprints.get(deviceId) === fingerprint) return;
+	catalogueFingerprints.set(deviceId, fingerprint);
+	catalogueVersions.set(deviceId, (catalogueVersions.get(deviceId) ?? 0) + 1);
+}
 
 function trimCache<T>(cache: Map<string, T>) {
 	while (cache.size > REMOTE_CACHE_LIMIT) {
@@ -332,6 +362,10 @@ export async function listRemoteSessions(
 		});
 	}
 
+	// A deferred scan reports no message counts, so it must not be the scan that
+	// decides the set changed: the next full scan would bump the version again
+	// and reload every tab a second time for nothing.
+	if (!options.deferDetails) noteCatalogue(deviceId, entries);
 	catalogues.set(deviceId, { ts: Date.now(), deferred: Boolean(options.deferDetails), entries });
 	trimCache(catalogues);
 	return buildSessionInfos(entries);
@@ -348,7 +382,7 @@ function buildSessionInfos(entries: CatalogueEntry[]): Promise<SessionInfo[]> {
 		messageCount: entry.messageCount,
 		firstMessage: entry.firstMessage || "(no messages)",
 		transient: false,
-	})));
+	})), { platform: "linux" });
 }
 
 /** Locate one session file on the device without trusting the client's path. */

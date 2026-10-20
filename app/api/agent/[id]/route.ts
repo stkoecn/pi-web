@@ -92,6 +92,13 @@ export async function POST(
         return NextResponse.json({ success: true, data: [] });
       }
       remote.channel.send(body);
+      // An answered dialog is not echoed back on the channel this process reads,
+      // so release the awaiting-input flag here or the sidebar keeps the session
+      // parked on a question the user already answered.
+      if (body.type === "extension_ui_response") {
+        const { clearRemotePendingUiRequest } = await import("@/lib/remote-agent-manager");
+        clearRemotePendingUiRequest(remote.sessionId || id, body.id);
+      }
       promptAccepted = body.type === "prompt";
       return NextResponse.json({ success: true, data: { accepted: true } });
     }

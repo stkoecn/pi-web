@@ -1481,13 +1481,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }
       : null);
 
+  const isRemote = Boolean(deviceId && deviceId !== "localhost");
   // The tree of every project. Its group for the current project exists even
   // without sessions (a fresh custom path, a new worktree).
   const currentProjectKey = selectedProject?.key ?? null;
   const currentProjectRoot = selectedProject?.root ?? null;
+  // A group for the current folder exists even with no sessions, so a fresh
+  // custom path or worktree has somewhere to appear. On a remote device the
+  // "current folder" is just the default home, which would otherwise pin an
+  // empty project to the top of every sidebar.
+  const currentProjectIsReal = useMemo(() => {
+    if (!isRemote || !currentProjectKey) return true;
+    return allSessions.some((session) => (session.projectKey || session.projectRoot || session.cwd) === currentProjectKey);
+  }, [allSessions, currentProjectKey, isRemote]);
   const currentProject = useMemo(
-    () => (currentProjectKey && currentProjectRoot ? { key: currentProjectKey, root: currentProjectRoot } : null),
-    [currentProjectKey, currentProjectRoot],
+    () => (currentProjectKey && currentProjectRoot && currentProjectIsReal ? { key: currentProjectKey, root: currentProjectRoot } : null),
+    [currentProjectKey, currentProjectIsReal, currentProjectRoot],
   );
   // What the tree shows and every toggle reads: the saved choices over the
   // groups kept open for the page. Writes go to the saved choices alone
@@ -1496,19 +1505,28 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     () => effectiveGroupExpansion(groupExpansion, keptOpenGroups),
     [groupExpansion, keptOpenGroups],
   );
-  const isRemote = Boolean(deviceId && deviceId !== "localhost");
   const effectiveUiState = useMemo(() => {
     if (!isRemote) return uiState;
-    const remoteRoots = Array.from(new Set(allSessions.map(s => s.projectRoot || s.cwd).filter(Boolean)));
-    if (selectedCwd && !remoteRoots.includes(selectedCwd)) remoteRoots.push(selectedCwd);
+    // Only folders that actually hold a session become groups. The device's home
+    // used to be pushed in unconditionally (it is the default `selectedCwd`), which
+    // pinned an empty "project" to the top of the sidebar on every remote device.
+    // The catalogue already groups by `projectKey` (see buildSessionTree), so the
+    // group list has to be keyed the same way: a plain path would create a second
+    // group for the same folder and hide its sessions.
+    const remoteProjects = new Map<string, { root: string; key: string; pinnedAt: number }>();
+    for (const session of allSessions) {
+      const root = session.projectRoot || session.cwd;
+      if (!root) continue;
+      const key = session.projectKey || root;
+      if (!remoteProjects.has(key)) remoteProjects.set(key, { root, key, pinnedAt: 0 });
+    }
+    const remoteRoots = Array.from(remoteProjects.keys());
     return {
       ...uiState,
       projectOrder: remoteRoots,
-      projects: Object.fromEntries(
-        remoteRoots.map(root => [root, { root, key: root, pinnedAt: 0 }])
-      ),
+      projects: Object.fromEntries(remoteProjects),
     };
-  }, [uiState, isRemote, allSessions, selectedCwd]);
+  }, [uiState, isRemote, allSessions]);
 
   const model = useMemo(() => buildSessionTree({
     sessions: allSessions,

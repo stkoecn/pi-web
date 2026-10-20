@@ -19,12 +19,22 @@ export async function GET(req: Request) {
   if (isRemoteDevice(deviceId)) {
     // Remote sessions run on the device, so only this process's live channels
     // are reportable. Same key set as the local branch: the poller is shared.
-    const { getRemoteRpcSessionIdsForDevice } = await import("@/lib/remote-agent-manager");
+    // "Live channel" is not "running": an opened session keeps its `pi` process
+    // alive so reopening is instant, and reporting those as running left idle
+    // sessions spinning forever in the sidebar.
+    const {
+      getAwaitingInputRemoteRpcSessionIdsForDevice,
+      getRunningRemoteRpcSessionIdsForDevice,
+    } = await import("@/lib/remote-agent-manager");
+    const { getRemoteSessionListVersion } = await import("@/lib/remote-session-store");
     return NextResponse.json(
       {
-        sessionListVersion: 0,
-        runningSessionIds: getRemoteRpcSessionIdsForDevice(deviceId),
-        awaitingInputSessionIds: [],
+        // The device's own counter, not a constant: the sidebar reloads its list
+        // when this changes, and a hard-coded 0 meant a remote device never saw a
+        // session created (or deleted) from another tab.
+        sessionListVersion: getRemoteSessionListVersion(deviceId),
+        runningSessionIds: getRunningRemoteRpcSessionIdsForDevice(deviceId),
+        awaitingInputSessionIds: getAwaitingInputRemoteRpcSessionIdsForDevice(deviceId),
         completionNotificationSuppressedSessionIds: [],
         sessionUiStateRevision: null,
       },
