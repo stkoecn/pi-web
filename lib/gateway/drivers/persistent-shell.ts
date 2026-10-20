@@ -215,12 +215,36 @@ export class PersistentShellPool {
   private readonly shells: PersistentShell[] = [];
   private readonly idleWaiters: Array<() => void> = [];
   private disposed = false;
+  private warmUp: Promise<void> | null = null;
 
   constructor(
     private readonly client: Client,
     private readonly label: string,
-    private readonly size = 3,
-  ) {}
+    // A page load fans out to about a dozen gateway requests at once (device
+    // list, session list, detail, files, git status, settings), and each needs
+    // one command. With three channels they queue: measured on a 257 ms-RTT
+    // VPS, 24 concurrent commands took 2416 ms on three channels and 956 ms on
+    // eight. sshd's default MaxSessions is 10, so eight is still safely inside
+    // it (a sixteenth channel fails to open).
+    private readonly size = 8,
+  ) {
+    // Open the first channel immediately rather than on the first command: a
+    // channel open costs a full round trip (250 ms on a WAN device) and the
+    // first request after a page load always needs one.
+    this.warmUp = this.acquire()
+      .then((shell) => {
+        shell.busy = false;
+        this.releaseWaiter();
+      })
+      .catch(() => {
+        // A device that is not ready yet simply opens its shell on demand.
+      });
+  }
+
+  /** Resolves once the first shell channel has been opened (or failed). */
+  async ready(): Promise<void> {
+    await this.warmUp;
+  }
 
   private async acquire(): Promise<PersistentShell> {
     for (;;) {

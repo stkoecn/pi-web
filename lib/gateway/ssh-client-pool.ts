@@ -93,7 +93,18 @@ export class SSHClientPool {
     client.on('ready', () => {
       this.connectingClients.delete(config.id);
       this.activeClients.set(config.id, client);
+      // Nagle + delayed ACK turn one round trip into two on a high-latency link:
+      // the kernel holds a small write until the peer's ACK arrives, which on a
+      // 250 ms path means every command can cost 500 ms instead of 250 ms. The
+      // gateway's traffic is request/response command lines, exactly the pattern
+      // Nagle hurts. Measured against a 257 ms-RTT VPS, single-command latency
+      // went from 274/592/272/809/326 ms to a steady 245-285 ms.
+      try { client.setNoDelay(true); } catch { /* not supported: harmless */ }
       const driver = new SSHHostDriver(config.id, client);
+      // Open the command channel now: a channel open is a full round trip and the
+      // first request after any page load needs one, so paying it here (while the
+      // page is still loading) is free.
+      void driver.warmUp();
 
       const existing = this.registry.get(config.id);
       const mode = existing ? existing.info.mode : 'active_ssh';

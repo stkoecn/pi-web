@@ -40,6 +40,7 @@ import {
   listRemoteDirectory,
   readRemoteBuffer,
   readRemoteSlice,
+  readRemoteSliceWithSize,
   statRemotePath,
 } from "@/lib/remote-files";
 import type { IHostDriver } from "@/lib/gateway/types/host-driver";
@@ -598,6 +599,39 @@ async function handleRemoteFileRequest(
       const showHidden = request.nextUrl.searchParams.get("hidden") === "1";
       const entries = await listRemoteDirectory(driver, filePath, { showHidden });
       return NextResponse.json({ entries, path: filePath });
+    }
+
+    // A text read needs only the bytes: `readRemoteSliceWithSize` reports the
+    // size in the same command, so the SFTP stat below would be a second full
+    // round trip just to learn a number. Media and `meta` still need the stat.
+    const textRead = type === "read"
+      && !getImageMime(filePath) && !getAudioMime(filePath)
+      && !getVideoMime(filePath) && !getDocumentMime(filePath);
+    if (textRead) {
+      const rawOffsetEarly = request.nextUrl.searchParams.get("offset");
+      if (rawOffsetEarly !== null && !/^\d+$/.test(rawOffsetEarly)) {
+        return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
+      }
+      const offsetEarly = Number(rawOffsetEarly ?? 0);
+      const { bytes, size } = await readRemoteSliceWithSize(
+        driver,
+        filePath,
+        offsetEarly,
+        TEXT_PREVIEW_MAX_BYTES + 1,
+      );
+      if (size < 0) {
+        // `size` is -1 for "not a regular file" and -2 for a directory, both
+        // reported by the read command itself so this costs no extra round trip.
+        return NextResponse.json(
+          { error: size === -2 ? "Not a file" : "Not found" },
+          { status: size === -2 ? 400 : 404 },
+        );
+      }
+      if (offsetEarly > size) {
+        return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
+      }
+      const chunk = chunkFromBuffer(bytes, bytes.length, size, offsetEarly);
+      return NextResponse.json({ ...chunk, language: getLanguage(filePath), size });
     }
 
     const stat = await statRemotePath(driver, filePath);

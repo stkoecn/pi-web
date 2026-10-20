@@ -56,6 +56,8 @@ async function runRemoteScript(
  * last answer for a few seconds means those refreshes cost nothing while a file
  * written by a tool still shows up on the next real refresh.
  */
+/** Delimits the size report that precedes a file slice's bytes. */
+const SLICE_SIZE_MARKER = "@@piweb-size@@";
 const LIST_CACHE_TTL_MS = 4_000;
 const LIST_CACHE_LIMIT = 200;
 interface ListCacheEntry { entries: RemoteEntry[]; at: number }
@@ -196,14 +198,84 @@ export async function readRemoteSlice(
   length: number,
 ): Promise<Buffer> {
   const quoted = shellQuote(targetPath);
-  const script = offset > 0
-    ? `head -c ${offset + length} ${quoted} | tail -c +${offset + 1} | base64`
-    : `head -c ${length} ${quoted} | base64`;
+  // Size and bytes in ONE round trip: the caller has already stat'ed the file
+  // through SFTP (300-900 ms), and a second channel for the bytes doubled the
+  // cost of simply opening a file. `stat` prints its size on a marker line so
+  // the caller learns the real size even when the slice is capped.
+  const script = [
+    `if stat -f '%z' ${quoted} >/dev/null 2>&1; then __size=$(stat -f '%z' ${quoted}); else __size=$(stat -c '%s' ${quoted}); fi`,
+    `printf '%s%s\n' '${SLICE_SIZE_MARKER}' "$__size"`,
+    offset > 0
+      ? `head -c ${offset + length} ${quoted} | tail -c +${offset + 1} | base64`
+      : `head -c ${length} ${quoted} | base64`,
+  ].join("\n");
   const result = await runRemoteScript(driver, script, 60_000);
   if (result.exitCode !== 0) {
     throw new Error(result.stderr.trim() || "Failed to read file");
   }
-  return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+  const markerAt = result.stdout.indexOf(SLICE_SIZE_MARKER);
+  const payload = markerAt >= 0
+    ? result.stdout.slice(markerAt + SLICE_SIZE_MARKER.length).replace(/^\d+\n?/, "")
+    : result.stdout;
+  return Buffer.from(payload.replace(/\s+/g, ""), "base64");
+}
+
+/**
+ * Size of a remote file, without a second round trip when it was just read.
+ *
+ * `readRemoteSlice` reports the size alongside the bytes, so a text preview can
+ * be answered by a single command instead of an SFTP stat followed by a read.
+ */
+export async function readRemoteSliceWithSize(
+  driver: IHostDriver,
+  targetPath: string,
+  offset: number,
+  length: number,
+): Promise<{ bytes: Buffer; size: number }> {
+  return readRemoteSliceInternal(driver, targetPath, offset, length);
+}
+
+/**
+ * Slice a remote file, reporting its size in the same command.
+ *
+ * `size` is `-1` when the path is not a regular file (a directory, or nothing
+ * at all). Distinguishing that without a second round trip is why the script
+ * tests the type itself: `head -c` on a directory still succeeds on some
+ * platforms and would otherwise look like an empty file.
+ */
+async function readRemoteSliceInternal(
+  driver: IHostDriver,
+  targetPath: string,
+  offset: number,
+  length: number,
+): Promise<{ bytes: Buffer; size: number }> {
+  const quoted = shellQuote(targetPath);
+  const script = [
+    `if [ ! -e ${quoted} ]; then printf '%s-1\\n' '${SLICE_SIZE_MARKER}'; exit 0; fi`,
+    `if [ -d ${quoted} ]; then printf '%s-2\\n' '${SLICE_SIZE_MARKER}'; exit 0; fi`,
+    `if stat -f '%z' ${quoted} >/dev/null 2>&1; then __size=$(stat -f '%z' ${quoted}); else __size=$(stat -c '%s' ${quoted}); fi`,
+    `printf '%s%s\\n' '${SLICE_SIZE_MARKER}' "$__size"`,
+    offset > 0
+      ? `head -c ${offset + length} ${quoted} | tail -c +${offset + 1} | base64`
+      : `head -c ${length} ${quoted} | base64`,
+  ].join("\n");
+  const result = await runRemoteScript(driver, script, 60_000);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || "Failed to read file");
+  }
+  const markerAt = result.stdout.indexOf(SLICE_SIZE_MARKER);
+  if (markerAt < 0) {
+    return { bytes: Buffer.alloc(0), size: -1 };
+  }
+  const afterMarker = result.stdout.slice(markerAt + SLICE_SIZE_MARKER.length);
+  const newlineAt = afterMarker.indexOf("\n");
+  const sizeText = (newlineAt >= 0 ? afterMarker.slice(0, newlineAt) : afterMarker).trim();
+  const payload = newlineAt >= 0 ? afterMarker.slice(newlineAt + 1) : "";
+  const size = Number(sizeText);
+  return {
+    bytes: Buffer.from(payload.replace(/\s+/g, ""), "base64"),
+    size: Number.isFinite(size) ? size : -1,
+  };
 }
 
 /**

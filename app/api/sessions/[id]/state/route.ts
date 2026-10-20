@@ -4,7 +4,7 @@ import { resolveSessionPath } from "@/lib/session-reader";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { DeviceOfflineError } from "@/lib/gateway/singleton";
 import { getRemoteRpcSession } from "@/lib/remote-agent-manager";
-import { openRemoteSessionManager } from "@/lib/remote-session-store";
+import { findRemoteSessionFile } from "@/lib/remote-session-store";
 
 export async function GET(
   req: Request,
@@ -22,8 +22,10 @@ export async function GET(
         return NextResponse.json({ running: true, state: live.state });
       }
       // Not running: only report idle when the transcript actually exists on
-      // the device, so a stale sidebar row 404s instead of looking idle.
-      const remote = await openRemoteSessionManager(deviceId, id);
+      // the device, so a stale sidebar row 404s instead of looking idle. The
+      // catalogue answer is enough — reading the transcript just to say
+      // "idle" cost a second round trip for a boolean.
+      const remote = await findRemoteSessionFile(deviceId, id);
       if (!remote) {
         return NextResponse.json({ error: "Session not found" }, { status: 404 });
       }

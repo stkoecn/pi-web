@@ -36,6 +36,8 @@ import type {
 
 const SETTINGS_CACHE_TTL_MS = 15_000;
 const CLI_TIMEOUT_MS = 20_000;
+/** Delimits one file's content inside a batched read. */
+const BATCH_MARKER = "@@piweb-file@@";
 
 interface CacheEntry<T> {
   value: T;
@@ -98,6 +100,70 @@ async function runOnDevice(
 }
 
 /**
+ * Run a POSIX shell script on the device.
+ *
+ * Base64 so the login shell only ever sees an opaque blob: quoting, globs and
+ * `$` then behave the same on every device (macOS's zsh aborts a script that
+ * contains an unmatched glob, which silently emptied whole listings).
+ */
+async function runScript(
+  driver: IHostDriver,
+  script: string,
+  timeoutMs = 15_000,
+): Promise<{ stdout: string; stderr: string; exitCode: number } | null> {
+  return runOnDevice(
+    driver,
+    `printf %s ${Buffer.from(script, "utf8").toString("base64")} | base64 -d | sh`,
+    { timeoutMs },
+  );
+}
+
+/**
+ * Read several files in ONE round trip.
+ *
+ * A per-file read costs a full round trip (250-900 ms on a WAN device), so a
+ * settings pane listing eight skills used to spend eight of them. Each section
+ * is delimited by a marker line holding the index, and a file that could not be
+ * read simply has no section: the caller sees a missing key instead of an error.
+ */
+async function readFilesAtOnce(
+  driver: IHostDriver,
+  paths: readonly string[],
+  options: { timeoutMs?: number } = {},
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  if (paths.length === 0) return found;
+  const script = paths
+    .map((path, index) => {
+      const quoted = shellQuote(path);
+      return [
+        `if [ -f ${quoted} ]; then`,
+        `  printf '%s%s\\n' '${BATCH_MARKER}' '${index}'`,
+        `  cat ${quoted}`,
+        `  printf '\\n'`,
+        `fi`,
+      ].join("\n");
+    })
+    .join("\n");
+  const result = await runScript(driver, script, options.timeoutMs ?? 20_000);
+  if (!result || result.exitCode !== 0) return found;
+  const marker = new RegExp(`^${BATCH_MARKER}(\\d+)$`);
+  let current: { path: string; lines: string[] } | null = null;
+  for (const line of result.stdout.split("\n")) {
+    const match = marker.exec(line);
+    if (match) {
+      if (current) found.set(current.path, current.lines.join("\n"));
+      const path = paths[Number(match[1])];
+      current = path === undefined ? null : { path, lines: [] };
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+  if (current) found.set(current.path, current.lines.join("\n"));
+  return found;
+}
+
+/**
  * pi's agent directory on the device.
  *
  * `PI_CODING_AGENT_DIR` wins (it is what the SDK's `getAgentDir()` honours), then
@@ -110,16 +176,18 @@ export async function getRemoteAgentDir(deviceId: string): Promise<string> {
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const driver = await driverFor(deviceId);
-  const home = await deviceHomeOrDefault(deviceId);
-  let agentDir = `${home}/.pi/agent`;
 
+  // One round trip, and no `$HOME` probe first: the script expands the fallback
+  // itself, so the common case costs a single command instead of two.
   const probe = await runOnDevice(
     driver,
     'printf %s "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"',
     { timeoutMs: 10_000 },
   );
   const printed = probe?.exitCode === 0 ? probe.stdout.trim() : "";
-  if (printed.startsWith("/")) agentDir = printed;
+  const agentDir = printed.startsWith("/")
+    ? printed
+    : `${await deviceHomeOrDefault(deviceId)}/.pi/agent`;
 
   store.agentDir.set(deviceId, { value: agentDir, expiresAt: Date.now() + 5 * 60_000 });
   return agentDir;
@@ -161,6 +229,10 @@ export async function readRemoteMcpOverview(
   if (!options.force && cached && cached.expiresAt > Date.now()) return cached.value;
 
   const driver = await driverFor(deviceId);
+  // `pi mcp list --json` boots a whole Node process on the device (1.5 s on a
+  // 1-vCPU VPS) while the settings read is one short command. Running them at
+  // the same time hides the settings read inside the CLI's own latency.
+  const cliPromise = runOnDevice(driver, "pi mcp list --json");
   const agentDir = await getRemoteAgentDir(deviceId);
   const { settings, path: settingsPath } = await readRemoteGlobalSettings(driver, agentDir);
 
@@ -169,7 +241,7 @@ export async function readRemoteMcpOverview(
     return value;
   };
 
-  const cli = await runOnDevice(driver, "pi mcp list --json");
+  const cli = await cliPromise;
   if (cli && cli.exitCode === 0 && cli.stdout.trim()) {
     try {
       const parsed = JSON.parse(cli.stdout) as { servers?: RemoteMcpServer[] };
@@ -317,12 +389,14 @@ async function readMcpFromFile(
   settingsPath: string,
   cwd: string | null,
 ): Promise<McpResponse> {
-  let raw: string | null = null;
-  try {
-    raw = (await driver.readFile(`${agentDir}/mcp.json`)).toString("utf8");
-  } catch {
-    raw = null;
-  }
+  // The global file and the project file's existence, in one round trip.
+  const globalMcpPath = `${agentDir}/mcp.json`;
+  const projectMcpPath = cwd ? `${cwd}/.pi/mcp.json` : null;
+  const mcpFiles = await readFilesAtOnce(
+    driver,
+    projectMcpPath ? [globalMcpPath, projectMcpPath] : [globalMcpPath],
+  );
+  const raw: string | null = mcpFiles.get(globalMcpPath) ?? null;
 
   let servers: RemoteMcpServer[] = [];
   if (raw) {
@@ -353,16 +427,13 @@ async function readMcpFromFile(
   const files: McpResponse["files"] = [
     { path: `${agentDir}/mcp.json`, scope: "global", exists: raw !== null, problems: [] },
   ];
-  if (cwd) {
-    const projectPath = `${cwd}/.pi/mcp.json`;
-    let projectExists = false;
-    try {
-      await driver.stat(projectPath);
-      projectExists = true;
-    } catch {
-      projectExists = false;
-    }
-    files.push({ path: projectPath, scope: "project", exists: projectExists, problems: [] });
+  if (projectMcpPath) {
+    files.push({
+      path: projectMcpPath,
+      scope: "project",
+      exists: mcpFiles.has(projectMcpPath),
+      problems: [],
+    });
   }
 
   return {
@@ -425,38 +496,59 @@ export async function readRemoteSkills(
   const skills: SkillInfo[] = [];
   const diagnostics: Array<{ type: string; message: string; source?: string }> = [];
 
-  for (const root of roots) {
-    const listing = await runOnDevice(
-      driver,
-      // Print each skill directory that holds a SKILL.md, one per line.
-      `for d in ${JSON.stringify(root.dir)}/*/; do [ -f "$d/SKILL.md" ] && printf '%s\\n' "\${d%/}"; done 2>/dev/null; true`,
-      { timeoutMs: 15_000 },
-    );
-    if (!listing || listing.exitCode !== 0) continue;
-
-    const dirs = listing.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-    for (const dir of dirs) {
-      const read = await runOnDevice(
-        driver,
-        // Frontmatter only: the first fenced block, capped so a huge skill file
-        // cannot blow up the response.
-        `sed -n '1,40p' ${JSON.stringify(`${dir}/SKILL.md`)} 2>/dev/null; true`,
-        { timeoutMs: 15_000 },
-      );
-      const content = read?.stdout ?? "";
-      const meta = parseFrontmatter(content);
-      skills.push({
-        name: meta.name || dir.slice(dir.lastIndexOf("/") + 1),
-        description: meta.description ?? "",
-        filePath: `${dir}/SKILL.md`,
-        // `baseDir`/`sourceInfo` are what the local loader emits; the Skills panel
-        // reads `baseDir` to resolve a skill's relative document links, so a
-        // remote skill must carry it too or its documents refuse to open.
-        baseDir: dir,
-        disableModelInvocation: meta.disableModelInvocation === true,
-        sourceInfo: { source: root.source, scope: root.scope },
-      });
+  // One round trip for every root: three separate listings cost three full
+  // device round trips, and the panel has nothing to show until all are in.
+  const listingScript = roots
+    .map((root, index) => {
+      const quoted = shellQuote(root.dir);
+      return [
+        `printf '%s%s\\n' '${BATCH_MARKER}' '${index}'`,
+        `for d in ${quoted}/*/; do [ -f "$d/SKILL.md" ] && printf '%s\\n' "\${d%/}"; done 2>/dev/null; true`,
+      ].join("\n");
+    })
+    .join("\n");
+  const listingResult = await runScript(driver, listingScript, 20_000);
+  const dirsByRoot = new Map<number, string[]>();
+  if (listingResult && listingResult.exitCode === 0) {
+    const marker = new RegExp(`^${BATCH_MARKER}(\\d+)$`);
+    let currentRoot: number | null = null;
+    for (const line of listingResult.stdout.split("\n")) {
+      const match = marker.exec(line);
+      if (match) {
+        currentRoot = Number(match[1]);
+        dirsByRoot.set(currentRoot, []);
+        continue;
+      }
+      const trimmed = line.trim();
+      if (!trimmed || currentRoot === null) continue;
+      dirsByRoot.get(currentRoot)?.push(trimmed);
     }
+  }
+
+  // Frontmatter only: the first fenced block, capped so a huge skill file
+  // cannot blow up the response. Every skill is read in one command.
+  const skillDirs = roots.flatMap((root, index) =>
+    (dirsByRoot.get(index) ?? []).map((dir) => ({ dir, root })),
+  );
+  const skillFiles = await readFilesAtOnce(
+    driver,
+    skillDirs.map(({ dir }) => `${dir}/SKILL.md`),
+  );
+
+  for (const { dir, root } of skillDirs) {
+    const content = (skillFiles.get(`${dir}/SKILL.md`) ?? "").split("\n").slice(0, 40).join("\n");
+    const meta = parseFrontmatter(content);
+    skills.push({
+      name: meta.name || dir.slice(dir.lastIndexOf("/") + 1),
+      description: meta.description ?? "",
+      filePath: `${dir}/SKILL.md`,
+      // `baseDir`/`sourceInfo` are what the local loader emits; the Skills panel
+      // reads `baseDir` to resolve a skill's relative document links, so a
+      // remote skill must carry it too or its documents refuse to open.
+      baseDir: dir,
+      disableModelInvocation: meta.disableModelInvocation === true,
+      sourceInfo: { source: root.source, scope: root.scope },
+    });
   }
 
   const value: SkillsResponse = {
@@ -517,17 +609,22 @@ export async function readRemotePlugins(
 
   const empty: PluginResourceCounts = { extensions: 0, skills: 0, prompts: 0, themes: 0 };
 
-  async function readSettings(path: string): Promise<Record<string, unknown> | null> {
+  // Both settings files in one round trip: the plugin list is a single answer,
+  // so paying two full device round trips for it is pure latency.
+  const globalPath = `${agentDir}/settings.json`;
+  const projectPath = `${cwd}/.pi/settings.json`;
+  const settingsFiles = await readFilesAtOnce(driver, [globalPath, projectPath]);
+  function parseSettings(raw: string | undefined): Record<string, unknown> | null {
+    if (raw === undefined) return null;
     try {
-      const raw = (await driver.readFile(path)).toString("utf8");
-      return JSON.parse(raw) as Record<string, unknown>;
+      const parsed = JSON.parse(raw) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
     } catch {
       return null;
     }
   }
-
-  const globalSettings = await readSettings(`${agentDir}/settings.json`);
-  const projectSettings = await readSettings(`${cwd}/.pi/settings.json`);
+  const globalSettings = parseSettings(settingsFiles.get(globalPath));
+  const projectSettings = parseSettings(settingsFiles.get(projectPath));
 
   const packages: PluginPackageInfo[] = [];
   const diagnostics: PluginsResponse["diagnostics"] = [];
@@ -608,31 +705,52 @@ export async function readRemoteSubagentProfiles(
   ];
 
   const profiles: Array<Record<string, unknown>> = [];
-  for (const root of roots) {
-    const listing = await runOnDevice(
-      driver,
-      `for f in ${JSON.stringify(root.dir)}/*.md; do [ -f "$f" ] && printf '%s\n' "$f"; done 2>/dev/null; true`,
-      { timeoutMs: 15_000 },
-    );
-    if (!listing || listing.exitCode !== 0) continue;
-
-    for (const file of listing.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
-      const read = await runOnDevice(
-        driver,
-        `sed -n '1,40p' ${JSON.stringify(file)} 2>/dev/null; true`,
-        { timeoutMs: 15_000 },
-      );
-      const meta = parseFrontmatter(read?.stdout ?? "");
-      const base = file.slice(file.lastIndexOf("/") + 1).replace(/\.md$/, "");
-      profiles.push({
-        name: meta.name || base,
-        displayName: meta.name || base,
-        description: meta.description ?? "",
-        scope: root.scope,
-        filePath: file,
-        enabled: true,
-      });
+  // One round trip for all three roots plus every profile file, instead of a
+  // listing and a read per file on a link where each costs a full round trip.
+  const listingScript = roots
+    .map((root, index) => {
+      const quoted = shellQuote(root.dir);
+      return [
+        `printf '%s%s\\n' '${BATCH_MARKER}' '${index}'`,
+        `for f in ${quoted}/*.md; do [ -f "$f" ] && printf '%s\\n' "$f"; done 2>/dev/null; true`,
+      ].join("\n");
+    })
+    .join("\n");
+  const listingResult = await runScript(driver, listingScript, 20_000);
+  const filesByRoot = new Map<number, string[]>();
+  if (listingResult && listingResult.exitCode === 0) {
+    const marker = new RegExp(`^${BATCH_MARKER}(\\d+)$`);
+    let currentRoot: number | null = null;
+    for (const line of listingResult.stdout.split("\n")) {
+      const match = marker.exec(line);
+      if (match) {
+        currentRoot = Number(match[1]);
+        filesByRoot.set(currentRoot, []);
+        continue;
+      }
+      const trimmed = line.trim();
+      if (!trimmed || currentRoot === null) continue;
+      filesByRoot.get(currentRoot)?.push(trimmed);
     }
+  }
+
+  const entries = roots.flatMap((root, index) =>
+    (filesByRoot.get(index) ?? []).map((file) => ({ file, root })),
+  );
+  const contents = await readFilesAtOnce(driver, entries.map(({ file }) => file));
+
+  for (const { file, root } of entries) {
+    const content = (contents.get(file) ?? "").split("\n").slice(0, 40).join("\n");
+    const meta = parseFrontmatter(content);
+    const base = file.slice(file.lastIndexOf("/") + 1).replace(/\.md$/, "");
+    profiles.push({
+      name: meta.name || base,
+      displayName: meta.name || base,
+      description: meta.description ?? "",
+      scope: root.scope,
+      filePath: file,
+      enabled: true,
+    });
   }
 
   return { profiles, remote: { deviceId, source: "file" } };

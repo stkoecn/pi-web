@@ -47,13 +47,16 @@ export class GatewayManager {
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');
         const list: ActiveDeviceConfig[] = JSON.parse(raw);
-        for (const item of list) {
-          const dev = { ...item, mode: item.mode || 'active_ssh' as const };
-          if (dev.mode === 'active_ssh') {
-            console.log(`[Gateway] Loading device from config: ${dev.id} (${dev.host}:${dev.port})`);
-            await this.clientPool.addDevice(dev);
-          }
+        // Connect every configured device in parallel. Each handshake takes 2-3 s
+        // on a WAN link, and doing them one after another left the last device
+        // unusable for ten seconds after every restart.
+        const devices = list
+          .map((item) => ({ ...item, mode: item.mode || 'active_ssh' as const }))
+          .filter((dev) => dev.mode === 'active_ssh');
+        for (const dev of devices) {
+          console.log(`[Gateway] Loading device from config: ${dev.id} (${dev.host}:${dev.port})`);
         }
+        await Promise.allSettled(devices.map((dev) => this.clientPool.addDevice(dev)));
       }
     } catch (e) {
       console.error('[Gateway] Failed to load devices.json:', e);

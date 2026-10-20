@@ -44,6 +44,21 @@ export class SSHHostDriver implements IHostDriver {
     return this.alive;
   }
 
+  /**
+   * Open the command channel and the SFTP channel ahead of the first request.
+   *
+   * Both cost a full round trip to open, and every route needs at least one of
+   * them, so paying during connection setup keeps that latency off the first
+   * page a user sees. Failures are ignored: each path still opens on demand.
+   */
+  async warmUp(): Promise<void> {
+    if (!this.alive) return;
+    await Promise.allSettled([
+      this.getShellPool().ready(),
+      this.getSFTP().then(() => undefined),
+    ]);
+  }
+
   private getShellPool(): PersistentShellPool {
     if (!this.shellPool) {
       this.shellPool = new PersistentShellPool(this.client, this.deviceId);

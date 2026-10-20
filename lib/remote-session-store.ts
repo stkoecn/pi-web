@@ -85,6 +85,13 @@ const catalogueVersions: Map<string, number> =
 	globalThis.__piWebRemoteCatalogueVersion ?? (globalThis.__piWebRemoteCatalogueVersion = new Map());
 const catalogueFingerprints: Map<string, string> =
 	globalThis.__piWebRemoteCatalogueFingerprint ?? (globalThis.__piWebRemoteCatalogueFingerprint = new Map());
+/**
+ * A catalogue scan already running for a device, so concurrent callers share it.
+ *
+ * Deliberately NOT on `globalThis`: an in-flight promise belongs to this process
+ * and must not be shared with a hot-reloaded module instance.
+ */
+const inflightCatalogueScans = new Map<string, { promise: Promise<SessionInfo[]>; full: boolean }>();
 
 /**
  * A counter that only moves when a device's session set really changed.
@@ -345,8 +352,31 @@ export async function listRemoteSessions(
 		&& (options.deferDetails || !cached.deferred);
 	if (usable) return buildSessionInfos(cached.entries);
 
+	// One scan in flight per device. Opening a device fires the sidebar's own
+	// list, the session-restore fast path and a full (non-summary) read within a
+	// few milliseconds of each other; left alone each one starts its own
+	// catalogue scan, so the same device answers three round trips for one list.
+	// A full scan also satisfies a headers-only caller, since it returns more.
+	const existing = inflightCatalogueScans.get(deviceId);
+	if (existing && !options.force && (existing.full || Boolean(options.deferDetails))) {
+		return existing.promise;
+	}
+
+	const promise = runCatalogueScan(deviceId, !options.deferDetails);
+	if (!options.force) {
+		const record = { promise, full: !options.deferDetails };
+		inflightCatalogueScans.set(deviceId, record);
+		void promise.finally(() => {
+			if (inflightCatalogueScans.get(deviceId) === record) inflightCatalogueScans.delete(deviceId);
+		}).catch(() => undefined);
+	}
+	return promise;
+}
+
+/** The actual scan, shared by every concurrent caller for the same device. */
+async function runCatalogueScan(deviceId: string, withDetails: boolean): Promise<SessionInfo[]> {
 	const driver = await getDriver(deviceId);
-	const { files, details } = await scanCatalogue(driver, { withDetails: !options.deferDetails });
+	const { files, details } = await scanCatalogue(driver, { withDetails });
 
 	const entries: CatalogueEntry[] = [];
 	for (const file of files) {
@@ -365,8 +395,8 @@ export async function listRemoteSessions(
 	// A deferred scan reports no message counts, so it must not be the scan that
 	// decides the set changed: the next full scan would bump the version again
 	// and reload every tab a second time for nothing.
-	if (!options.deferDetails) noteCatalogue(deviceId, entries);
-	catalogues.set(deviceId, { ts: Date.now(), deferred: Boolean(options.deferDetails), entries });
+	if (withDetails) noteCatalogue(deviceId, entries);
+	catalogues.set(deviceId, { ts: Date.now(), deferred: !withDetails, entries });
 	trimCache(catalogues);
 	return buildSessionInfos(entries);
 }
