@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { hostname as osHostname } from "node:os";
 
 function normalizeHostname(value: string): string {
   const unbracketed = value.startsWith("[") && value.endsWith("]")
@@ -48,7 +49,32 @@ function configuredHostnamesFromEnvironment(): string[] {
   return [
     process.env.PI_WEB_HOSTNAME,
     ...(process.env.PI_WEB_ALLOWED_HOSTS?.split(",") ?? []),
+    ...ownHostnames(),
   ].filter((value): value is string => Boolean(value?.trim()));
+}
+
+/**
+ * Names that resolve to this machine: its OS hostname, that name's first label
+ * (what a LAN browser usually types), and the mDNS `*.local` form macOS and
+ * Windows advertise.
+ *
+ * Accepting them is not a weakening of the DNS-rebinding guard. That guard
+ * exists because an attacker-controlled name can be pointed at 127.0.0.1; a
+ * name the operator types for their own machine is exactly the thing the guard
+ * must not block, and requiring a hand-maintained PI_WEB_ALLOWED_HOSTS entry
+ * for it made every write API answer 403 "Untrusted API request" while reads
+ * (which skip this check) worked — a bug that looks like a permissions fault.
+ */
+function ownHostnames(): string[] {
+  const full = osHostname().trim().toLowerCase();
+  if (!full) return [];
+  const names = new Set([full]);
+  const short = full.split(".")[0];
+  if (short) {
+    names.add(short);
+    names.add(`${short}.local`);
+  }
+  return [...names];
 }
 
 function canonicalOrigin(value: string): string | null {
@@ -104,8 +130,9 @@ function isUserInitiatedDocumentNavigation(request: Request): boolean {
 }
 
 /**
- * Only trust local names, IP literals, or the hostname explicitly selected by
- * the operator. IP literals preserve LAN access but cannot be DNS-rebound
+ * Only trust local names, IP literals, or a hostname this machine answers to:
+ * the ones selected by the operator, plus its own OS hostname (see
+ * ownHostnames). IP literals preserve LAN access but cannot be DNS-rebound
  * because the browser keeps the literal address in the Host header.
  */
 export function isApiRequestHostAllowed(
@@ -120,6 +147,22 @@ export function isApiRequestHostAllowed(
   return configuredHostnames.some(
     (configured) => normalizeConfiguredHostname(configured) === hostname,
   );
+}
+
+/**
+ * Names the Host check refuses, for a one-line diagnostic.
+ *
+ * Without it the operator sees "Untrusted API request" and has to read this
+ * module to learn that the browser's hostname is the whole problem.
+ */
+export function describeRejectedHost(request: Request): string | null {
+  const host = request.headers.get("host");
+  if (!host) return "the request has no Host header";
+  const hostname = hostnameFromAuthority(host);
+  if (!hostname) return `Host "${host}" is not a valid authority`;
+  if (isLoopbackHostname(hostname) || isIP(hostname)) return null;
+  return `Host "${hostname}" is not a loopback name, an IP literal, or a configured `
+    + `hostname. Add it to PI_WEB_ALLOWED_HOSTS (comma-separated) to use it.`;
 }
 
 /**
@@ -170,9 +213,24 @@ export function isApiRequestAllowed(
   request: Request,
   configuredHostnames = configuredHostnamesFromEnvironment(),
 ): boolean {
-  if (!isApiRequestHostAllowed(request, configuredHostnames)) return false;
+  if (!isApiRequestHostAllowed(request, configuredHostnames)) {
+    reportRejectedHostOnce(request);
+    return false;
+  }
   if (isUserInitiatedDocumentNavigation(request)) return true;
   return !shouldCheckApiRequestOrigin(request) || isApiRequestOriginAllowed(request);
+}
+
+// One line per distinct refused hostname, not one per request: the sidebar polls
+// several gated routes, and a repeating warning buries its own message.
+const reportedHosts = new Set<string>();
+
+function reportRejectedHostOnce(request: Request): void {
+  const host = request.headers.get("host") ?? "(none)";
+  if (reportedHosts.has(host)) return;
+  reportedHosts.add(host);
+  const detail = describeRejectedHost(request);
+  if (detail) console.warn(`[pi-web] Refused an API write: ${detail}`);
 }
 
 export function hasJsonContentType(request: Request): boolean {
