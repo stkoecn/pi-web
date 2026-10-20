@@ -756,6 +756,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const deviceIdRef = useRef(deviceId);
   deviceIdRef.current = deviceId;
 
+  // A `?session=` the URL asked for owns the cwd until the restore effect has
+  // picked it. `loadSessions` runs before that effect and used to adopt the
+  // device home (or the newest project) first, which fired `onCwdChange` and
+  // made the shell `router.replace(deviceHref(null))` — wiping the very
+  // `?session=` the page had been opened with. The restore then saw a URL that
+  // no longer carried it and its own replace was skipped as redundant.
+  const pendingInitialSessionRef = useRef<string | null>(initialSessionId);
+  if (!initialSessionId) pendingInitialSessionRef.current = null;
+
   const loadSessions = useCallback(async (showLoading = false, force = false, summary = false) => {
     const currentDeviceId = deviceIdRef.current;
     const loadId = ++sessionLoadIdRef.current;
@@ -778,9 +787,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (!summary) setSessionDetailsLoaded(true);
 
       setSelectedCwd((prev) => {
+        if (pendingInitialSessionRef.current) return prev;
         if (currentDeviceId && currentDeviceId !== "localhost") {
-          // Not `/root`: macOS devices answer `/Users/<name>`. Until the home
-          // lookup lands, `/` is the one path every POSIX device has.
+          // The device home is only a default, never an override: a workspace
+          // open runs this list three times, and re-adopting the home would
+          // move the cwd out from under a `?cwd=` the URL asked for (the
+          // composer then remounts in the home and `handleCwdChange` drops the
+          // query, so a new remote session lost its directory and navigated
+          // back to the empty page instead of keeping `?session=`). Only the
+          // placeholder — unset, or `/` before the home lookup lands — moves.
+          // Not `/root`: macOS devices answer `/Users/<name>`.
+          if (prev && prev !== "/") return prev;
           return deviceHomeOrRoot(currentDeviceId);
         }
         if (!prev) {
@@ -1213,20 +1230,26 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     if (allSessions.length === 0 || skipInitialProjectSelection) return;
 
-    if (selectedCwd === null) {
-      // If restoring a session, set cwd to match that session
-      if (initialSessionId && !restoredRef.current) {
-        restoredRef.current = true;
-        const target = allSessions.find((s) => s.id === initialSessionId);
-        if (target) {
-          setSelectedCwd(target.cwd);
-          onSelectSession(target, true);
-          return;
-        }
-        // Session not found — notify parent so it can show the placeholder
-        onInitialRestoreDone?.();
-        if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+    // The URL's `?session=` is restored first, and regardless of whether a cwd
+    // has already been adopted. `loadSessions` fills the cwd from the list it
+    // just read, so waiting for `selectedCwd === null` here raced with it and
+    // lost: a reload of `?session=…` landed on the project's newest session
+    // (or the empty page) instead of the session the URL named.
+    if (initialSessionId && !restoredRef.current) {
+      restoredRef.current = true;
+      pendingInitialSessionRef.current = null;
+      const target = allSessions.find((s) => s.id === initialSessionId);
+      if (target) {
+        setSelectedCwd(target.cwd);
+        onSelectSession(target, true);
+        return;
       }
+      // Session not found — notify parent so it can show the placeholder
+      onInitialRestoreDone?.();
+      if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+    }
+
+    if (selectedCwd === null) {
       const projects = getRecentProjects(allSessions);
       if (projects.length > 0) setSelectedCwd(projects[0].root);
     }

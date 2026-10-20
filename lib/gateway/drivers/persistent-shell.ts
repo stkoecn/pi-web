@@ -19,6 +19,7 @@
 
 import type { Client, ClientChannel } from 'ssh2';
 import { randomBytes } from 'node:crypto';
+import { withChannelRetry } from './channel-retry';
 
 export interface ShellExecResult {
   stdout: string;
@@ -65,15 +66,14 @@ class PersistentShell {
   private open(): Promise<ClientChannel> {
     if (this.channel) return Promise.resolve(this.channel);
     if (this.opening) return this.opening;
-    this.opening = new Promise<ClientChannel>((resolve, reject) => {
+    // Retry inside `open()` so a refused channel (sshd's MaxSessions budget is
+    // shared with SFTP, terminals and the `pi --mode rpc` channels) does not
+    // mark this shell dead and drop it from the pool it is still serving.
+    this.opening = withChannelRetry(() => new Promise<ClientChannel>((resolve, reject) => {
       // `sh` rather than a login shell: no rc files, no prompt, no echo, and
       // nothing between us and the command.
       this.client.exec('sh', (err: Error | undefined, stream: ClientChannel) => {
-        this.opening = null;
-        if (err) {
-          this.markDead();
-          return reject(err);
-        }
+        if (err) return reject(err);
         stream.on('data', (data: Buffer) => this.onData(data));
         stream.stderr.on('data', () => {
           // stderr of the `sh` process itself (not of our commands, which are
@@ -91,7 +91,12 @@ class PersistentShell {
         this.buffer = Buffer.alloc(0);
         resolve(stream);
       });
-    });
+    }))
+      .finally(() => { this.opening = null; })
+      .catch((error: Error) => {
+        this.markDead();
+        throw error;
+      });
     return this.opening;
   }
 
@@ -224,9 +229,18 @@ export class PersistentShellPool {
     // list, session list, detail, files, git status, settings), and each needs
     // one command. With three channels they queue: measured on a 257 ms-RTT
     // VPS, 24 concurrent commands took 2416 ms on three channels and 956 ms on
-    // eight. sshd's default MaxSessions is 10, so eight is still safely inside
-    // it (a sixteenth channel fails to open).
-    private readonly size = 8,
+    // eight.
+    //
+    // Four, not eight: sshd's default `MaxSessions 10` is a budget for the
+    // WHOLE connection, and this pool is not the only consumer of it. One SFTP
+    // channel stays open for the connection's lifetime, and every open remote
+    // session holds an `exec` channel for its `pi --mode rpc` process. With
+    // eight shells plus one SFTP plus four open sessions we asked for thirteen
+    // and the extras were refused — `POST /api/agent/new` then failed with
+    // `(SSH) Channel open failure: open failed` about one time in three. Four
+    // shells leaves room for a handful of sessions while still beating three
+    // channels on a concurrent page load.
+    private readonly size = 4,
   ) {
     // Open the first channel immediately rather than on the first command: a
     // channel open costs a full round trip (250 ms on a WAN device) and the

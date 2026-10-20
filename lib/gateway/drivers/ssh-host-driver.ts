@@ -3,6 +3,7 @@ import type { Client, SFTPWrapper, ClientChannel } from 'ssh2';
 import type { IHostDriver, TerminalOptions, TerminalSession, FileEntry, ExecResult, RPCChannel } from '../types/host-driver';
 import { randomUUID } from 'node:crypto';
 import { PersistentShellPool } from './persistent-shell';
+import { withChannelRetry } from './channel-retry';
 
 export class SSHHostDriver implements IHostDriver {
   readonly deviceId: string;
@@ -71,15 +72,20 @@ export class SSHHostDriver implements IHostDriver {
     if (this.sftpInstance) return this.sftpInstance;
     if (this.sftpPromise) return this.sftpPromise;
 
-    this.sftpPromise = new Promise<SFTPWrapper>((resolve, reject) => {
+    this.sftpPromise = withChannelRetry(() => new Promise<SFTPWrapper>((resolve, reject) => {
       this.client.sftp((err: any, sftp: SFTPWrapper) => {
-        this.sftpPromise = null;
         if (err) return reject(err);
-        this.sftpInstance = sftp;
         sftp.on('end', () => { this.sftpInstance = null; });
         sftp.on('close', () => { this.sftpInstance = null; });
         resolve(sftp);
       });
+    })).then((sftp) => {
+      this.sftpPromise = null;
+      this.sftpInstance = sftp;
+      return sftp;
+    }, (error: Error) => {
+      this.sftpPromise = null;
+      throw error;
     });
 
     return this.sftpPromise;
@@ -92,7 +98,7 @@ export class SSHHostDriver implements IHostDriver {
     const rows = opts.rows ?? 24;
     const sessionId = randomUUID();
 
-    return new Promise<TerminalSession>((resolve, reject) => {
+    return withChannelRetry(() => new Promise<TerminalSession>((resolve, reject) => {
       const ptyOptions = {
         term: 'xterm-256color',
         cols,
@@ -163,7 +169,7 @@ export class SSHHostDriver implements IHostDriver {
           handleStream(stream);
         });
       }
-    });
+    }));
   }
 
   private normalizeRemotePath(p: string): string {
@@ -265,7 +271,7 @@ export class SSHHostDriver implements IHostDriver {
     fullCommand: string,
     opts?: { env?: Record<string, string> },
   ): Promise<ExecResult> {
-    return new Promise<ExecResult>((resolve, reject) => {
+    return withChannelRetry(() => new Promise<ExecResult>((resolve, reject) => {
       this.client.exec(fullCommand, { env: opts?.env as any }, (err: any, stream: ClientChannel) => {
         if (err) return reject(err);
 
@@ -287,7 +293,7 @@ export class SSHHostDriver implements IHostDriver {
           });
         });
       });
-    });
+    }));
   }
 
   async spawnPiRpc(opts: {
@@ -320,7 +326,7 @@ export class SSHHostDriver implements IHostDriver {
       command = `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${command}`;
     }
 
-    return new Promise<RPCChannel>((resolve, reject) => {
+    return withChannelRetry(() => new Promise<RPCChannel>((resolve, reject) => {
       this.client.exec(command, (err: any, stream: ClientChannel) => {
         if (err) return reject(err);
 
@@ -407,7 +413,7 @@ export class SSHHostDriver implements IHostDriver {
 
         resolve(channel);
       });
-    });
+    }));
   }
 
   async close(): Promise<void> {

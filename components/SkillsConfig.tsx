@@ -130,6 +130,7 @@ export function resolveSkillLink(href: string, fromDocument: string): { document
 function SkillDetail({
   skill,
   cwd,
+  deviceId,
   onToggle,
   toggling,
   saveError,
@@ -142,6 +143,12 @@ function SkillDetail({
 }: {
   skill: Skill;
   cwd: string;
+  /**
+   * Gateway device the skill lives on. Its content URL must say so: without it
+   * the request lands on this host, whose allow-list can never contain a path
+   * on another machine, and the panel shows "Access denied".
+   */
+  deviceId: string;
   onToggle: (skill: Skill) => void;
   toggling: boolean;
   saveError: string | null;
@@ -190,6 +197,7 @@ function SkillDetail({
     const load = async () => {
       try {
         const params = new URLSearchParams({ cwd, filePath: skill.filePath });
+        if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
         if (documentPath !== rootDocument) params.set("document", documentPath);
         const response = await fetch(`/api/skills/content?${params}`, { signal: controller.signal });
         const data = (await response.json()) as Partial<SkillContentResponse> & { error?: string };
@@ -205,7 +213,7 @@ function SkillDetail({
 
     void load();
     return () => controller.abort();
-  }, [cwd, skill.filePath, documentPath, rootDocument]);
+  }, [cwd, deviceId, skill.filePath, documentPath, rootDocument]);
 
   return (
     <ConfigDetailStack>
@@ -1038,6 +1046,7 @@ export function SkillsConfig({
                 key={selectedSkill.filePath}
                 skill={selectedSkill}
                 cwd={cwd}
+                deviceId={deviceId}
                 onToggle={toggle}
                 toggling={toggling.has(selectedSkill.filePath)}
                 saveError={saveError}
