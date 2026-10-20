@@ -4,7 +4,7 @@ import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 import { getRemoteAgentDir } from "@/lib/remote-settings";
 import { readRemoteTextFile } from "@/lib/remote-files";
 import { shellQuote } from "@/lib/shell-quote";
-import { closeRemoteRpcSession, getRemoteRpcSessionIdsForDevice } from "@/lib/remote-agent-manager";
+import { closeRemoteRpcSession, getRunningRemoteRpcSessionIdsForDevice } from "@/lib/remote-agent-manager";
 import { invalidateRemoteSessionCache } from "@/lib/remote-session-store";
 import type { SessionDeleteResult } from "@/lib/session-delete";
 
@@ -147,8 +147,11 @@ export async function deleteRemoteSessions(
     childrenByParentPath.set(key, siblings);
   }
 
+  // "Live channel" is not "running": every session the user opened keeps a `pi`
+  // process so reopening it is instant. Keeping those back made a project's
+  // "delete all sessions" report every row as still running and delete nothing.
   const runningIds = options.keepRunning
-    ? new Set(getRemoteRpcSessionIdsForDevice(deviceId))
+    ? new Set(getRunningRemoteRpcSessionIdsForDevice(deviceId))
     : new Set<string>();
 
   const doomed = new Map<string, DeviceSessionFile>();
