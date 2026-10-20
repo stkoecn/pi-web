@@ -50,12 +50,40 @@ async function runRemoteScript(
   return driver.exec(`printf %s ${encoded} | base64 -d | sh`, [], { timeoutMs });
 }
 
+/**
+ * A listing is expensive (one shell round trip per directory) and the explorer
+ * re-lists on every finished tool call and on every window focus. Keeping the
+ * last answer for a few seconds means those refreshes cost nothing while a file
+ * written by a tool still shows up on the next real refresh.
+ */
+const LIST_CACHE_TTL_MS = 4_000;
+const LIST_CACHE_LIMIT = 200;
+interface ListCacheEntry { entries: RemoteEntry[]; at: number }
+const listCache: Map<string, ListCacheEntry> =
+  (globalThis as { __piWebRemoteListCache?: Map<string, ListCacheEntry> }).__piWebRemoteListCache ?? new Map();
+(globalThis as { __piWebRemoteListCache?: Map<string, ListCacheEntry> }).__piWebRemoteListCache = listCache;
+
+/** Forget cached listings: after a write, or for one device when it reconnects. */
+export function invalidateRemoteListCache(deviceId?: string): void {
+  if (!deviceId) { listCache.clear(); return; }
+  for (const key of listCache.keys()) {
+    if (key.startsWith(`${deviceId}\u0000`)) listCache.delete(key);
+  }
+}
+
 /** One round trip: entry names, types, sizes, mtimes and git-ignored names. */
 export async function listRemoteDirectory(
   driver: IHostDriver,
   directory: string,
-  options: { showHidden?: boolean } = {},
+  options: { showHidden?: boolean; force?: boolean } = {},
 ): Promise<RemoteEntry[]> {
+  // The cache holds the FULL listing, hidden entries included, so the two
+  // visibility settings share one round trip instead of evicting each other.
+  const cacheKey = `${driver.deviceId}\u0000${directory}`;
+  const cached = listCache.get(cacheKey);
+  if (!options.force && cached && Date.now() - cached.at < LIST_CACHE_TTL_MS) {
+    return filterHidden(cached.entries, options.showHidden);
+  }
   // Globs rather than `ls` so a name with a space needs no quoting, and `-d`
   // rather than parsing `ls -l` so nothing depends on the column layout.
   // Ignored names are asked of the device's own git so the remote tree hides
@@ -111,15 +139,24 @@ export async function listRemoteDirectory(
     return hidden ? { ...entry, hidden } : entry;
   });
 
-  const visible = options.showHidden
-    ? withHidden.filter((entry) => entry.hidden !== "always")
-    : withHidden.filter((entry) => !entry.hidden);
-
   // Dirs first, then files, both alphabetically — the local branch's order.
-  return visible.sort((a, b) => {
+  withHidden.sort((a, b) => {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
+  listCache.set(cacheKey, { entries: withHidden, at: Date.now() });
+  if (listCache.size > LIST_CACHE_LIMIT) {
+    const oldest = [...listCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) listCache.delete(oldest[0]);
+  }
+  return filterHidden(withHidden, options.showHidden);
+}
+
+/** Apply the visibility switch to a cached full listing. */
+function filterHidden(entries: readonly RemoteEntry[], showHidden: boolean | undefined): RemoteEntry[] {
+  return showHidden
+    ? entries.filter((entry) => entry.hidden !== "always")
+    : entries.filter((entry) => !entry.hidden);
 }
 
 /** `stat` for one device path; null when it does not exist. */

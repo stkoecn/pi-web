@@ -762,6 +762,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 }, ref) {
   const { t } = useI18n();
   const [roots, setRoots] = useState<FileNode[]>([]);
+  // Which directory `roots` holds. A refresh (a tool finished, the window came
+  // back) re-lists the same directory, so the rows stay on screen while it
+  // loads; only a different directory has nothing to show yet.
+  const [rootsKey, setRootsKey] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -1085,11 +1089,17 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setUploadError(null);
     }
 
+    const nextKey = `${deviceId ?? "localhost"}\u0000${cwd}`;
+    if (cwdChanged || devChanged) {
+      // The old directory's rows describe somewhere else now.
+      setRoots([]);
+      setRootsKey("");
+    }
     setLoading(true);
     setError(null);
     let cancelled = false;
     fetchEntries(cwd, showHidden, deviceId)
-      .then((entries) => { if (!cancelled) setRoots(entries); })
+      .then((entries) => { if (!cancelled) { setRoots(entries); setRootsKey(nextKey); } })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -1366,7 +1376,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
       {(changesCollapsed || gitFiles.length === 0) && (!fileSearchOpen || !hasSearchQuery) && (
         <div style={{ padding: "2px 4px" }}>
-          {loading ? (
+          {loading && rootsKey !== `${deviceId ?? "localhost"}\u0000${cwd}` ? (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-dim)" }}>Loading files...</div>
           ) : error ? (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>

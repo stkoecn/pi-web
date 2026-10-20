@@ -36,6 +36,7 @@ import { hasParentDirectorySegment } from "@/lib/path-security";
 import { chunkFromBuffer, readTextPreviewChunk } from "@/lib/text-preview";
 import {
   inspectRemoteUploadTargets,
+  invalidateRemoteListCache,
   listRemoteDirectory,
   readRemoteBuffer,
   readRemoteSlice,
@@ -258,6 +259,8 @@ async function handleRemoteUpload(
       }
     }
 
+    // A cached listing must not outlive the upload that changed it.
+    if (uploaded.length > 0) invalidateRemoteListCache(deviceId);
     return NextResponse.json(
       { uploaded, skipped, errors },
       { status: errors.length > 0 ? 207 : 200 },
