@@ -543,6 +543,9 @@ export function AppShell() {
   // needing `selectedDeviceId` in their dependency lists.
   const selectedDeviceIdRef = useRef(selectedDeviceId);
   selectedDeviceIdRef.current = selectedDeviceId;
+  // Settings › Devices writes devices.json, which the switcher caches for 15 s.
+  // This counter lets an edit or a reload reach the switcher without waiting.
+  const [devicesRefreshKey, setDevicesRefreshKey] = useState(0);
   const deviceHref = useCallback(
     (params: Record<string, string | number | null | undefined> | null, pathname?: string) =>
       deviceAwareHref(params, selectedDeviceIdRef.current, pathname),
@@ -2290,6 +2293,7 @@ export function AppShell() {
                 selectedDeviceId={selectedDeviceId}
                 onSelectDevice={handleSelectDevice}
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                refreshKey={devicesRefreshKey}
                 compact
               />
               {isNarrowMobile && (
@@ -2355,6 +2359,7 @@ export function AppShell() {
                 selectedDeviceId={selectedDeviceId}
                 onSelectDevice={handleSelectDevice}
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                refreshKey={devicesRefreshKey}
               />
               {renderProjectTrustWarning(false)}
               {renderChatToolbarActions(false)}
@@ -2857,6 +2862,7 @@ export function AppShell() {
           setModelsRefreshKey((key) => key + 1);
         }}
         onSessionReloaded={() => setSessionKey((key) => key + 1)}
+        onDevicesChanged={() => setDevicesRefreshKey((key) => key + 1)}
         projectTrust={projectTrust}
         onOpenTrustDialog={openProjectTrustDialog}
         onProjectTrustChanged={handleProjectTrustChanged}

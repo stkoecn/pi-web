@@ -28,6 +28,12 @@ interface Props {
    * and the same Terminal action.
    */
   compact?: boolean;
+  /**
+   * Bumped when something outside this component changed the host list, as
+   * Settings › Devices does. Without it an edit or a reload would show up only
+   * after the next poll.
+   */
+  refreshKey?: number;
 }
 
 export function DeviceSelector({
@@ -35,6 +41,7 @@ export function DeviceSelector({
   onSelectDevice,
   onOpenTerminalOnDevice,
   compact = false,
+  refreshKey = 0,
 }: Props) {
   const [devices, setDevices] = useState<DeviceInfo[]>([
     { id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" },
@@ -77,6 +84,16 @@ export function DeviceSelector({
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
+
+  // An edit in Settings › Devices changed the list *now*: the poll would leave
+  // the switcher stale for its whole interval, which reads as "nothing was
+  // saved". The first run is the poll's own initial fetch, so it is skipped.
+  const refreshKeyRef = useRef(refreshKey);
+  useEffect(() => {
+    if (refreshKeyRef.current === refreshKey) return;
+    refreshKeyRef.current = refreshKey;
+    void fetchDevices();
+  }, [refreshKey]);
 
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {

@@ -1,5 +1,6 @@
 export const SETTINGS_SECTION_VALUES = [
   "general",
+  "devices",
   "models",
   "skills",
   "agents",
@@ -67,9 +68,9 @@ function readState(storage: StorageLike): SettingsNavigationState {
 function selectionKey(section: SettingsDetailSection, cwd?: string | null): string | null {
   if (section === "models") return section;
   if (cwd) return JSON.stringify([section, cwd]);
-  // MCP works without a project; its selection then lives under the bare name,
-  // which no project key (always an array) can collide with.
-  return section === "mcp" ? section : null;
+  // MCP and Devices work without a project; their selection then lives under the
+  // bare name, which no project key (always an array) can collide with.
+  return section === "mcp" || section === "devices" ? section : null;
 }
 
 export function getLastSettingsSection(

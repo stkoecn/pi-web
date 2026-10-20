@@ -52,6 +52,20 @@ export class DeviceRegistry extends EventEmitter {
     }
   }
 
+  /**
+   * Change what a device is called without touching its connection.
+   *
+   * A rename in `devices.json` must not cost a handshake: the driver, its shell
+   * pool and every open session belong to the connection, not to the label.
+   */
+  updateInfo(deviceId: string, patch: Partial<Pick<DeviceInfo, 'name' | 'remoteAddr'>>): void {
+    const entry = this.devices.get(deviceId);
+    if (!entry) return;
+    if (patch.name !== undefined) entry.info.name = patch.name;
+    if (patch.remoteAddr !== undefined) entry.info.remoteAddr = patch.remoteAddr;
+    this.emit('device_updated', entry.info);
+  }
+
   get(deviceId: string): DeviceEntry | undefined {
     return this.devices.get(deviceId);
   }
