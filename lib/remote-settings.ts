@@ -955,36 +955,3 @@ export async function readRemoteSubagentSettings(
 
 /* --------------------------------------------------------------- Models --- */
 
-/**
- * The device's `models.json`, in the same shape the Models panel expects.
- *
- * Read as text rather than through `pi` because the panel edits this file: it
- * needs exactly what is stored, including comments and unknown keys, so a save
- * elsewhere cannot silently drop a field. Unparsable contents return an empty
- * provider map instead of throwing, so the panel opens read-only rather than
- * failing outright on a hand-edited file.
- */
-export async function readRemoteModelsConfig(
-  deviceId: string,
-): Promise<Record<string, unknown>> {
-  const agentDir = await getRemoteAgentDir(deviceId);
-  const driver = await driverFor(deviceId);
-  const script = [
-    `f=${shellQuote(`${agentDir}/models.json`)}`,
-    `[ -f "$f" ] || exit 0`,
-    `base64 "$f"`,
-  ].join("\n");
-  const result = await runOnDevice(driver, `printf %s ${Buffer.from(script, "utf8").toString("base64")} | base64 -d | sh`, { timeoutMs: 15_000 });
-  const encoded = (result?.stdout ?? "").replace(/\s+/g, "");
-  if (!encoded) return { providers: {} };
-  try {
-    const text = Buffer.from(encoded, "base64").toString("utf8").replace(/^﻿/, "");
-    if (!text.trim()) return { providers: {} };
-    const parsed = JSON.parse(stripJsonComments(text)) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : { providers: {} };
-  } catch {
-    return { providers: {} };
-  }
-}
