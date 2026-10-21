@@ -15,6 +15,7 @@ import { invalidateModelsCache } from "@/lib/models-cache";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { loadRemoteModels } from "@/lib/remote-models";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
 
 export const dynamic = "force-dynamic";
 
@@ -42,9 +43,11 @@ function parseEdit(body: DefaultPreferencesRequest): DefaultPreferencesEdit | nu
 /**
  * Current default model / reasoning level of the device the request names.
  *
- * The local machine reads pi's settings files; a remote device has no RPC
- * command that exposes them, so its live session's state is the best answer
- * available (that is the model and level a new session there starts with).
+ * The answer comes from the device's own `settings.json`, because that is what a
+ * new session there reads at startup. When the file names no default, the live
+ * session's state is used instead: pi picks a model anyway, and reporting `null`
+ * would leave the selectors' star un-set while every new session clearly has a
+ * model.
  */
 export async function GET(req: Request) {
   const deviceId = getRequestDeviceId(req);
@@ -52,11 +55,14 @@ export async function GET(req: Request) {
     return Response.json({ error: "Expected a remote deviceId" }, { status: 400 });
   }
   const catalogue = await loadRemoteModels(deviceId);
+  const { readRemoteDefaultPreferences } = await import("@/lib/remote-default-preferences");
+  const saved = await readRemoteDefaultPreferences(deviceId).catch(() => null);
+  const provider = saved?.defaultProvider ?? catalogue.defaultModel?.provider ?? null;
+  const modelId = saved?.defaultModel ?? catalogue.defaultModel?.id ?? null;
   return Response.json({
-    defaultModel: catalogue.defaultModel
-      ? { provider: catalogue.defaultModel.provider, modelId: catalogue.defaultModel.id }
-      : null,
-    defaultThinkingLevel: catalogue.thinkingLevel ?? null,
+    defaultModel: provider && modelId ? { provider, modelId } : null,
+    defaultThinkingLevel: saved?.defaultThinkingLevel ?? catalogue.thinkingLevel ?? null,
+    settingsPath: saved?.settingsPath ?? null,
   });
 }
 
@@ -68,9 +74,11 @@ export async function GET(req: Request) {
  * project settings could shadow the global value and which models are in scope,
  * so it goes through the same allow-list as `/api/models`.
  *
- * Writing a *remote* device's settings is not implemented: the RPC protocol has
- * no settings command, and falling through to the local files would silently
- * save the preference on the wrong machine.
+ * On a remote device the same edit is applied to *that* device's
+ * `~/.pi/agent/settings.json` (see lib/remote-default-preferences.ts): the RPC
+ * protocol has no settings command, so the file pi itself would write is edited
+ * with the same merge semantics. The local allow-list does not apply there — no
+ * local file is read, and the device's paths are not local paths.
  */
 export async function PUT(req: Request) {
   let body: DefaultPreferencesRequest;
@@ -79,8 +87,9 @@ export async function PUT(req: Request) {
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  if (isRemoteDevice(getRequestDeviceId(req))) {
-    return Response.json({ error: "Not supported on remote devices yet" }, { status: 501 });
+  const requestDeviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(requestDeviceId)) {
+    return saveRemotePreferences(requestDeviceId, body);
   }
   const edit = parseEdit(body);
   if (!edit) {
@@ -140,6 +149,74 @@ export async function PUT(req: Request) {
       ...(edit.thinkingLevel ? { defaultThinkingLevel: edit.thinkingLevel } : {}),
     });
   } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}
+
+/**
+ * The remote branch of `PUT`: write the edit to the device's own settings file.
+ *
+ * The model is checked against what the device reports as usable, the same way
+ * the local branch checks it against its visible scope — a default naming a model
+ * the device cannot run would be silently replaced at the next startup, so it is
+ * refused here instead of being written and then ignored.
+ */
+async function saveRemotePreferences(
+  deviceId: string,
+  body: DefaultPreferencesRequest,
+): Promise<Response> {
+  const edit = parseEdit(body);
+  if (!edit) {
+    return Response.json({ error: "Expected provider and modelId, or a valid thinkingLevel" }, { status: 400 });
+  }
+  if (edit.model) {
+    const catalogue = await loadRemoteModels(deviceId);
+    const { provider, modelId } = edit.model;
+    // An empty catalogue means the device answered nothing: refusing on that
+    // basis would block a save whenever its `pi` is busy, so only a non-empty
+    // list is allowed to say "not available".
+    if (catalogue.models.length > 0
+      && !catalogue.models.some((model) => model.provider === provider && model.id === modelId)) {
+      return Response.json({ error: `Model not available: ${provider}/${modelId}` }, { status: 404 });
+    }
+  }
+
+  const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : null;
+  try {
+    const { writeRemoteDefaultPreferences } = await import("@/lib/remote-default-preferences");
+    const result = await writeRemoteDefaultPreferences(deviceId, edit, { cwd });
+    // The catalogue carries the device's *current* default from its live session,
+    // which the file edit does not change: without this, the star would keep
+    // showing the previous default for the rest of the cache window.
+    const { invalidateRemoteModels } = await import("@/lib/remote-models");
+    invalidateRemoteModels(deviceId);
+    return Response.json({
+      ok: true,
+      settingsPath: result.settingsPath,
+      written: result.written,
+      ...(edit.model ? { defaultModel: edit.model } : {}),
+      ...(edit.thinkingLevel ? { defaultThinkingLevel: edit.thinkingLevel } : {}),
+    });
+  } catch (error) {
+    const { RemoteProjectScopeError, RemoteSettingsUnreadableError } = await import("@/lib/remote-default-preferences");
+    if (error instanceof DeviceOfflineError) {
+      return Response.json({ error: error.message, code: error.code, deviceId: error.deviceId }, { status: 503 });
+    }
+    if (error instanceof RemoteProjectScopeError) {
+      return Response.json({
+        error: error.message,
+        reason: "project-scope",
+        settingsPath: error.settingsPath,
+        keys: error.keys,
+      }, { status: 409 });
+    }
+    if (error instanceof RemoteSettingsUnreadableError) {
+      return Response.json({
+        error: error.message,
+        reason: "settings-unreadable",
+        settingsPath: error.settingsPath,
+      }, { status: 409 });
+    }
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }

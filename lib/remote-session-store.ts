@@ -265,8 +265,13 @@ done
 				continue;
 			}
 			if (line.startsWith("@@name ")) {
+				// Matches the local scanner's foldEntry: the newest session_info wins,
+				// and an empty name clears the title. Treating "no name" as "no
+				// change" would make a remote clear look like it never saved.
 				const parsed = safeParse(line.slice(7));
-				if (typeof parsed?.name === "string" && parsed.name.trim()) pending.name = parsed.name.trim();
+				if (typeof parsed?.name === "string") {
+					pending.name = parsed.name.trim() || undefined;
+				}
 				continue;
 			}
 			// New file: `@@<size> <mtime> <path>`. The numeric prefix is split off
@@ -437,6 +442,17 @@ export async function findRemoteSessionFile(
 		size: 0,
 		mtimeMs: new Date(match.modified).getTime() || Date.now(),
 	};
+}
+
+/**
+ * Forget a device's catalogue but keep every cached transcript.
+ *
+ * A write that touches one file's metadata (a rename appends one entry) makes
+ * the listing stale without changing any other transcript, so dropping the
+ * managers and contents too would pay for the next session click twice.
+ */
+export function invalidateRemoteCatalogue(deviceId: string) {
+	catalogues.delete(deviceId);
 }
 
 /** Raw transcript text, cached by fingerprint so repeat reads cost nothing. */

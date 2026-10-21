@@ -378,10 +378,32 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  // Rename appends to a file on this host. On a remote device that would name
-  // the wrong transcript, so refuse explicitly (see fork/delete).
+  // A title is stored as one `session_info` line appended to the transcript, so
+  // a remote rename is the same operation against the device's copy of the file
+  // (see lib/remote-session-write.ts) instead of a rewrite over here.
   if (isRemoteDevice(getRequestDeviceId(req))) {
-    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
+    const deviceId = getRequestDeviceId(req);
+    try {
+      const { name } = await req.json() as { name?: string };
+      if (typeof name !== "string") {
+        return NextResponse.json({ error: "name is required" }, { status: 400 });
+      }
+      const { renameRemoteSession } = await import("@/lib/remote-session-write");
+      const outcome = await renameRemoteSession(deviceId, id, name);
+      if (outcome === "missing") {
+        return jsonResponse(req, { error: "Session not found" }, { status: 404 });
+      }
+      return jsonResponse(req, { ok: true });
+    } catch (error) {
+      if (error instanceof DeviceOfflineError) {
+        return jsonResponse(
+          req,
+          { error: error.message, code: error.code, deviceId: error.deviceId },
+          { status: 503 },
+        );
+      }
+      return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
   }
   try {
     const { name } = await req.json() as { name?: string };
