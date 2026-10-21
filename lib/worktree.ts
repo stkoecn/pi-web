@@ -261,7 +261,8 @@ export function findCurrentWorktreePath(worktrees: readonly WorktreeInfo[], cwd:
   return findWorktreeByPath(worktrees, realPathOrSelf(cwd))?.path ?? null;
 }
 
-function sanitizeBranchForDir(branch: string): string {
+/** Directory name for a worktree of this branch: no separators, no spaces. */
+export function sanitizeBranchForDir(branch: string): string {
   return branch.replace(/[\/\\:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "");
 }
 

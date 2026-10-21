@@ -4,6 +4,7 @@ import { addWorktree, findCurrentWorktreePath, listWorktrees, removeWorktree, re
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { projectIdentityKey } from "@/lib/project-identity";
 import { isRemoteDevice } from "@/lib/device-context";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
 
 /** Same gate as /api/files: only session cwds / project roots / explicitly
  *  allowed dirs may be inspected or mutated through this endpoint. */
@@ -27,20 +28,26 @@ export async function GET(req: Request) {
 
     if (deviceId && deviceId !== "localhost") {
       const { getGateway } = await import("@/lib/gateway/singleton");
+      const { listRemoteWorktrees, remoteRepoRoot, worktreeForPath } = await import("@/lib/remote-worktree");
       const driver = await getGateway().getOrConnectDriver(deviceId);
       try {
-        const gitTop = await driver.exec("git rev-parse --show-toplevel", [], { cwd });
-        const root = gitTop.stdout.trim() || cwd;
-        const isGit = gitTop.exitCode === 0 && Boolean(root);
+        const root = await remoteRepoRoot(driver, cwd);
+        const worktrees = await listRemoteWorktrees(driver, cwd);
+        // `isTopLevel` and `currentWorktreePath` are answered from git's own
+        // list rather than guessed: a session opened inside a linked worktree
+        // must see that worktree selected in the switcher, not the main
+        // checkout it belongs to.
         return NextResponse.json({
           projectRoot: root,
           projectKey: root,
-          isGit,
-          isTopLevel: true,
-          currentWorktreePath: root,
-          worktrees: [],
+          isGit: true,
+          isTopLevel: worktrees.some((worktree) => worktree.path.replace(/\/+$/, "") === cwd.replace(/\/+$/, "")),
+          currentWorktreePath: worktreeForPath(worktrees, cwd),
+          worktrees,
         });
       } catch {
+        // Not a repository (or the device lost git mid-request): report the
+        // directory itself so the UI can show "this project has no worktrees".
         return NextResponse.json({
           projectRoot: cwd,
           projectKey: cwd,
@@ -94,14 +101,19 @@ export async function POST(req: Request) {
     if (!body.branch || typeof body.branch !== "string") {
       return NextResponse.json({ error: "branch is required" }, { status: 400 });
     }
-    // A remote project has no local checkout: creating a worktree there has to
-    // run `git worktree add` on the device, which is not wired yet. Answering
-    // honestly beats failing with "Access denied" from the local allow-list.
+    // A remote project's worktrees live on the device: git runs there, and the
+    // returned path is a path on that machine (which is what sessions use), not
+    // a local one. The local allow-list does not apply — no local path is read.
     if (isRemoteDevice(body.deviceId)) {
-      return NextResponse.json(
-        { error: "Worktrees are not supported on remote devices yet" },
-        { status: 501 },
-      );
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const { addRemoteWorktree } = await import("@/lib/remote-worktree");
+      try {
+        const driver = await getGateway().getOnlineDriver(body.deviceId);
+        return NextResponse.json(await addRemoteWorktree(driver, body.cwd, body.branch));
+      } catch (error) {
+        if (error instanceof DeviceOfflineError) throw error;
+        return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
     }
     const denied = await checkCwdAllowed(body.cwd);
     if (denied) return denied;
@@ -128,10 +140,21 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: "path is required" }, { status: 400 });
     }
     if (isRemoteDevice(body.deviceId)) {
-      return NextResponse.json(
-        { error: "Worktrees are not supported on remote devices yet" },
-        { status: 501 },
-      );
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const { removeRemoteWorktree } = await import("@/lib/remote-worktree");
+      try {
+        const driver = await getGateway().getOnlineDriver(body.deviceId);
+        await removeRemoteWorktree(driver, body.cwd, body.path, body.force === true);
+        return NextResponse.json({ success: true });
+      } catch (error) {
+        if (error instanceof DeviceOfflineError) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        // Same force/plain split as the local branch: git refuses a dirty or
+        // submodule-bearing worktree without --force, and the UI offers it only
+        // when the refusal says that is what would help.
+        const needsForce = worktreeRemovalRequiresForce(message);
+        return NextResponse.json({ error: message, dirty: needsForce }, { status: needsForce ? 409 : 400 });
+      }
     }
     const denied = await checkCwdAllowed(body.cwd);
     if (denied) return denied;
