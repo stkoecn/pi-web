@@ -37,6 +37,11 @@ export async function GET(req: Request) {
     }
     return NextResponse.json(await loadSkillsWithInstallInfo(cwd));
   } catch (e) {
+    // Identified by code as well as class: the gateway is imported through
+    // several module instances, so a duplicated class slips past `instanceof`.
+    if ((e as { code?: unknown } | null)?.code === "device-offline") {
+      return NextResponse.json({ error: String(e) }, { status: 503 });
+    }
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
@@ -79,6 +84,7 @@ function toggleSkillFile(
 // "Disable all". A batch edits each file on its own and reports every one, so
 // a skill the route refuses does not stop the rest.
 export async function PATCH(req: Request) {
+  const deviceId = getRequestDeviceId(req);
   try {
     const body = await req.json() as {
       filePath?: string;
@@ -86,6 +92,38 @@ export async function PATCH(req: Request) {
       disableModelInvocation: boolean;
     };
     const { filePath, filePaths, disableModelInvocation } = body;
+
+    // A skill file on a device is edited through the gateway: the local branch
+    // below would stat a path that does not exist here and answer "Access denied".
+    if (isRemoteDevice(deviceId)) {
+      const { toggleSkillsOn } = await import("@/lib/remote-skill-writes");
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const driver = getGateway().getOnlineDriver(deviceId);
+      const targets = filePaths !== undefined
+        ? (Array.isArray(filePaths) && filePaths.every((item) => typeof item === "string" && item)
+          ? (filePaths as string[])
+          : null)
+        : filePath ? [filePath] : [];
+      if (targets === null) {
+        return NextResponse.json({ error: "filePaths must be a list of paths" }, { status: 400 });
+      }
+      if (typeof disableModelInvocation !== "boolean") {
+        return NextResponse.json({ error: "disableModelInvocation must be a boolean" }, { status: 400 });
+      }
+      if (targets.length === 0) {
+        return NextResponse.json({ error: "filePath required" }, { status: 400 });
+      }
+      const results = await toggleSkillsOn(driver, [...new Set(targets)], disableModelInvocation);
+      if (filePaths !== undefined) return NextResponse.json({ results });
+      const [single] = results;
+      if (single?.error) {
+        return NextResponse.json(
+          { error: single.error },
+          { status: single.error === "file not found" ? 404 : single.error === "Not a skill file" ? 400 : 500 },
+        );
+      }
+      return NextResponse.json({ success: true });
+    }
 
     if (filePaths !== undefined) {
       if (!Array.isArray(filePaths) || !filePaths.every((item) => typeof item === "string" && item)) {

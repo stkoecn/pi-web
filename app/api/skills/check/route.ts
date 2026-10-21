@@ -8,12 +8,7 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  // Writing to a device's own settings files is not implemented yet; refusing is
-  // safer than silently writing this host's copy.
-  if (isRemoteDevice(getRequestDeviceId(req))) {
-    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
-  }
-
+  const deviceId = getRequestDeviceId(req);
   try {
     const body = await req.json() as {
       cwd?: unknown;
@@ -22,9 +17,13 @@ export async function POST(req: Request) {
     };
     const cwd = typeof body.cwd === "string" ? body.cwd : "";
     if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
-    const allowedRoots = await getAllowedFileRoots();
-    if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
-      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    // A device's folders are neither on this machine nor subject to its
+    // allow-list; the device's own listing already decided what may be read.
+    if (!isRemoteDevice(deviceId)) {
+      const allowedRoots = await getAllowedFileRoots();
+      if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      }
     }
 
     const pkg = typeof body.package === "string" ? body.package : undefined;
@@ -35,7 +34,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "package and scope must be provided together" }, { status: 400 });
     }
 
-    const { skills } = await loadSkillsWithInstallInfo(cwd);
+    const { skills } = isRemoteDevice(deviceId)
+      ? { skills: (await (await import("@/lib/remote-settings")).readRemoteSkills(deviceId, cwd)).skills }
+      : await loadSkillsWithInstallInfo(cwd);
     const installs = skills
       .map((skill) => skill.install)
       .filter((install): install is NonNullable<typeof install> => Boolean(install))
@@ -45,11 +46,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Installed skill not found" }, { status: 404 });
     }
 
+    // The comparison itself is API calls, not device work, so both sides share
+    // one implementation; only the install info differs by where it was read.
     const updates = await checkSkillUpdates(installs, {
       githubToken: process.env.GITHUB_TOKEN || process.env.GH_TOKEN,
     });
     return NextResponse.json({ updates });
   } catch (error) {
+    // Identified by code as well as class: the gateway is imported through
+    // several module instances, so a duplicated class slips past `instanceof`.
+    if ((error as { code?: unknown } | null)?.code === "device-offline") {
+      return NextResponse.json({ error: String(error) }, { status: 503 });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
       { status: 500 },

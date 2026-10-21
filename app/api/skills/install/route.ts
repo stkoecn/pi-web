@@ -12,12 +12,7 @@ const ANSI_RE = /\x1B\[[0-9;]*m/g;
 
 // POST /api/skills/install  body: { package: string; scope: "global" | "project"; cwd?: string }
 export async function POST(req: Request) {
-  // Writing to a device's own settings files is not implemented yet; refusing is
-  // safer than silently writing this host's copy.
-  if (isRemoteDevice(getRequestDeviceId(req))) {
-    return NextResponse.json({ error: "Not supported on remote devices yet" }, { status: 501 });
-  }
-
+  const deviceId = getRequestDeviceId(req);
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
@@ -30,6 +25,20 @@ export async function POST(req: Request) {
     if (!pkg?.trim()) return NextResponse.json({ error: "package required" }, { status: 400 });
 
     const isGlobal = scope !== "project";
+    // A device installs into its own skill roots; this machine's allow-list and
+    // trust store say nothing about a folder that does not exist here.
+    if (isRemoteDevice(deviceId)) {
+      if (!isGlobal && !cwd) {
+        return NextResponse.json({ error: "cwd required for project install" }, { status: 400 });
+      }
+      const { installRemoteSkill } = await import("@/lib/remote-skill-writes");
+      const installed = await installRemoteSkill(deviceId, {
+        package: pkg.trim(),
+        scope: isGlobal ? "global" : "project",
+        ...(cwd ? { cwd } : {}),
+      });
+      return NextResponse.json({ success: true, output: installed.output });
+    }
     if (!isGlobal) {
       if (!cwd) return NextResponse.json({ error: "cwd required for project install" }, { status: 400 });
       const allowedRoots = await getAllowedFileRoots();
@@ -60,6 +69,9 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ success: true, output });
   } catch (e: unknown) {
+    if ((e as { code?: unknown } | null)?.code === "device-offline") {
+      return NextResponse.json({ error: String(e) }, { status: 503 });
+    }
     const err = e as { stdout?: string; stderr?: string; message?: string };
     const output = ((err.stdout ?? "") + (err.stderr ?? "")).replace(ANSI_RE, "");
     return NextResponse.json({ error: output || (err.message ?? String(e)) }, { status: 500 });

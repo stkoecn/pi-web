@@ -29,14 +29,16 @@ export async function readRemoteFiles(
 ): Promise<Map<string, string>> {
   const found = new Map<string, string>();
   if (paths.length === 0) return found;
+  // Base64 rather than `cat`: a marker-delimited text stream cannot say whether
+  // the last line ended with a newline, so a read-then-write cycle grew the file
+  // by one blank line each time. Base64 is exact and cannot contain the marker.
   const script = paths
     .map((path, index) => {
       const quoted = shellQuote(path);
       return [
         `if [ -f ${quoted} ]; then`,
-        `  printf '%s%s\\n' '${FILE_MARKER}' '${index}'`,
-        `  cat ${quoted}`,
-        `  printf '\\n'`,
+        `  printf '%s%s\n' '${FILE_MARKER}' '${index}'`,
+        `  base64 < ${quoted}`,
         `fi`,
       ].join("\n");
     })
@@ -47,19 +49,25 @@ export async function readRemoteFiles(
     { timeoutMs },
   );
   if (result.exitCode !== 0) return found;
-  const pattern = new RegExp(`^${FILE_MARKER}(\\d+)$`);
-  let current: { path: string; lines: string[] } | null = null;
+  const pattern = new RegExp(`^${FILE_MARKER}([0-9]+)$`);
+  let current: { path: string; encoded: string[] } | null = null;
+  const flush = () => {
+    if (!current) return;
+    const decoded = Buffer.from(current.encoded.join(""), "base64").toString("utf8");
+    found.set(current.path, decoded);
+    current = null;
+  };
   for (const line of result.stdout.split("\n")) {
     const match = pattern.exec(line);
     if (match) {
-      if (current) found.set(current.path, current.lines.join("\n"));
+      flush();
       const path = paths[Number(match[1])];
-      current = path === undefined ? null : { path, lines: [] };
+      current = path === undefined ? null : { path, encoded: [] };
       continue;
     }
-    if (current) current.lines.push(line);
+    if (current) current.encoded.push(line.trim());
   }
-  if (current) found.set(current.path, current.lines.join("\n"));
+  flush();
   return found;
 }
 

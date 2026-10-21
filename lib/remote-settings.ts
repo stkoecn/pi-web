@@ -19,6 +19,7 @@ import {
   PluginStandaloneExtensionInfo,
 } from "@/lib/api-types";
 import { readMcpStatus, recordMcpStatus } from "@/lib/mcp-status";
+import { annotateSkillsWithLockEntries, parseSkillLock } from "@/lib/skill-lock";
 
 /**
  * Settings panes (models / skills / subagents / plugins / MCP) read pi's own
@@ -647,22 +648,41 @@ export async function readRemoteSkills(
 
   // One round trip for every root: three separate listings cost three full
   // device round trips, and the panel has nothing to show until all are in.
-  const listingScript = roots
-    .map((root, index) => {
+  const listingScript = [
+    ...roots.map((root, index) => {
       const quoted = shellQuote(root.dir);
       return [
         `printf '%s%s\\n' '${BATCH_MARKER}' '${index}'`,
         `for d in ${quoted}/*/; do [ -f "$d/SKILL.md" ] && printf '%s\\n' "\${d%/}"; done 2>/dev/null; true`,
       ].join("\n");
-    })
-    .join("\n");
+    }),
+    // The two lock files the skills CLI records installs in, resolved here
+    // because `XDG_STATE_HOME` decides where the global one lives and this
+    // script already runs on the device.
+    'if [ -n "${XDG_STATE_HOME:-}" ]; then lock="$XDG_STATE_HOME/skills/.skill-lock.json"; else lock="$HOME/.agents/.skill-lock.json"; fi',
+    `printf '%sL %s\\n' '${BATCH_MARKER}' "$lock"`,
+    `printf '%sP %s\\n' '${BATCH_MARKER}' ${shellQuote(`${cwd}/skills-lock.json`)}`,
+  ].join("\n");
   const listingResult = await runScript(driver, listingScript, 20_000);
   const dirsByRoot = new Map<number, string[]>();
+  // Where the device keeps its install records; both paths are answered by the
+  // same script, so the Skills panel can show install state in one round trip.
+  let globalLockPath = `${home}/.agents/.skill-lock.json`;
+  let projectLockPath = `${cwd}/skills-lock.json`;
   if (listingResult && listingResult.exitCode === 0) {
-    const marker = new RegExp(`^${BATCH_MARKER}(\\d+)$`);
+    const rootMarker = new RegExp(`^${BATCH_MARKER}(\\d+)$`);
+    const pathMarker = new RegExp(`^${BATCH_MARKER}([LP]) (.+)$`);
     let currentRoot: number | null = null;
     for (const line of listingResult.stdout.split("\n")) {
-      const match = marker.exec(line);
+      const pathMatch = pathMarker.exec(line);
+      if (pathMatch) {
+        // A path marker also ends the directory list it followed.
+        currentRoot = null;
+        if (pathMatch[1] === "L") globalLockPath = pathMatch[2].trim();
+        else projectLockPath = pathMatch[2].trim();
+        continue;
+      }
+      const match = rootMarker.exec(line);
       if (match) {
         currentRoot = Number(match[1]);
         dirsByRoot.set(currentRoot, []);
@@ -679,10 +699,13 @@ export async function readRemoteSkills(
   const skillDirs = roots.flatMap((root, index) =>
     (dirsByRoot.get(index) ?? []).map((dir) => ({ dir, root })),
   );
-  const skillFiles = await readFilesAtOnce(
-    driver,
-    skillDirs.map(({ dir }) => `${dir}/SKILL.md`),
-  );
+  // The lock files ride along with the skill files: a second command would cost
+  // another full round trip for two small files.
+  const skillFiles = await readFilesAtOnce(driver, [
+    ...skillDirs.map(({ dir }) => `${dir}/SKILL.md`),
+    globalLockPath,
+    projectLockPath,
+  ]);
 
   for (const { dir, root } of skillDirs) {
     const content = (skillFiles.get(`${dir}/SKILL.md`) ?? "").split("\n").slice(0, 40).join("\n");
@@ -700,8 +723,20 @@ export async function readRemoteSkills(
     });
   }
 
+  // Install state comes from the device's own lock files, through the same
+  // rules the local loader applies: without it the Skills panel has no package
+  // name to check for updates or to reinstall.
+  const annotated = annotateSkillsWithLockEntries(skills, {
+    cwd,
+    agentDir,
+    homeDir: home,
+    globalEntries: parseSkillLock(skillFiles.get(globalLockPath)),
+    projectEntries: parseSkillLock(skillFiles.get(projectLockPath)),
+    requireExistingFile: false,
+  });
+
   const value: SkillsResponse = {
-    skills,
+    skills: annotated,
     diagnostics: diagnostics as SkillsResponse["diagnostics"],
     projectResourcesLoaded: false,
     ...({ remote: { deviceId, source: "file" } } as object),

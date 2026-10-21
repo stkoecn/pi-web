@@ -13,6 +13,7 @@ import type {
   ProjectTrustStatus,
 } from "@/lib/api-types";
 import { displayPathWithin, shortenPath } from "@/lib/display-path";
+import { withDeviceId } from "@/lib/device-context";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
   getLastSettingsSelection,
@@ -363,11 +364,14 @@ function SkillDetail({
 
 function AddSkillPanel({
   cwd,
+  deviceId,
   installedPackages,
   projectResourcesLoaded,
   onInstalled,
 }: {
   cwd: string;
+  /** Gateway device whose skills are installed; "localhost" means this host. */
+  deviceId: string;
   installedPackages: Record<SkillInstallScope, ReadonlySet<string>>;
   projectResourcesLoaded: boolean;
   onInstalled: () => void;
@@ -422,7 +426,9 @@ function AddSkillPanel({
       setInstalling(pkg);
       setInstallError(null);
       try {
-        const res = await fetch("/api/skills/install", {
+        // The device must ride along: without it these routes answer for this
+        // host, so a remote panel would install into the wrong machine.
+        const res = await fetch(withDeviceId("/api/skills/install", deviceId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ package: pkg, scope, cwd }),
@@ -442,7 +448,7 @@ function AddSkillPanel({
         setInstalling(null);
       }
     },
-    [onInstalled, scope, cwd],
+    [deviceId, onInstalled, scope, cwd],
   );
 
   const installPath =
@@ -725,7 +731,7 @@ export function SkillsConfig({
     setCheckingUpdates((current) => new Set([...current, ...keys]));
     if (!skill) setCheckingAll(true);
     try {
-      const res = await fetch("/api/skills/check", {
+      const res = await fetch(withDeviceId("/api/skills/check", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -756,7 +762,7 @@ export function SkillsConfig({
       });
       if (!skill) setCheckingAll(false);
     }
-  }, [cwd, skills]);
+  }, [cwd, deviceId, skills]);
 
   const updateInstalledSkill = useCallback(async (skill: Skill) => {
     if (!skill.install) return;
@@ -764,7 +770,7 @@ export function SkillsConfig({
     setUpdatingSkill(key);
     setUpdateError(null);
     try {
-      const res = await fetch("/api/skills/update", {
+      const res = await fetch(withDeviceId("/api/skills/update", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -798,7 +804,7 @@ export function SkillsConfig({
     } finally {
       setUpdatingSkill(null);
     }
-  }, [cwd, loadSkills]);
+  }, [cwd, deviceId, loadSkills]);
 
   const toggle = useCallback(async (skill: Skill) => {
     const next = !skill.disableModelInvocation;
@@ -1024,6 +1030,7 @@ export function SkillsConfig({
               {addMode ? (
               <AddSkillPanel
                 cwd={cwd}
+                deviceId={deviceId}
                 projectResourcesLoaded={projectResourcesLoaded}
                 installedPackages={{
                   global: new Set(
