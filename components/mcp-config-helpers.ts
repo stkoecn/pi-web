@@ -1203,10 +1203,15 @@ export type McpActionResult = { ok: true; data: McpActionResponse } | { ok: fals
 /** How long a change may take; the panel's controls wait meanwhile, as the Code mode switch does. */
 export const MCP_ACTION_TIMEOUT_MS = 15_000;
 
-async function requestMcpAction(body: Record<string, unknown>, fetchImpl: FetchLike, signal: AbortSignal): Promise<McpActionResult> {
+/** The URL of a change: the same query the overview uses, so it lands on the same device. */
+function mcpActionUrl(deviceId?: string): string {
+  return deviceId && deviceId !== "localhost" ? `/api/mcp?deviceId=${encodeURIComponent(deviceId)}` : "/api/mcp";
+}
+
+async function requestMcpAction(body: Record<string, unknown>, fetchImpl: FetchLike, signal: AbortSignal, deviceId?: string): Promise<McpActionResult> {
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await fetchImpl("/api/mcp", {
+    response = await fetchImpl(mcpActionUrl(deviceId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1239,10 +1244,11 @@ export async function postMcpAction(
   fetchImpl: FetchLike = (input, init) => fetch(input, init),
   signal?: AbortSignal,
   timeoutMs: number = MCP_ACTION_TIMEOUT_MS,
+  deviceId?: string,
 ): Promise<McpActionResult> {
   const body: Record<string, unknown> = { ...request, ...(cwd ? { cwd } : {}) };
   return withinDeadline<McpActionResult>(
-    (deadlineSignal) => requestMcpAction(body, fetchImpl, deadlineSignal),
+    (deadlineSignal) => requestMcpAction(body, fetchImpl, deadlineSignal, deviceId),
     () => ({ ok: false, error: { error: `POST /api/mcp did not answer within ${timeoutMs} ms`, timedOut: true } }),
     timeoutMs,
     signal,

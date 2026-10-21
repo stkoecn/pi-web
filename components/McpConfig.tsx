@@ -629,7 +629,7 @@ export function McpConfig({
     const current = loadRef.current;
     // The project only when the listing covers it: a folder the route refused would refuse the change too.
     const writeCwd = current.state === "loaded" && current.data.project ? cwd : null;
-    const result = await postMcpAction(request, writeCwd, undefined, controller.signal);
+    const result = await postMcpAction(request, writeCwd, undefined, controller.signal, undefined, deviceId);
     // Closed meanwhile: nothing is left to update.
     if (actionControllerRef.current !== controller) return undefined;
     actionControllerRef.current = null;
@@ -637,7 +637,7 @@ export function McpConfig({
     if (result.ok) applyOverview(result.data, select?.(result.data));
     else void refresh();
     return result;
-  }, [applyOverview, cwd, refresh]);
+  }, [applyOverview, cwd, deviceId, refresh]);
 
   const switchServer = useCallback(async (server: McpServerInfo, enabled: boolean) => {
     const key = mcpServerKey(server);

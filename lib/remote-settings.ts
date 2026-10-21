@@ -76,8 +76,16 @@ function cache() {
 export function invalidateRemoteSettings(deviceId?: string): void {
   const store = cache();
   for (const map of [store.mcp, store.skills, store.plugins, store.agentDir, store.subagents]) {
-    if (deviceId) map.delete(deviceId);
-    else map.clear();
+    if (!deviceId) {
+      map.clear();
+      continue;
+    }
+    // The pane maps are keyed `${deviceId}\u0000${cwd}` and the rest by the id
+    // alone, so an exact delete used to leave every pane's answer in place: a
+    // write made on the device kept showing the file as it was before it.
+    for (const key of [...map.keys()]) {
+      if (key === deviceId || key.startsWith(`${deviceId}\u0000`)) map.delete(key);
+    }
   }
 }
 
@@ -264,7 +272,7 @@ export async function readRemoteMcpOverview(
     return attachStatuses(value);
   };
 
-  const listing = mcpResponseFromFiles(
+  const listing = await mcpResponseFromFiles(
     files.get(globalMcpPath) ?? null,
     projectMcpPath ? files.get(projectMcpPath) ?? null : null,
     agentDir,
@@ -290,7 +298,7 @@ export async function readRemoteMcpOverview(
   void refreshMcpStateFromCli(deviceId, driver, cwd, agentDir)
     .then((servers) => {
       if (!servers || servers.length === 0) return;
-      remember(toMcpResponse(servers, agentDir, deviceId, settings, settingsPath, cwd));
+      void toMcpResponse(servers, agentDir, deviceId, settings, settingsPath, cwd).then(remember);
     })
     .catch(() => {});
 
@@ -468,15 +476,34 @@ function remoteCodemodeInfo(
   return info;
 }
 
+/**
+ * The project segment of a device's MCP overview.
+ *
+ * `trust` is the device's own decision for the folder (`lib/remote-trust.ts`),
+ * not this machine's: the panel decides with it whether project writes and Test
+ * are offered at all (`mcpWriteBlock()` reads `trust.decision`), so leaving it out
+ * locked every project server's controls while the device was perfectly trusted.
+ * `trustFolder` stays as before — a device trusts a fresh folder in the same
+ * request through the add route, and whether that is too broad is decided there.
+ */
+async function remoteProjectInfo(
+  deviceId: string,
+  cwd: string,
+): Promise<NonNullable<McpResponse["project"]>> {
+  const { cachedRemoteProjectTrust } = await import("@/lib/remote-trust");
+  const trust = await cachedRemoteProjectTrust(deviceId, cwd);
+  return { cwd, trustFolder: { allowed: true }, ...(trust ? { trust } : {}) };
+}
+
 /** Shape `pi mcp list --json` output like the local route's `McpResponse`. */
-function toMcpResponse(
+async function toMcpResponse(
   servers: RemoteMcpServer[],
   agentDir: string,
   deviceId: string,
   settings: Record<string, unknown>,
   settingsPath: string,
   cwd: string | null,
-): McpResponse {
+): Promise<McpResponse> {
   const infos: McpResponse["servers"] = servers.map((server) => {
     const name = String(server.name ?? "");
     const scope: McpResponse["servers"][number]["scope"] = server.scope === "project" ? "project" : "global";
@@ -525,9 +552,7 @@ function toMcpResponse(
     codemode: remoteCodemodeInfo(settings, settingsPath),
     files,
     servers: infos,
-    // A device decides trust for its own folders; reporting the folder without
-    // a trust verdict keeps the panel from offering a Trust button it cannot act on.
-    ...(cwd ? { project: { cwd, trustFolder: { allowed: true } } } : {}),
+    ...(cwd ? { project: await remoteProjectInfo(deviceId, cwd) } : {}),
     remote: { deviceId, source: "pi-cli" },
   } as unknown as McpResponse;
 }
@@ -541,7 +566,7 @@ function toMcpResponse(
  * offers — arrives later through `refreshMcpStateFromCli`, which is why the
  * servers start out as untested rows.
  */
-function mcpResponseFromFiles(
+async function mcpResponseFromFiles(
   raw: string | null,
   projectRaw: string | null,
   agentDir: string,
@@ -549,7 +574,7 @@ function mcpResponseFromFiles(
   settings: Record<string, unknown>,
   settingsPath: string,
   cwd: string | null,
-): McpResponse {
+): Promise<McpResponse> {
   const globalMcpPath = `${agentDir}/mcp.json`;
   const projectMcpPath = cwd ? `${cwd}/.pi/mcp.json` : null;
 
@@ -605,9 +630,7 @@ function mcpResponseFromFiles(
     codemode: remoteCodemodeInfo(settings, settingsPath),
     files,
     servers,
-    // A device decides trust for its own folders; reporting the folder without
-    // a trust verdict keeps the panel from offering a Trust button it cannot act on.
-    ...(cwd ? { project: { cwd, trustFolder: { allowed: true } } } : {}),
+    ...(cwd ? { project: await remoteProjectInfo(deviceId, cwd) } : {}),
     remote: { deviceId, source: "file" },
   } as unknown as McpResponse;
 }
