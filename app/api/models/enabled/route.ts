@@ -27,7 +27,7 @@ import { withDeferredProviderModels } from "@/lib/deferred-provider-models";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
-import { loadRemoteModels, type RemoteModelCatalogue } from "@/lib/remote-models";
+import { invalidateRemoteModels, type RemoteModelCatalogue } from "@/lib/remote-models";
 
 export const dynamic = "force-dynamic";
 
@@ -96,8 +96,13 @@ export async function GET(req: Request) {
   const deviceId = getRequestDeviceId(req);
   if (isRemoteDevice(deviceId)) {
     // A remote device's models live in its own runtime, so neither the local cwd
-    // allow-list nor the local settings files apply here.
-    return Response.json(await buildRemoteView(deviceId));
+    // allow-list nor the local settings files apply here. `cwd` is only read, to
+    // learn whether that project's settings file shadows the global value.
+    try {
+      return Response.json(await buildRemoteView(deviceId, new URL(req.url).searchParams.get("cwd")));
+    } catch (error) {
+      return Response.json({ error: String(error) }, { status: 500 });
+    }
   }
 
   const resolved = await resolveCwd(new URL(req.url).searchParams.get("cwd"));
@@ -128,28 +133,29 @@ function remoteModelsForView(catalogue: RemoteModelCatalogue): readonly Model<Ap
 /**
  * `enabledModels` panel data for a remote device.
  *
- * pi's RPC mode cannot read that setting, so the panel shows every model the
- * device reports as enabled, with no pins, and read-only: `editable` is forced
- * false because the matching PUT answers 501 rather than writing to the wrong
- * machine's settings file.
+ * The patterns come from the device's own `~/.pi/agent/settings.json` — pi's RPC
+ * mode cannot read that setting, and the file is what a session there actually
+ * loads — while the catalogue comes from the device's RPC model list. Resolution
+ * runs locally through the same pure editor the local panel uses, so the counts,
+ * pins and stale entries mean exactly what they mean on this machine.
  */
-async function buildRemoteView(deviceId: string): Promise<EnabledModelsView> {
-  const catalogue = await loadRemoteModels(deviceId);
-  const input: EnabledModelsInput = {
-    patterns: catalogue.enabledModels,
-    availableRefs: catalogue.models.map((model) => `${model.provider}/${model.id}`),
-    resolutions: [],
-  };
+async function buildRemoteView(deviceId: string, cwd: string | null): Promise<EnabledModelsView> {
+  const { readRemoteEnabledModels } = await import("@/lib/remote-enabled-models");
+  const { patterns, settingsPath, shadowed, catalogue } = await readRemoteEnabledModels(deviceId, { cwd });
+  const models = remoteModelsForView(catalogue);
+  const input = await buildEnabledModelsInput(patterns, models, { withProviderGlobs: true });
   const view = buildEnabledModelsView({
     input,
-    models: remoteModelsForView(catalogue),
+    models,
     // The RPC model list carries no provider display names.
     providerNames: new Map<string, string>(),
     customProviders: new Set<string>(),
-    scope: "global",
-    settingsPath: `${deviceId}:~/.pi/agent/settings.json`,
+    scope: shadowed ? "project" : "global",
+    settingsPath: `${deviceId}:${settingsPath}`,
   });
-  return { ...view, editable: false };
+  // A project file that sets `enabledModels` owns the value for that project;
+  // writing the global file would change nothing there.
+  return { ...view, editable: !shadowed };
 }
 
 interface EnabledModelsRequest {
@@ -238,14 +244,17 @@ export async function PUT(req: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  // Writing `enabledModels` for a remote device is not implemented: the RPC
-  // protocol has no settings command, and the local files belong to another
-  // machine. Refuse instead of silently editing them.
   const requestDevice = getRequestDeviceId(req);
   const bodyDevice = typeof body.deviceId === "string" ? body.deviceId : null;
-  if (isRemoteDevice(requestDevice) || isRemoteDevice(bodyDevice)) {
-    return Response.json({ error: "Not supported on remote devices yet" }, { status: 501 });
-  }
+  const deviceId = isRemoteDevice(requestDevice)
+    ? requestDevice
+    : isRemoteDevice(bodyDevice)
+      ? bodyDevice as string
+      : null;
+  // A remote device's files belong to another machine, so this must never fall
+  // through to the local settings manager: that would write the wrong machine's
+  // scope and report success.
+  if (deviceId) return putRemote(deviceId, body);
 
   const op = body.op;
   if (op !== "models" && op !== "provider" && op !== "clear" && op !== "prune" && op !== "resync") {
@@ -319,6 +328,92 @@ export async function PUT(req: Request) {
 
     return Response.json(await buildView(context));
   } catch (error) {
+    return Response.json({ error: String(error) }, { status: 500 });
+  }
+}
+
+/**
+ * `enabledModels` edits for a remote device.
+ *
+ * The editor itself is the local one (`lib/enabled-models.ts` is pure): the
+ * device's own patterns come in, the same minimal edit is computed, and the
+ * result is written back to the device's settings file. Only the two machines'
+ * filesystem access differs.
+ *
+ * `resync` is refused rather than approximated: it repairs patterns against a
+ * catalogue that *models.json* just changed, and `resync` arrives only from the
+ * models.json editor, which cannot write a remote device yet.
+ */
+async function putRemote(deviceId: string, body: EnabledModelsRequest): Promise<Response> {
+  const op = body.op;
+  if (op !== "models" && op !== "provider" && op !== "clear" && op !== "prune" && op !== "resync") {
+    return Response.json({ error: "Invalid op" }, { status: 400 });
+  }
+  if ((op === "models" || op === "provider") && typeof body.enabled !== "boolean") {
+    return Response.json({ error: "enabled must be a boolean" }, { status: 400 });
+  }
+  if (body.cwd !== undefined && body.cwd !== null && typeof body.cwd !== "string") {
+    return Response.json({ error: "Invalid cwd" }, { status: 400 });
+  }
+  const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : null;
+
+  const { readRemoteEnabledModels, writeRemoteEnabledModels, RemoteEnabledModelsScopeError } =
+    await import("@/lib/remote-enabled-models");
+
+  try {
+    const state = await readRemoteEnabledModels(deviceId, { cwd });
+    if (state.shadowed) {
+      return Response.json(
+        { error: "Project settings override enabledModels", reason: "project-scope" },
+        { status: 409 },
+      );
+    }
+    const models = remoteModelsForView(state.catalogue);
+    const input = await buildEnabledModelsInput(state.patterns, models, { withProviderGlobs: true });
+
+    let edit;
+    if (op === "clear") {
+      edit = clearEnabledModels(input);
+    } else if (op === "prune") {
+      edit = pruneStaleEnabledModels(input);
+    } else if (op === "resync") {
+      return Response.json(
+        { error: "Not supported on remote devices yet", code: "remote-unsupported" },
+        { status: 501 },
+      );
+    } else {
+      let refs: string[];
+      if (op === "provider") {
+        if (typeof body.provider !== "string" || !body.provider) {
+          return Response.json({ error: "provider is required" }, { status: 400 });
+        }
+        refs = models.filter((model) => model.provider === body.provider).map(modelRef);
+      } else {
+        const requested = stringArray(body.refs);
+        if (!requested) return Response.json({ error: "refs must be an array of strings" }, { status: 400 });
+        refs = requested;
+      }
+      edit = setModelsEnabled(input, refs, body.enabled === true);
+    }
+
+    if (!edit.ok) {
+      return Response.json(
+        { error: "At least one model must stay enabled", reason: edit.reason },
+        { status: 409 },
+      );
+    }
+    if (edit.changed) {
+      await writeRemoteEnabledModels(deviceId, edit.patterns, { cwd });
+      invalidateRemoteModels(deviceId);
+    }
+    return Response.json(await buildRemoteView(deviceId, cwd));
+  } catch (error) {
+    if (error instanceof RemoteEnabledModelsScopeError) {
+      return Response.json(
+        { error: error.message, reason: "project-scope", settingsPath: error.settingsPath },
+        { status: 409 },
+      );
+    }
     return Response.json({ error: String(error) }, { status: 500 });
   }
 }

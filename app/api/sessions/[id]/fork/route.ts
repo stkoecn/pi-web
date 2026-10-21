@@ -12,6 +12,7 @@ import {
 } from "@/lib/session-reader";
 import type { SessionInfo } from "@/lib/types";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
 
 export const dynamic = "force-dynamic";
 
@@ -39,10 +40,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!hasJsonContentType(req)) return refusal(415, "request-denied", "Content-Type must be application/json");
   const { id } = await params;
 
-  // Fork copies a file on this host. On a remote device that would silently
-  // fork the wrong transcript (or nothing), so refuse explicitly.
-  if (isRemoteDevice(getRequestDeviceId(req))) {
-    return refusal(501, "not-supported-remote", "Not supported on remote devices yet");
+  // Fork copies a file, so on a remote device the copy is written over there.
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    const { forkRemoteSession } = await import("@/lib/remote-session-fork");
+    try {
+      return NextResponse.json(await forkRemoteSession(deviceId, id), { headers: NO_STORE });
+    } catch (error) {
+      // Identified by code as well as class: the gateway is imported through
+      // several module instances (server-only, lazy routes), so a duplicated
+      // class would slip past `instanceof` and surface as a 500.
+      if (error instanceof DeviceOfflineError
+        || (error as { code?: unknown } | null)?.code === "device-offline") {
+        return refusal(503, "device-offline", error instanceof Error ? error.message : String(error));
+      }
+      if (error instanceof SessionForkError) {
+        if (error.code === "not_found") return refusal(404, error.code, error.message);
+        return refusal(409, error.code, error.message);
+      }
+      return refusal(500, "failed", error instanceof Error ? error.message : String(error));
+    }
   }
 
   try {

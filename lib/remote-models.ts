@@ -53,6 +53,11 @@ export interface RemoteModelCatalogue {
   thinkingLevel?: string;
   /** Always undefined for now: pi's RPC mode exposes no `enabledModels` read. */
   enabledModels?: string[];
+  /**
+   * The list is a fallback (only `get_state`'s model) around a device whose
+   * catalogue had not finished loading, so it must not be cached.
+   */
+  partial?: boolean;
 }
 
 interface CacheEntry {
@@ -78,6 +83,12 @@ const REMOTE_MODELS_REQUEST_TIMEOUT_MS = 8_000;
 const REMOTE_MODELS_SESSION_TIMEOUT_MS = 10_000;
 
 const EMPTY_CATALOGUE: RemoteModelCatalogue = { models: [] };
+/**
+ * A device's catalogue refresh runs in the background after `pi --mode rpc`
+ * starts, so the first `get_available_models` of a fresh process can be empty.
+ */
+const AVAILABLE_MODELS_RETRIES = 4;
+const AVAILABLE_MODELS_RETRY_DELAY_MS = 400;
 
 let requestCounter = 0;
 
@@ -230,7 +241,18 @@ async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
       target.state ? Promise.resolve({ data: target.state }) : safeRequest(channel, "get_state"),
     ]);
 
-    const rawModels: any[] = Array.isArray(modelsResponse?.models) ? modelsResponse.models : [];
+    let rawModels: any[] = Array.isArray(modelsResponse?.models) ? modelsResponse.models : [];
+    // A freshly spawned `pi --mode rpc` answers `get_available_models` from a
+    // snapshot that its own catalogue refresh fills asynchronously, so the very
+    // first answer can legitimately be empty on a device with dozens of models.
+    // Falling back to the single `get_state` model right there is how a device
+    // "lost" 50 of its models: the one-model list was then served and cached.
+    for (let attempt = 0; rawModels.length === 0 && attempt < AVAILABLE_MODELS_RETRIES; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, AVAILABLE_MODELS_RETRY_DELAY_MS));
+      const retried = await safeRequest(channel, "get_available_models");
+      if (Array.isArray(retried?.models) && retried.models.length > 0) rawModels = retried.models;
+    }
+
     const state = stateResponse?.data ?? null;
     const stateModel = state?.model ?? null;
 
@@ -239,9 +261,15 @@ async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
       .filter((model): model is RemoteModelInfo => model !== null);
     // A device whose runtime answered nothing useful still knows its current
     // model from `get_state`; offer at least that one instead of an empty picker.
+    // The answer is marked partial so it is not cached: it is a guess about a
+    // device that had not finished loading its catalogue yet.
+    let partial = false;
     if (models.length === 0 && stateModel) {
       const single = toModelInfo(stateModel);
-      if (single) models = [single];
+      if (single) {
+        models = [single];
+        partial = true;
+      }
     }
     // No `enabledModels` scope is readable over RPC, so order like the unscoped
     // local branch: stable sort by provider id.
@@ -271,6 +299,7 @@ async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
 
     return {
       models,
+      ...(partial ? { partial: true } : {}),
       ...(defaultModel ? { defaultModel } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
     };
@@ -306,7 +335,10 @@ export async function loadRemoteModels(
 
   const load = fetchCatalogue(deviceId)
     .then((catalogue) => {
-      if (catalogue.models.length > 0) {
+      // `partial` means the list is a fallback around a device that had not
+      // finished loading its catalogue: caching it for a minute would keep
+      // answering with that fallback long after the device recovered.
+      if (catalogue.models.length > 0 && !catalogue.partial) {
         const now = Date.now();
         for (const [key, entry] of entries) {
           if (entry.expiresAt <= now) entries.delete(key);

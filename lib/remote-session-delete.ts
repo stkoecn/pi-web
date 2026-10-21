@@ -60,7 +60,7 @@ __dir=${shellQuote(sessionsDir)}
 find "$__dir" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r path; do
   printf '@@P %s\\n' "$path"
   head -n 1 "$path" 2>/dev/null | cut -c1-2000
-  grep -m 1 '"customType":"subagent-meta"' "$path" 2>/dev/null | cut -c1-2000 | sed 's/^/@@S /'
+  grep -m 1 '"customType":"pi-web:subagent"' "$path" 2>/dev/null | cut -c1-2000 | sed 's/^/@@S /'
 done
 `;
   const result = await driver.exec(script, [], { timeoutMs: 120_000 });

@@ -1,7 +1,7 @@
 import "server-only";
 import { getGateway } from "@/lib/gateway/singleton";
 import { getRemoteAgentDir } from "@/lib/remote-settings";
-import { shellQuote } from "@/lib/shell-quote";
+import { readRemoteFiles, writeRemoteFile } from "@/lib/remote-settings-file";
 import {
   mergeDefaultPreferences,
   parseSettingsObject,
@@ -10,7 +10,6 @@ import {
   shadowingRemoteProjectKeys,
   writtenKeys,
 } from "@/lib/remote-settings-merge";
-import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 import type { DefaultPreferencesEdit } from "@/lib/default-preferences";
 
 /**
@@ -45,56 +44,6 @@ export class RemoteProjectScopeError extends Error {
 }
 
 /**
- * Read several files in ONE round trip.
- *
- * A second round trip to `/api/models/default` costs 250-900 ms on a WAN device
- * (one RTT), and this route needs both the global settings file and the
- * project's, so they travel together. Each section is delimited by a marker line
- * holding the index; a missing file simply has no section.
- */
-async function readFilesAtOnce(
-  driver: IHostDriver,
-  paths: readonly string[],
-  timeoutMs = 20_000,
-): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-  if (paths.length === 0) return found;
-  const marker = "@@piweb-file@@";
-  const script = paths
-    .map((path, index) => {
-      const quoted = shellQuote(path);
-      return [
-        `if [ -f ${quoted} ]; then`,
-        `  printf '%s%s\\n' '${marker}' '${index}'`,
-        `  cat ${quoted}`,
-        `  printf '\\n'`,
-        `fi`,
-      ].join("\n");
-    })
-    .join("\n");
-  const result = await driver.exec(
-    `printf %s ${Buffer.from(script, "utf8").toString("base64")} | base64 -d | sh`,
-    [],
-    { timeoutMs },
-  );
-  if (result.exitCode !== 0) return found;
-  const pattern = new RegExp(`^${marker}(\\d+)$`);
-  let current: { path: string; lines: string[] } | null = null;
-  for (const line of result.stdout.split("\n")) {
-    const match = pattern.exec(line);
-    if (match) {
-      if (current) found.set(current.path, current.lines.join("\n"));
-      const path = paths[Number(match[1])];
-      current = path === undefined ? null : { path, lines: [] };
-      continue;
-    }
-    if (current) current.lines.push(line);
-  }
-  if (current) found.set(current.path, current.lines.join("\n"));
-  return found;
-}
-
-/**
  * Save the model and/or reasoning level a remote device's new sessions start
  * with.
  *
@@ -112,7 +61,7 @@ export async function writeRemoteDefaultPreferences(
   const projectPath = options.cwd ? `${options.cwd.replace(/\/+$/, "")}/.pi/settings.json` : null;
   const driver = getGateway().getOnlineDriver(deviceId);
 
-  const files = await readFilesAtOnce(driver, projectPath ? [settingsPath, projectPath] : [settingsPath]);
+  const files = await readRemoteFiles(driver, projectPath ? [settingsPath, projectPath] : [settingsPath]);
   const globalText = files.get(settingsPath);
   const globalRead = globalText === undefined ? { value: null } : parseSettingsObject(globalText);
   if (globalRead.error) throw new RemoteSettingsUnreadableError(settingsPath, globalRead.error);
@@ -130,33 +79,7 @@ export async function writeRemoteDefaultPreferences(
   // rewrites the last line.
   const contents = serializeSettings(merged);
 
-  // Written through a temp file in the same directory and then copied over the
-  // original: `mv` would replace the inode and lose the file's mode (pi's own
-  // settings storage does a plain `writeFileSync`, but a half-written settings
-  // file makes every later session on that device fail to load, so the extra
-  // step is worth it here). `cat >` keeps the mode and stays a single write for
-  // a file this small.
-  const quotedPath = shellQuote(settingsPath);
-  const quotedDir = shellQuote(agentDir);
-  const tmpPath = `${agentDir}/settings.json.piweb-${Date.now()}.tmp`;
-  const quotedTmp = shellQuote(tmpPath);
-  const payload = Buffer.from(contents, "utf8").toString("base64");
-  const script = [
-    `mkdir -p ${quotedDir} || exit 4`,
-    `printf %s ${shellQuote(payload)} | base64 -d > ${quotedTmp} || exit 5`,
-    `cat ${quotedTmp} > ${quotedPath} || { rm -f ${quotedTmp}; exit 6; }`,
-    `rm -f ${quotedTmp} || exit 7`,
-  ].join("\n");
-  const result = await driver.exec(
-    `printf %s ${Buffer.from(script, "utf8").toString("base64")} | base64 -d | sh`,
-    [],
-    { timeoutMs: 20_000 },
-  );
-  if (result.exitCode !== 0) {
-    throw new Error(
-      result.stderr.trim() || `Failed to write ${settingsPath} (exit ${result.exitCode})`,
-    );
-  }
+  await writeRemoteFile(driver, settingsPath, contents);
 
   return { settingsPath, written: writtenKeys(edit) };
 }
@@ -179,7 +102,7 @@ export async function readRemoteDefaultPreferences(deviceId: string): Promise<{
   const agentDir = await getRemoteAgentDir(deviceId);
   const settingsPath = `${agentDir}/settings.json`;
   const driver = getGateway().getOnlineDriver(deviceId);
-  const files = await readFilesAtOnce(driver, [settingsPath], 15_000);
+  const files = await readRemoteFiles(driver, [settingsPath], 15_000);
   const text = files.get(settingsPath);
   const read = text === undefined ? { value: null } : parseSettingsObject(text);
   if (read.error) return null;

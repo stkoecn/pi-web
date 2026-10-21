@@ -106,3 +106,32 @@ export function readDefaultsFromSettings(value: Record<string, unknown> | null):
     defaultThinkingLevel: str("defaultThinkingLevel"),
   };
 }
+
+/**
+ * Merge an `enabledModels` edit into a settings object.
+ *
+ * Same contract as `mergeDefaultPreferences`: only this key is touched, and
+ * `undefined` (pi's spelling of "no scope": every model enabled) *removes* the
+ * key rather than writing it as null.
+ */
+export function mergeEnabledModels(
+  current: Record<string, unknown> | null,
+  patterns: string[] | undefined,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(current ?? {}) };
+  if (patterns === undefined) delete next.enabledModels;
+  else next.enabledModels = [...patterns];
+  return next;
+}
+
+/** Whether the device's project settings would hide a global `enabledModels`. */
+export function projectShadowsEnabledModels(project: Record<string, unknown> | null): boolean {
+  return project?.enabledModels !== undefined;
+}
+
+/** The `enabledModels` list a settings object names, if it is a list of strings. */
+export function readEnabledModelsFromSettings(value: Record<string, unknown> | null): string[] | undefined {
+  const raw = value?.enabledModels;
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((entry): entry is string => typeof entry === "string");
+}
