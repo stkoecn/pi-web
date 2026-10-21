@@ -199,7 +199,7 @@ function stringArray(value: unknown): string[] | null {
  * fully enabled before the save.
  */
 async function resyncAfterModelsConfigSave(
-  context: RequestContext,
+  models: readonly Model<Api>[],
   input: EnabledModelsInput,
   options: {
     renames: readonly ProviderRename[];
@@ -214,18 +214,18 @@ async function resyncAfterModelsConfigSave(
   const renamed = renameProviderPatterns(renameModelPatterns(original, modelRenames), renames);
   let current = renamed === original
     ? input
-    : await buildEnabledModelsInput(renamed, context.models, { withProviderGlobs: true });
+    : await buildEnabledModelsInput(renamed, models, { withProviderGlobs: true });
 
   const constrained = constrainProviderEntries(current);
   if (constrained.ok && constrained.changed) {
-    current = await buildEnabledModelsInput(constrained.patterns, context.models, { withProviderGlobs: true });
+    current = await buildEnabledModelsInput(constrained.patterns, models, { withProviderGlobs: true });
   }
 
   // A provider that was fully enabled before the save stays fully enabled, even
   // when a model of it was renamed out of the glob that used to cover it.
   const refs = fullyEnabled
     .map((id) => renames.find((rename) => rename.from === id)?.to ?? id)
-    .flatMap((id) => context.models.filter((model) => model.provider === id).map(modelRef));
+    .flatMap((id) => models.filter((model) => model.provider === id).map(modelRef));
   const edit = setModelsEnabled(current, refs, true);
   if (!edit.ok) return edit;
   return { ok: true, patterns: edit.patterns, changed: !samePatternList(edit.patterns, original) };
@@ -295,7 +295,7 @@ export async function PUT(req: Request) {
       if (!renames || !modelRenames || !fullyEnabled) {
         return Response.json({ error: "Invalid resync payload" }, { status: 400 });
       }
-      edit = await resyncAfterModelsConfigSave(context, input, { renames, modelRenames, fullyEnabled });
+      edit = await resyncAfterModelsConfigSave(context.models, input, { renames, modelRenames, fullyEnabled });
     } else {
       let refs: string[];
       if (op === "provider") {
@@ -338,11 +338,10 @@ export async function PUT(req: Request) {
  * The editor itself is the local one (`lib/enabled-models.ts` is pure): the
  * device's own patterns come in, the same minimal edit is computed, and the
  * result is written back to the device's settings file. Only the two machines'
- * filesystem access differs.
- *
- * `resync` is refused rather than approximated: it repairs patterns against a
- * catalogue that *models.json* just changed, and `resync` arrives only from the
- * models.json editor, which cannot write a remote device yet.
+ * filesystem access differs. `resync` arrives from the models.json editor after
+ * a save, and repairs patterns against the catalogue that save just changed, so
+ * it needs the same edit and nothing more: the local branch passes this
+ * machine's model list, this one passes the device's.
  */
 async function putRemote(deviceId: string, body: EnabledModelsRequest): Promise<Response> {
   const op = body.op;
@@ -377,10 +376,15 @@ async function putRemote(deviceId: string, body: EnabledModelsRequest): Promise<
     } else if (op === "prune") {
       edit = pruneStaleEnabledModels(input);
     } else if (op === "resync") {
-      return Response.json(
-        { error: "Not supported on remote devices yet", code: "remote-unsupported" },
-        { status: 501 },
-      );
+      // Same editor as the local branch: the repair is pattern arithmetic over
+      // the device's catalogue, and only the write below is device-specific.
+      const renames = renamePairs(body.renames);
+      const modelRenames = renamePairs(body.modelRenames ?? []);
+      const fullyEnabled = stringArray(body.fullyEnabled ?? []);
+      if (!renames || !modelRenames || !fullyEnabled) {
+        return Response.json({ error: "Invalid resync payload" }, { status: 400 });
+      }
+      edit = await resyncAfterModelsConfigSave(models, input, { renames, modelRenames, fullyEnabled });
     } else {
       let refs: string[];
       if (op === "provider") {
