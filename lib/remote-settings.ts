@@ -14,9 +14,6 @@ import {
   McpServerInfo,
   McpServerStatus,
   McpTestResult,
-  PluginPackageInfo,
-  PluginResourceCounts,
-  PluginStandaloneExtensionInfo,
 } from "@/lib/api-types";
 import { readMcpStatus, recordMcpStatus } from "@/lib/mcp-status";
 import { annotateSkillsWithLockEntries, parseSkillLock } from "@/lib/skill-lock";
@@ -813,74 +810,15 @@ export async function readRemotePlugins(
 
   const driver = await driverFor(deviceId);
   const agentDir = await getRemoteAgentDir(deviceId);
-
-  const empty: PluginResourceCounts = { extensions: 0, skills: 0, prompts: 0, themes: 0 };
-
-  // Both settings files in one round trip: the plugin list is a single answer,
-  // so paying two full device round trips for it is pure latency.
-  const globalPath = `${agentDir}/settings.json`;
-  const projectPath = `${cwd}/.pi/settings.json`;
-  const settingsFiles = await readFilesAtOnce(driver, [globalPath, projectPath]);
-  function parseSettings(raw: string | undefined): Record<string, unknown> | null {
-    if (raw === undefined) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-    } catch {
-      return null;
-    }
-  }
-  const globalSettings = parseSettings(settingsFiles.get(globalPath));
-  const projectSettings = parseSettings(settingsFiles.get(projectPath));
-
-  const packages: PluginPackageInfo[] = [];
-  const diagnostics: PluginsResponse["diagnostics"] = [];
-
-  for (const [scope, settings] of [
-    ["global", globalSettings],
-    ["project", projectSettings],
-  ] as const) {
-    if (!settings) continue;
-    const sources = settings.packages;
-    if (!Array.isArray(sources)) continue;
-    for (const entry of sources) {
-      const source = typeof entry === "string"
-        ? entry
-        : (entry && typeof entry === "object" && "source" in entry
-          ? String((entry as { source?: unknown }).source ?? "")
-          : "");
-      if (!source) continue;
-      const disabled = Boolean(
-        entry && typeof entry === "object" && (entry as { disabled?: unknown }).disabled,
-      );
-      packages.push({
-        source,
-        scope,
-        canCheckForUpdates: false,
-        filtered: false,
-        disabled,
-        installedPath: undefined,
-        packageName: undefined,
-        version: undefined,
-        configuredVersion: undefined,
-        description: undefined,
-        counts: empty,
-        resources: [],
-        // Counting a package's resources needs the package manager to resolve it
-        // on the device; the pane shows the configured source and scope instead.
-        status: disabled ? "disabled" : "installed",
-      } as unknown as PluginPackageInfo);
-    }
-  }
-
-  const value: PluginsResponse = {
-    packages,
-    standaloneExtensions: [] as PluginStandaloneExtensionInfo[],
-    totals: empty,
-    diagnostics,
-    projectResourcesLoaded: false,
-    ...({ remote: { deviceId, source: "file" } } as object),
-  } as PluginsResponse;
+  // What a `packages` entry means — disabled, filtered, which version it pins —
+  // is `lib/plugin-entries.ts`'s business, shared with the write path and with
+  // the local route, so the pane and the switch agree on every entry.
+  const { readRemotePluginList } = await import("@/lib/remote-plugins");
+  const { cachedRemoteProjectTrust } = await import("@/lib/remote-trust");
+  const trust = await cachedRemoteProjectTrust(deviceId, cwd);
+  const value = await readRemotePluginList(driver, agentDir, cwd, {
+    projectResourcesLoaded: trust?.trusted === true,
+  });
 
   store.plugins.set(key, { value, expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS });
   return value;

@@ -11,6 +11,7 @@ import type {
   ProjectTrustStatus,
 } from "@/lib/api-types";
 import { useI18n } from "@/hooks/useI18n";
+import { withDeviceId } from "@/lib/device-context";
 import { shortenPath } from "@/lib/display-path";
 import {
   getLastSettingsSelection,
@@ -618,9 +619,7 @@ export function PluginsConfig({
     setError(null);
     setGroupStatus(null);
     try {
-      const pluginsUrl = new URLSearchParams({ cwd });
-      if (deviceId && deviceId !== "localhost") pluginsUrl.set("deviceId", deviceId);
-      const res = await fetch(`/api/plugins?${pluginsUrl.toString()}`);
+      const res = await fetch(withDeviceId(`/api/plugins?${new URLSearchParams({ cwd }).toString()}`, deviceId));
       const next = (await res.json()) as PluginsResponse & { error?: string };
       if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
       setData(next);
@@ -641,7 +640,7 @@ export function PluginsConfig({
     } finally {
       setLoading(false);
     }
-  }, [cwd]);
+  }, [cwd, deviceId]);
 
   useEffect(() => {
     setUpdateStatuses({});
@@ -675,7 +674,7 @@ export function PluginsConfig({
     setCheckingUpdates((current) => new Set([...current, ...keys]));
     if (!pkg) setCheckingAll(true);
     try {
-      const res = await fetch("/api/plugins/check", {
+      const res = await fetch(withDeviceId("/api/plugins/check", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -706,7 +705,7 @@ export function PluginsConfig({
       });
       if (!pkg) setCheckingAll(false);
     }
-  }, [cwd, packages]);
+  }, [cwd, deviceId, packages]);
 
   const updateAllPluginsAction = useCallback(async () => {
     setUpdatingAll(true);
@@ -714,7 +713,7 @@ export function PluginsConfig({
     setActionMessage(null);
     setUpdateError(null);
     try {
-      const res = await fetch("/api/plugins", {
+      const res = await fetch(withDeviceId("/api/plugins", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "update", cwd }),
@@ -732,7 +731,7 @@ export function PluginsConfig({
     } finally {
       setUpdatingAll(false);
     }
-  }, [cwd, sessionId, t]);
+  }, [cwd, deviceId, sessionId, t]);
 
   const runAction = useCallback(async (action: PluginAction, pkg: PluginPackageInfo) => {
     const key = packageKey(pkg);
@@ -741,7 +740,7 @@ export function PluginsConfig({
     setActionMessage(null);
     setGroupStatus(null);
     try {
-      const res = await fetch("/api/plugins", {
+      const res = await fetch(withDeviceId("/api/plugins", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, source: pkg.source, scope: pkg.scope, cwd }),
@@ -783,7 +782,7 @@ export function PluginsConfig({
     } finally {
       setBusyKey(null);
     }
-  }, [cwd, t]);
+  }, [cwd, deviceId, t]);
 
   // Behaves like the package switch, for every package of one scope: the
   // confirmation appears in the package detail and the session is reloaded by
@@ -804,7 +803,7 @@ export function PluginsConfig({
     const action = enabled ? "enable" : "disable";
     setBusyKey(`bulk:${scope}`);
     try {
-      const res = await fetch("/api/plugins", {
+      const res = await fetch(withDeviceId("/api/plugins", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -837,7 +836,7 @@ export function PluginsConfig({
     } finally {
       setBusyKey(null);
     }
-  }, [cwd, sessionId, t]);
+  }, [cwd, deviceId, sessionId, t]);
 
   const installPlugin = useCallback(async () => {
     const source = normalizePluginSourceInput(installSource).trim();
@@ -849,7 +848,7 @@ export function PluginsConfig({
     setActionMessage(null);
     setGroupStatus(null);
     try {
-      const res = await fetch("/api/plugins", {
+      const res = await fetch(withDeviceId("/api/plugins", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "install", source, scope: installScope, cwd }),
@@ -867,7 +866,7 @@ export function PluginsConfig({
     } finally {
       setBusyKey(null);
     }
-  }, [cwd, installScope, installSource, t]);
+  }, [cwd, deviceId, installScope, installSource, t]);
 
   const reloadSession = useCallback(async () => {
     if (!sessionId) return;

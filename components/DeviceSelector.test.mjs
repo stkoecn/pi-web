@@ -55,7 +55,11 @@ test("the phone top bar renders the switcher, not only the desktop bar", async (
   assert.ok(mobileToolbar > 0, "the mobile toolbar must exist");
   const switcher = source.indexOf("<DeviceSelector", mobileToolbar);
   assert.ok(switcher > mobileToolbar, "the mobile toolbar must render the device selector");
-  assert.match(source.slice(switcher, switcher + 400), /compact/);
+  // Read the whole element, not a fixed window: its props grow, and a test that
+  // counts characters fails for a reason that has nothing to do with the phone.
+  const elementEnd = source.indexOf("/>", switcher);
+  assert.ok(elementEnd > switcher, "the mobile selector must be self-closing");
+  assert.match(source.slice(switcher, elementEnd), /compact/);
   // Both call sites share one handler, so a phone switches host the same way.
   const handlers = source.match(/onSelectDevice=\{handleSelectDevice\}/g) ?? [];
   assert.equal(handlers.length, 2);
