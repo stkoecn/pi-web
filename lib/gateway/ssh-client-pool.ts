@@ -30,8 +30,17 @@ export class SSHClientPool {
     this.registry = registry;
   }
 
-  async addDevice(config: ActiveDeviceConfig): Promise<void> {
+  /**
+   * Register a device, and dial it unless told not to.
+   *
+   * `connect: false` is how a host discovered in `~/.ssh/config` becomes a
+   * device without opening a connection: the user asked to *see* their hosts,
+   * not to hold a session on every one of them. The placeholder still lands in
+   * the registry, so the switcher lists it as offline and a click can dial it.
+   */
+  async addDevice(config: ActiveDeviceConfig, options: { connect?: boolean } = {}): Promise<void> {
     this.configs.set(config.id, config);
+    const shouldConnect = options.connect ?? true;
 
     // Initial placeholder registration so device appears in list
     const existing = this.registry.get(config.id);
@@ -40,15 +49,21 @@ export class SSHClientPool {
         {
           id: config.id,
           name: config.name,
-          mode: 'active_ssh',
+          mode: config.mode ?? 'active_ssh',
           remoteAddr: `${config.host}:${config.port}`,
-          status: 'connecting',
+          status: shouldConnect ? 'connecting' : 'offline',
           lastSeen: Date.now(),
         },
-        new OfflineHostDriver(config.id, `Connecting to ${config.host}:${config.port}...`)
+        new OfflineHostDriver(
+          config.id,
+          shouldConnect
+            ? `Connecting to ${config.host}:${config.port}...`
+            : `Not connected yet: pick ${config.name} to dial ${config.host}:${config.port}`,
+        )
       );
     }
 
+    if (!shouldConnect) return;
     await this.connectDevice(config);
   }
 
@@ -97,6 +112,14 @@ export class SSHClientPool {
       host: live.host,
       port: live.port,
     };
+
+    client.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
+      if (live.password) {
+        finish(prompts.map(() => live.password!));
+      } else {
+        finish([]);
+      }
+    });
 
     client.on('ready', () => {
       if (superseded()) {
@@ -192,6 +215,90 @@ export class SSHClientPool {
     }, delay);
     timer.unref?.();
     this.reconnectTimers.set(config.id, timer);
+  }
+
+  /**
+   * Manually disconnect a device, cancelling any pending reconnects
+   * and updating the registry status to offline.
+   */
+  manualDisconnect(deviceId: string): void {
+    const timer = this.reconnectTimers.get(deviceId);
+    if (timer) {
+      clearTimeout(timer);
+      this.reconnectTimers.delete(deviceId);
+    }
+    this.generations.set(deviceId, (this.generations.get(deviceId) ?? 0) + 1);
+
+    const client = this.activeClients.get(deviceId);
+    if (client) {
+      this.activeClients.delete(deviceId);
+      try { client.end(); } catch {}
+    }
+    const connecting = this.connectingClients.get(deviceId);
+    if (connecting) {
+      this.connectingClients.delete(deviceId);
+      try { connecting.destroy(); } catch {}
+    }
+
+    const existing = this.registry.get(deviceId);
+    if (existing) {
+      this.registry.register(
+        {
+          ...existing.info,
+          status: 'offline',
+          lastSeen: Date.now(),
+        },
+        new OfflineHostDriver(deviceId, 'Manually disconnected by user')
+      );
+    }
+  }
+
+  /**
+   * Manually initiate connection to a device right now.
+   */
+  async manualConnect(deviceId: string): Promise<{ success: boolean; status: string; error?: string }> {
+    const config = this.configs.get(deviceId);
+    if (!config) {
+      return { success: false, status: 'offline', error: `Device ${deviceId} not found in pool` };
+    }
+
+    // A device that was never dialled (discovered from ~/.ssh/config) has no
+    // client and no pending reconnect, so manualDisconnect has nothing to end;
+    // it still marks the entry offline, which is the state this connect leaves.
+    this.manualDisconnect(deviceId);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve({ success: false, status: 'offline', error: 'Connection timed out' });
+        }
+      }, 15000);
+      timeout.unref?.();
+
+      const checkTimer = setInterval(() => {
+        const entry = this.registry.get(deviceId);
+        if (entry && entry.info.status === 'online') {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            clearInterval(checkTimer);
+            resolve({ success: true, status: 'online' });
+          }
+        }
+      }, 300);
+      checkTimer.unref?.();
+
+      void this.connectDevice(config, 0).catch((err) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          clearInterval(checkTimer);
+          resolve({ success: false, status: 'offline', error: err?.message || String(err) });
+        }
+      });
+    });
   }
 
   stop(): void {

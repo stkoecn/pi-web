@@ -1,0 +1,286 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { ActiveDeviceConfig } from "./types/device";
+
+/**
+ * The hosts `~/.ssh/config` already knows about.
+ *
+ * The gateway used to ask the user to retype what ssh had been told years ago:
+ * address, port, user, key path. Those are exactly the fields `ssh <alias>`
+ * reads, so the file is the list. Discovery does not replace `devices.json`:
+ * an entry there still wins for the same id, which is how a password-only host
+ * (impossible to express in ssh config) and a reverse tunnel stay possible.
+ */
+
+/** One host as the file describes it, before it becomes a device. */
+export interface SshConfigHost {
+  /** The alias the user types after `ssh`. Becomes the device id. */
+  alias: string;
+  /** `HostName`, or the alias when the block names none. */
+  hostName: string;
+  port: number;
+  username: string;
+  /** Absolute path to the key, when the block named one that exists. */
+  privateKeyPath?: string;
+  /** Set when the block uses a keyword the gateway cannot honour. */
+  unsupported?: string;
+}
+
+export interface SshConfigRead {
+  path: string;
+  hosts: SshConfigHost[];
+  /** Lines the parser skipped, so a silent miss is explainable. */
+  problems: string[];
+  /** Set when the file itself could not be read. Missing file is not an error. */
+  error?: string;
+}
+
+/** A block's keywords, in file order, with the first occurrence winning per keyword. */
+interface Block {
+  patterns: string[];
+  /** `Host` line number, for problem messages. */
+  line: number;
+  options: Map<string, string>;
+}
+
+const KEYWORDS = new Set([
+  "host",
+  "hostname",
+  "port",
+  "user",
+  "identityfile",
+  "proxyjump",
+  "proxycommand",
+  "include",
+]);
+
+function stripComment(line: string): string {
+  // `#` starts a comment only at the beginning of a token: an IdentityFile may
+  // legitimately contain one, and ssh treats it the same way.
+  const match = /(^|\s)#/.exec(line);
+  return match ? line.slice(0, match.index) : line;
+}
+
+/**
+ * Split a line into keyword and argument.
+ *
+ * ssh accepts both `Keyword value` and `Keyword=value`, and the value keeps its
+ * spaces (a path may contain them), so this does not split on whitespace twice.
+ */
+function splitLine(line: string): { keyword: string; value: string } | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return null;
+  const eq = /^([A-Za-z][A-Za-z0-9]*)\s*=\s*(.*)$/.exec(trimmed);
+  if (eq) return { keyword: eq[1].toLowerCase(), value: eq[2].trim() };
+  const space = /^(\S+)\s+(.*)$/.exec(trimmed);
+  if (space) return { keyword: space[1].toLowerCase(), value: space[2].trim() };
+  return { keyword: trimmed.toLowerCase(), value: "" };
+}
+
+/** `*` and `?` make a block a set of defaults, not a host someone can pick. */
+function isPattern(alias: string): boolean {
+  return alias.includes("*") || alias.includes("?") || alias.startsWith("!");
+}
+
+function expandTokens(value: string, alias: string, hostName: string, username: string, home: string): string {
+  return value
+    .replace(/%d/g, home)
+    .replace(/%h/g, hostName)
+    .replace(/%n/g, alias)
+    .replace(/%r/g, username)
+    .replace(/^~(?=$|\/)/, home);
+}
+
+function parseBlocks(text: string, sourcePath: string, problems: string[]): Block[] {
+  const blocks: Block[] = [];
+  let current: Block | null = null;
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = stripComment(lines[index]);
+    const parsed = splitLine(raw);
+    if (!parsed) continue;
+    if (!KEYWORDS.has(parsed.keyword)) {
+      // Unknown keywords are normal (ForwardAgent, ServerAliveInterval, …).
+      // They are collected anyway so a block can be reported as unsupported
+      // when one of them changes how a connection must be opened.
+      if (current) current.options.set(parsed.keyword, parsed.value);
+      continue;
+    }
+    if (parsed.keyword === "host") {
+      const patterns = parsed.value.split(/\s+/).filter(Boolean);
+      current = { patterns, line: index + 1, options: new Map() };
+      blocks.push(current);
+      continue;
+    }
+    if (!current) {
+      // A keyword before the first Host block applies to every host; the
+      // gateway has no use for a global default that is not a host.
+      problems.push(`${sourcePath}:${index + 1}: ${parsed.keyword} outside a Host block`);
+      continue;
+    }
+    // First obtained value wins, exactly as ssh resolves it.
+    if (!current.options.has(parsed.keyword)) current.options.set(parsed.keyword, parsed.value);
+  }
+  return blocks;
+}
+
+/** `Include` files are read in place, so a shared `config.d/*.conf` works. */
+function readIncludes(patterns: string[], sourcePath: string, home: string, problems: string[]): string[] {
+  const texts: string[] = [];
+  for (const pattern of patterns) {
+    const expanded = expandTokens(pattern, "", "", "", home);
+    const absolute = path.isAbsolute(expanded) ? expanded : path.join(path.dirname(sourcePath), expanded);
+    let matches: string[] = [];
+    try {
+      matches = fs.globSync(absolute).sort();
+    } catch (error) {
+      problems.push(`${sourcePath}: cannot expand Include ${pattern}: ${message(error)}`);
+      continue;
+    }
+    for (const match of matches) {
+      try {
+        texts.push(fs.readFileSync(match, "utf8"));
+      } catch (error) {
+        problems.push(`${match}: cannot read Include: ${message(error)}`);
+      }
+    }
+  }
+  return texts;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Every host a user could `ssh` to, in the order the file defines them.
+ *
+ * Wildcard blocks still contribute their keywords to the concrete blocks that
+ * follow them (that is how `Host *` sets a default User), so they are applied
+ * as a fallback instead of being dropped.
+ */
+export function parseSshConfig(text: string, options: {
+  sourcePath?: string;
+  home?: string;
+  osUser?: string;
+  exists?: (filePath: string) => boolean;
+} = {}): { hosts: SshConfigHost[]; problems: string[] } {
+  const sourcePath = options.sourcePath ?? path.join(options.home ?? os.homedir(), ".ssh", "config");
+  const home = options.home ?? os.homedir();
+  const osUser = options.osUser ?? os.userInfo().username;
+  const exists = options.exists ?? ((filePath: string) => fs.existsSync(filePath));
+  const problems: string[] = [];
+
+  const blocks = parseBlocks(text, sourcePath, problems);
+
+  // Include files are parsed as if their lines sat where the directive is, so
+  // a config that keeps its real hosts in `config.d/` lists them.
+  const includeBlocks: Block[] = [];
+  for (const block of blocks) {
+    const include = block.options.get("include");
+    if (!include) continue;
+    for (const included of readIncludes(include.split(/\s+/), sourcePath, home, problems)) {
+      includeBlocks.push(...parseBlocks(included, `${sourcePath} (Include)`, problems));
+    }
+  }
+  const ordered = [...includeBlocks, ...blocks];
+
+  const defaults = new Map<string, string>();
+  for (const block of ordered) {
+    if (!block.patterns.every(isPattern)) continue;
+    for (const [keyword, value] of block.options) {
+      if (!defaults.has(keyword)) defaults.set(keyword, value);
+    }
+  }
+
+  const hosts: SshConfigHost[] = [];
+  const seen = new Set<string>();
+  for (const block of ordered) {
+    for (const alias of block.patterns) {
+      if (isPattern(alias) || seen.has(alias)) continue;
+      seen.add(alias);
+      const lookup = (keyword: string) => block.options.get(keyword) ?? defaults.get(keyword);
+      const hostName = expandTokens(lookup("hostname") ?? alias, alias, alias, lookup("user") ?? osUser, home);
+      const username = lookup("user") ?? osUser;
+      const portText = lookup("port");
+      const port = portText === undefined ? 22 : Number(portText);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        problems.push(`${sourcePath}:${block.line}: ${alias} has port ${String(portText)}, which is not a port`);
+        continue;
+      }
+      const host: SshConfigHost = { alias, hostName, port, username };
+      const keyPath = lookup("identityfile");
+      if (keyPath) {
+        const resolved = expandTokens(keyPath, alias, hostName, username, home);
+        if (exists(resolved)) host.privateKeyPath = resolved;
+        else problems.push(`${sourcePath}:${block.line}: ${alias} names a key that does not exist: ${resolved}`);
+      }
+      // ssh2 has no ProxyJump: the connection would go straight at the target,
+      // which is unreachable by design. Listing the host and saying why is
+      // better than a connect that fails as a timeout.
+      const jump = lookup("proxyjump");
+      if (jump) host.unsupported = `ProxyJump ${jump}`;
+      else if (lookup("proxycommand")) host.unsupported = "ProxyCommand";
+      // `User git` is how every hosting service is written, and there is no
+      // shell on the other end: a device row for github.com can only ever
+      // fail. Skipping it is a rule about the *account*, not the address, so a
+      // real machine that happens to use a `git` login is the one case it gets
+      // wrong — and `devices.json` still describes that one by hand.
+      if (username === "git" && !jump) {
+        problems.push(`${sourcePath}:${block.line}: ${alias} logs in as "git", so it is a code host, not a machine`);
+        continue;
+      }
+      hosts.push(host);
+    }
+  }
+  return { hosts, problems };
+}
+
+/** Read the file a user's `ssh` would read. A missing file is not an error. */
+export function readSshConfig(options: { configPath?: string; home?: string } = {}): SshConfigRead {
+  const home = options.home ?? os.homedir();
+  const configPath = options.configPath ?? path.join(home, ".ssh", "config");
+  let text: string;
+  try {
+    text = fs.readFileSync(configPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { path: configPath, hosts: [], problems: [] };
+    }
+    return { path: configPath, hosts: [], problems: [], error: `cannot read ${configPath}: ${message(error)}` };
+  }
+  const parsed = parseSshConfig(text, { sourcePath: configPath, home });
+  return { path: configPath, hosts: parsed.hosts, problems: parsed.problems };
+}
+
+/**
+ * A device id from an ssh alias.
+ *
+ * The id reaches URLs, session folder names and the reverse tunnel's SSH
+ * username, all of which want a slug. Aliases like `192.168.0.25.windsing` or
+ * `ib-us1-et` already are one; a dotted quad is kept as-is because it is what
+ * the user recognises.
+ */
+export function deviceIdFromAlias(alias: string): string {
+  const slug = alias
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .replace(/-+$/, "");
+  return slug.length > 0 ? slug : "host";
+}
+
+/** A discovered host as a device config the pool can dial. */
+export function sshHostToDevice(host: SshConfigHost): ActiveDeviceConfig {
+  const config: ActiveDeviceConfig = {
+    id: deviceIdFromAlias(host.alias),
+    name: host.alias,
+    host: host.hostName,
+    port: host.port,
+    username: host.username,
+    mode: "active_ssh",
+  };
+  if (host.privateKeyPath) config.privateKeyPath = host.privateKeyPath;
+  return config;
+}

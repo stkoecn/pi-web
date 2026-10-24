@@ -35,11 +35,41 @@ export interface DeviceFileIssue {
   reason: string;
 }
 
+/**
+ * A host `~/.ssh/config` names, offered rather than saved.
+ *
+ * It has no `hasPassword` and no mode because nothing about it is the gateway's
+ * yet: it is what `ssh <alias>` would do. `configured` is true when
+ * `devices.json` already describes the same id, in which case this row is the
+ * saved device and the discovery adds nothing.
+ */
+export interface SshDiscoveredHost {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  privateKeyPath?: string;
+  configured: boolean;
+  /**
+   * Set when `ssh` would need something the gateway cannot do, such as
+   * `ProxyJump`. The row still fills the form - the address is right - but
+   * the pane says the connection will not come up as written.
+   */
+  unsupported?: string;
+}
+
 export interface DevicesResponse {
   devices: DeviceRuntimeInfo[];
   configPath: string;
   configs: DeviceConfigEntry[];
   issues: DeviceFileIssue[];
+  /** The file the hosts were read from, for the pane's subtitle. */
+  sshConfigPath?: string;
+  sshHosts?: SshDiscoveredHost[];
+  /** Hosts the parser could not use (a missing key, a bad port, ProxyJump). */
+  sshProblems?: string[];
+  sshError?: string;
   fileError?: string;
 }
 

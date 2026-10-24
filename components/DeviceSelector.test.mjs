@@ -65,20 +65,34 @@ test("the phone top bar renders the switcher, not only the desktop bar", async (
   assert.equal(handlers.length, 2);
 });
 
-test("a disconnected host cannot be picked, so the switcher never trades a working view for the offline banner", async () => {
-  // The row used to call onSelectDevice() unconditionally, so tapping an
-  // offline host replaced a working chat with a 503. Only "offline" is barred:
-  // "connecting" is on its way back and must stay reachable.
-  assert.equal(deviceSelectable("offline"), false);
+test("an offline host is still pickable, because picking it is the request to dial it", async () => {
+  // A row that refuses the click leaves a sleeping machine with no way back
+  // short of Settings. The safety moved to the switch itself: AppShell dials
+  // first and only moves the view once the host answers, so the offline row
+  // stays a live button.
+  assert.equal(deviceSelectable("offline"), true);
   assert.equal(deviceSelectable("online"), true);
   assert.equal(deviceSelectable("connecting"), true);
 
   const source = await readFile(new URL("./DeviceSelector.tsx", import.meta.url), "utf8");
-  assert.match(source, /data-device-disabled=\{selectable \? undefined : "true"\}/);
-  assert.match(source, /aria-disabled=\{selectable \? undefined : true\}/);
-  assert.match(source, /tabIndex=\{selectable \? 0 : -1\}/);
-  // The guard sits in the handler itself, not only in the styling.
-  assert.match(source, /if \(!selectable\) return;[\s\S]{0,40}onSelectDevice\(device\.id\);/);
-  // A host with no connection has no shell to open either.
-  assert.match(source, /onOpenTerminalOnDevice && selectable &&/);
+  // The row says what it is doing instead of silently doing nothing.
+  assert.match(source, /const connecting = connectingDeviceId === device\.id;/);
+  assert.match(source, /"connecting…"/);
+  assert.match(source, /is offline: picking it dials it first/);
+});
+
+test("switching hosts dials the new one before the view moves", async () => {
+  const source = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
+  // The dial is awaited, and a refusal returns before setSelectedDeviceId.
+  const handler = source.slice(
+    source.indexOf("const handleSelectDevice = useCallback("),
+    source.indexOf("const handleOpenTerminal = useCallback("),
+  );
+  assert.ok(handler.length > 0, "handleSelectDevice must exist");
+  const dialAt = handler.indexOf('action: "connect"');
+  const moveAt = handler.indexOf("setSelectedDeviceId(id);");
+  assert.ok(dialAt > 0, "the switch must ask the gateway to connect first");
+  assert.ok(moveAt > dialAt, "the view must move only after the dial is answered");
+  // A failed dial says why and leaves the current host alone.
+  assert.match(handler, /if \(!res\.ok \|\| body\.success !== true\) \{[\s\S]{0,200}return;/);
 });

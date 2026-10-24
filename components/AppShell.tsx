@@ -548,6 +548,10 @@ export function AppShell() {
   const [devicesRefreshKey, setDevicesRefreshKey] = useState(0);
   const [missingPiDevice, setMissingPiDevice] = useState<string | null>(null);
   const [installingPiDevice, setInstallingPiDevice] = useState<string | null>(null);
+  /** The host a click is dialling, so the switcher can say it is working. */
+  const [connectingDeviceId, setConnectingDeviceId] = useState<string | null>(null);
+  /** A refused switch: the old view is still there, and this says why. */
+  const [deviceToast, setDeviceToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedDeviceId || selectedDeviceId === "localhost") {
@@ -572,6 +576,14 @@ export function AppShell() {
       cancelled = true;
     };
   }, [selectedDeviceId]);
+
+  // A refused switch says why, then gets out of the way: the old view is still
+  // usable, so the notice must not need dismissing.
+  useEffect(() => {
+    if (!deviceToast) return;
+    const timer = setTimeout(() => setDeviceToast(null), 8000);
+    return () => clearTimeout(timer);
+  }, [deviceToast]);
 
   const handleInstallPiOnDevice = useCallback(async (devId: string) => {
     setInstallingPiDevice(devId);
@@ -1276,7 +1288,37 @@ export function AppShell() {
     handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
   }, [handleOpenFile, selectedSession?.id]);
 
-  const handleSelectDevice = useCallback((id: string) => {
+  /**
+   * Switch hosts only after the new one answers.
+   *
+   * Picking a host used to move the whole view first and discover afterwards,
+   * which turned a typo, a sleeping machine or a rotated key into an error page
+   * where a working chat had been. The dial happens first now: a host that does
+   * not come up leaves everything as it was and says why in a toast. A host
+   * that is already online answers without a handshake, so the common case does
+   * not pay for this.
+   */
+  const handleSelectDevice = useCallback(async (id: string) => {
+    if (id !== "localhost" && id !== selectedDeviceIdRef.current) {
+      setConnectingDeviceId(id);
+      try {
+        const res = await fetch("/api/devices/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, action: "connect" }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+        if (!res.ok || body.success !== true) {
+          setDeviceToast(`${id}: ${body.error ?? `HTTP ${res.status}`}`);
+          return;
+        }
+      } catch (cause) {
+        setDeviceToast(`${id}: ${cause instanceof Error ? cause.message : String(cause)}`);
+        return;
+      } finally {
+        setConnectingDeviceId(null);
+      }
+    }
     setSelectedDeviceId(id);
     const isRemote = id !== "localhost";
     // Not `/root`: a macOS device answers `/Users/<name>`. Start at
@@ -2220,6 +2262,34 @@ export function AppShell() {
   return (
     <DeviceIdProvider deviceId={selectedDeviceId}>
     <>
+    {/* A refused host switch: the previous host is still on screen, so the
+        reason has to be visible somewhere other than the view that did not
+        change. Dismisses itself; clicking it goes away too. */}
+    {deviceToast && (
+      <div
+        role="status"
+        data-device-toast="true"
+        onClick={() => setDeviceToast(null)}
+        style={{
+          position: "fixed",
+          left: "50%",
+          transform: "translateX(-50%)",
+          top: "calc(44px + env(safe-area-inset-top))",
+          zIndex: 3000,
+          maxWidth: "min(92vw, 520px)",
+          padding: "8px 14px",
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+          background: "var(--bg-panel)",
+          color: "var(--text)",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+          fontSize: 12,
+          cursor: "pointer",
+        }}
+      >
+        {deviceToast}
+      </div>
+    )}
     <style>{`
       @keyframes session-info-pop {
         0% {
@@ -2410,6 +2480,7 @@ export function AppShell() {
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
                 onOpenSettings={(sec) => setSettingsSection((sec as any) || "devices")}
                 refreshKey={devicesRefreshKey}
+                connectingDeviceId={connectingDeviceId}
                 compact
               />
               {isNarrowMobile && (
@@ -2478,6 +2549,7 @@ export function AppShell() {
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
                 onOpenSettings={(sec) => setSettingsSection((sec as any) || "devices")}
                 refreshKey={devicesRefreshKey}
+                connectingDeviceId={connectingDeviceId}
               />
               {renderProjectTrustWarning(false)}
               {renderPiMissingWarning(false)}

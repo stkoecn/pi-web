@@ -33,6 +33,21 @@ const gateway = {
       })),
   ],
   listConfiguredDevices: () => configured.map((c) => ({ ...c })),
+  // Discovery reads the real `~/.ssh/config`; a test must not depend on the
+  // machine it runs on, so this stub answers with a fixed host instead.
+  readSshHosts: () => ({
+    path: join(root, "ssh-config"),
+    problems: [],
+    hosts: [
+      {
+        alias: "from-ssh-config",
+        hostName: "203.0.113.55",
+        port: 22,
+        username: "deploy",
+        privateKeyPath: "~/.ssh/id_test",
+      },
+    ],
+  }),
   syncDevices: async (configs) => {
     syncs.push(configs.map((c) => c.id));
     configured = configs.map((c) => ({ ...c }));
@@ -194,6 +209,20 @@ test("a reverse-tunnel device that has not dialled in is still listed", async ()
   assert.equal(waiting.mode, "reverse_tunnel");
   // No address is invented: nothing is known until it connects.
   assert.equal(waiting.remoteAddr, "");
+});
+
+test("GET offers the hosts ~/.ssh/config names, without making them devices", async () => {
+  const body = await (await GET()).json();
+  const discovered = body.sshHosts.find((h) => h.id === "from-ssh-config");
+  assert.ok(discovered, "a stanza must be listed so nobody retypes it");
+  assert.equal(discovered.host, "203.0.113.55");
+  assert.equal(discovered.username, "deploy");
+  assert.equal(discovered.privateKeyPath, "~/.ssh/id_test");
+  // It is not a device: it is not in the file, so it cannot be edited there.
+  assert.equal(discovered.configured, false);
+  assert.equal(body.configs.some((c) => c.id === "from-ssh-config"), false);
+  // The path is reported so the pane can say where the rows come from.
+  assert.ok(body.sshConfigPath.endsWith("ssh-config"));
 });
 
 test("a reverse-tunnel device needs no host or port in the file", async () => {

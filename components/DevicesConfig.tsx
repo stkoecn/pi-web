@@ -30,21 +30,16 @@ import {
   draftProblem,
   draftToBody,
   emptyDraft,
-  isSavedId,
   reloadSummary,
   type DeviceConfigEntry,
   type DeviceDraft,
   type DeviceReloadResponse,
   type DevicesResponse,
+  type SshDiscoveredHost,
 } from "./devices-config-helpers";
 
 /**
  * The hosts this gateway serves, edited in place.
- *
- * `devices.json` is the source of truth and the gateway reads it once at
- * startup, so every change here has to do two things: write the file, and tell
- * the pool to reconnect only what actually changed. The reload button covers
- * the other direction — the file edited by hand, or by another process.
  */
 export function DevicesConfig({
   embedded,
@@ -60,10 +55,26 @@ export function DevicesConfig({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** The `~/.ssh/config` row on screen, when it is not a saved device. */
+  const [selectedSshId, setSelectedSshId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DeviceDraft | null>(null);
   const [addMode, setAddMode] = useState(false);
   const [busy, setBusy] = useState<null | "save" | "delete" | "reload">(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [busyControlId, setBusyControlId] = useState<string | null>(null);
+  const [authType, setAuthType] = useState<"key" | "password">("key");
+  const [pairingCommand, setPairingCommand] = useState<string>("");
+  const [pairingCopied, setPairingCopied] = useState(false);
+  const [envInfo, setEnvInfo] = useState<{
+    loading: boolean;
+    hasPi?: boolean;
+    piVersion?: string;
+    hasNode?: boolean;
+    nodeVersion?: string;
+    system?: string;
+    error?: string;
+  } | null>(null);
+  const [installingPi, setInstallingPi] = useState(false);
   /** Set when a reload skipped entries: the list alone would not say why a host is missing. */
   const [reloadWarning, setReloadWarning] = useState<string | null>(null);
 
@@ -84,6 +95,96 @@ export function DevicesConfig({
     }
   }, []);
 
+  const fetchPairingCommand = useCallback(async (opts?: { id?: string; name?: string }) => {
+    try {
+      const qs = new URLSearchParams();
+      if (opts?.id) qs.set("id", opts.id);
+      if (opts?.name) qs.set("name", opts.name);
+      const url = qs.toString() ? `/api/devices/join?${qs.toString()}` : "/api/devices/join";
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.command) setPairingCommand(d.command);
+      }
+    } catch {}
+  }, []);
+
+  const copyCommand = useCallback((cmd: string) => {
+    if (!cmd) return;
+    navigator.clipboard?.writeText(cmd).then(() => {
+      setPairingCopied(true);
+      setTimeout(() => setPairingCopied(false), 2000);
+    }).catch(() => {});
+  }, []);
+
+  const toggleConnection = useCallback(async (id: string, action: "connect" | "disconnect") => {
+    setBusyControlId(id);
+    setError(null);
+    try {
+      const res = await fetch("/api/devices/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action }),
+      });
+      const body = (await res.json()) as { success?: boolean; status?: string; error?: string };
+      if (!res.ok || body.error) {
+        setError(body.error ?? `Failed to ${action} device`);
+      } else {
+        setStatus(action === "connect" ? t("devices.status.online") : t("devices.status.offline"));
+        await load();
+        onDevicesChanged?.();
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyControlId(null);
+    }
+  }, [load, onDevicesChanged, t]);
+
+  const checkEnv = useCallback(async (id: string) => {
+    setEnvInfo({ loading: true });
+    try {
+      const res = await fetch(`/api/devices/env?id=${encodeURIComponent(id)}`);
+      const body = await res.json();
+      if (!res.ok || body.error) {
+        setEnvInfo({ loading: false, error: body.error ?? "Failed to inspect environment" });
+      } else {
+        setEnvInfo({
+          loading: false,
+          hasPi: body.hasPi,
+          piVersion: body.piVersion,
+          hasNode: body.hasNode,
+          nodeVersion: body.nodeVersion,
+          system: body.system,
+        });
+      }
+    } catch (err: any) {
+      setEnvInfo({ loading: false, error: err?.message || String(err) });
+    }
+  }, []);
+
+  const installPi = useCallback(async (id: string) => {
+    setInstallingPi(true);
+    try {
+      const res = await fetch("/api/devices/env", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "install_pi" }),
+      });
+      const body = await res.json();
+      if (body.success) {
+        setStatus(t("devices.envInstallSuccess"));
+        await checkEnv(id);
+      } else {
+        setError(body.stderr || body.error || t("devices.envInstallFailed"));
+      }
+    } catch (err: any) {
+      setError(err?.message || String(err));
+    } finally {
+      setInstallingPi(false);
+    }
+  }, [checkEnv, t]);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -93,51 +194,114 @@ export function DevicesConfig({
     () => new Map((data?.devices ?? []).map((device) => [device.id, device])),
     [data?.devices],
   );
+  /**
+   * The `~/.ssh/config` rows that are not devices yet.
+   *
+   * A saved device usually also has a stanza, so the unfiltered list would show
+   * one machine twice — once as what the gateway dials, once as what ssh knows.
+   * The saved row wins: it is the one that can be edited.
+   */
+  const sshOnlyHosts = useMemo(
+    () => (data?.sshHosts ?? []).filter((host) => !configs.some((config) => config.id === host.id)),
+    [configs, data?.sshHosts],
+  );
 
   // Land on a device rather than an empty pane, the way the other panels do.
+  // An `~/.ssh/config` row is also a reason to stay put: it has no draft, so
+  // without this the pane would bounce straight back to the first saved device.
   useEffect(() => {
-    if (addMode || draft) return;
+    if (addMode || draft || selectedSshId) return;
     if (configs.length === 0) return;
     const first = configs.find((config) => config.id === selectedId) ?? configs[0];
     setSelectedId(first.id);
-    setDraft(draftFromConfig(first));
-  }, [addMode, configs, draft, selectedId]);
+    const d = draftFromConfig(first);
+    setDraft(d);
+    setAuthType(first.hasPassword || (!first.privateKeyPath && !d.privateKeyPath) ? "password" : "key");
+    if (d.mode === "reverse_tunnel") {
+      void fetchPairingCommand({ id: d.id, name: d.name });
+    }
+  }, [addMode, configs, draft, fetchPairingCommand, selectedId, selectedSshId]);
 
   const select = (config: DeviceConfigEntry) => {
     setAddMode(false);
+    setSelectedSshId(null);
     setReloadWarning(null);
     setStatus(null);
     setSelectedId(config.id);
-    setDraft(draftFromConfig(config));
+    const d = draftFromConfig(config);
+    setDraft(d);
+    setAuthType(config.hasPassword || (!config.privateKeyPath && !d.privateKeyPath) ? "password" : "key");
+    const live = runtime.get(config.id);
+    if (live?.status === "online") {
+      void checkEnv(config.id);
+    } else {
+      setEnvInfo(null);
+    }
+    if (d.mode === "reverse_tunnel") {
+      void fetchPairingCommand({ id: d.id, name: d.name });
+    }
   };
 
-  const startAdd = () => {
-    setAddMode(true);
+  /**
+   * Show a host from `~/.ssh/config` without writing it anywhere.
+   *
+   * These rows are not devices: they are what `ssh` already knows. Listing them
+   * is the whole feature, so the pane reads them only — no save, no delete, and
+   * no `devices.json` entry that would then have to be kept in step with the
+   * file ssh owns. A host the gateway already dials is a real device, so it
+   * opens as one.
+   */
+  const showSshHost = (host: SshDiscoveredHost) => {
+    const existing = configs.find((config) => config.id === host.id);
+    if (existing) {
+      select(existing);
+      return;
+    }
+    setAddMode(false);
     setSelectedId(null);
-    setDraft(emptyDraft());
+    setSelectedSshId(host.id);
+    setDraft(null);
+    setEnvInfo(null);
     setStatus(null);
     setError(null);
+    setReloadWarning(null);
+  };
+
+  /**
+   * A new device is always a reverse tunnel.
+   *
+   * A dialled host is not typed in here any more: `~/.ssh/config` already says
+   * which machines this user reaches and with which key, so the gateway reads
+   * it instead. What is left for the form is the one case ssh cannot describe —
+   * a machine behind NAT that dials in — and that is what "new" opens.
+   */
+  const startAdd = () => {
+    setAddMode(true);
+    setSelectedSshId(null);
+    setSelectedId(null);
+    const d = { ...emptyDraft(), mode: "reverse_tunnel" as const };
+    setDraft(d);
+    setAuthType("key");
+    setEnvInfo(null);
+    setStatus(null);
+    setError(null);
+    void fetchPairingCommand();
   };
 
   const problem = draft ? draftProblem(draft) : "devices.problem.id";
+  /** The `~/.ssh/config` row being shown, if any. */
+  const sshHost = selectedSshId
+    ? (data?.sshHosts ?? []).find((host) => host.id === selectedSshId)
+    : undefined;
 
   const save = async () => {
     if (!draft) return;
-    const key = draftProblem(draft);
-    if (key) {
-      setError(t(key));
-      return;
-    }
     setBusy("save");
     setError(null);
     setStatus(null);
     try {
-      // An id that already exists is an edit, whatever the form was started as:
-      // the id is the key the gateway, the URL and every stored session use, so
-      // "changing" it means adding a second device.
-      const editing = !addMode && isSavedId(configs, draft.id);
       const res = await fetch("/api/devices", {
-        method: editing ? "PUT" : "POST",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draftToBody(draft)),
       });
@@ -205,7 +369,6 @@ export function DevicesConfig({
       if (body.issues && body.issues.length > 0) {
         setReloadWarning(t("devices.reloadIssues", { count: String(body.issues.length) }));
       }
-      // Whatever is selected may have been edited on disk: re-read it into the form.
       setDraft(null);
       setAddMode(false);
       await load();
@@ -299,6 +462,45 @@ export function DevicesConfig({
                 )}
               </>
             )}
+            {sshOnlyHosts.length > 0 && (
+              <>
+                <ConfigSidebarGroupLabel>{t("devices.groupSsh")}</ConfigSidebarGroupLabel>
+                {sshOnlyHosts.map((host) => {
+                  const live = runtime.get(host.id);
+                  const active = !addMode && selectedSshId === host.id;
+                  return (
+                    <ConfigSidebarItem
+                      key={`ssh-${host.id}`}
+                      active={active}
+                      data-device-ssh-item={host.id}
+                      onClick={() => showSshHost(host)}
+                    >
+                      <ConfigStatusDot
+                        active={live?.status === "online"}
+                        color={live?.status === "connecting" ? "#eab308" : undefined}
+                      />
+                      <ConfigSidebarText className="is-grow">
+                        {host.name}
+                      </ConfigSidebarText>
+                      <span
+                        className="settings-device-item-state"
+                        title={host.unsupported ?? undefined}
+                        style={host.unsupported ? { color: "#eab308" } : undefined}
+                      >
+                        {host.unsupported
+                          ? host.unsupported
+                          : t(`devices.status.${live?.status ?? "offline"}`)}
+                      </span>
+                    </ConfigSidebarItem>
+                  );
+                })}
+                {(data?.sshProblems?.length ?? 0) > 0 && (
+                  <div className="config-sidebar-message is-error">
+                    {t("devices.sshProblems", { count: String(data?.sshProblems?.length ?? 0) })}
+                  </div>
+                )}
+              </>
+            )}
             {(data?.issues?.length ?? 0) > 0 && (
               <>
                 <ConfigSidebarGroupLabel>{t("devices.groupIssues")}</ConfigSidebarGroupLabel>
@@ -317,7 +519,80 @@ export function DevicesConfig({
 
         <ConfigDetail>
           <ConfigDetailStack className="is-fill">
-            {!draft ? (
+            {sshHost ? (
+              <>
+                <ConfigDetailHeader>
+                  <ConfigDetailHeaderInfo>
+                    <ConfigDetailTitle>{sshHost.name}</ConfigDetailTitle>
+                    <code className="config-detail-subtitle">
+                      {sshHost.username}@{sshHost.host}:{sshHost.port}
+                    </code>
+                  </ConfigDetailHeaderInfo>
+                  <ConfigDetailActions>
+                    <ConfigButton
+                      size="small"
+                      variant={runtime.get(sshHost.id)?.status === "online" ? "secondary" : "primary"}
+                      onClick={() =>
+                        void toggleConnection(
+                          sshHost.id,
+                          runtime.get(sshHost.id)?.status === "online" ? "disconnect" : "connect",
+                        )
+                      }
+                      disabled={busyControlId === sshHost.id || busy !== null}
+                    >
+                      {busyControlId === sshHost.id
+                        ? (runtime.get(sshHost.id)?.status === "online" ? t("devices.disconnecting") : t("devices.connecting"))
+                        : (runtime.get(sshHost.id)?.status === "online" ? t("devices.disconnect") : t("devices.connect"))}
+                    </ConfigButton>
+                  </ConfigDetailActions>
+                </ConfigDetailHeader>
+
+                {sshHost.unsupported && (
+                  <ConfigNotice>{t("devices.sshUnsupported", { detail: sshHost.unsupported })}</ConfigNotice>
+                )}
+                {/* Read-only on purpose: these values come from `~/.ssh/config`,
+                    and a second editable copy is how the two drift apart. */}
+                <div className="settings-device-form">
+                  <div className="settings-device-row">
+                    <ConfigField label={t("devices.field.host")}>
+                      <input
+                        className="mcp-add-input settings-device-input"
+                        value={sshHost.host}
+                        readOnly
+                        data-device-field="host"
+                      />
+                    </ConfigField>
+                    <ConfigField label={t("devices.field.port")}>
+                      <input
+                        className="mcp-add-input settings-device-input"
+                        value={String(sshHost.port)}
+                        readOnly
+                        data-device-field="port"
+                      />
+                    </ConfigField>
+                  </div>
+                  <ConfigField label={t("devices.field.username")}>
+                    <input
+                      className="mcp-add-input settings-device-input"
+                      value={sshHost.username}
+                      readOnly
+                      data-device-field="username"
+                    />
+                  </ConfigField>
+                  {sshHost.privateKeyPath && (
+                    <ConfigField label={t("devices.field.privateKeyPath")}>
+                      <input
+                        className="mcp-add-input settings-device-input"
+                        value={sshHost.privateKeyPath}
+                        readOnly
+                        data-device-field="privateKeyPath"
+                      />
+                    </ConfigField>
+                  )}
+                </div>
+                <ConfigNotice>{t("devices.sshReadOnly")}</ConfigNotice>
+              </>
+            ) : !draft ? (
               <ConfigEmptyState>{t("devices.select")}</ConfigEmptyState>
             ) : (
               <>
@@ -336,6 +611,23 @@ export function DevicesConfig({
                     )}
                   </ConfigDetailHeaderInfo>
                   <ConfigDetailActions>
+                    {!addMode && (
+                      <ConfigButton
+                        size="small"
+                        variant={runtime.get(draft.id)?.status === "online" ? "secondary" : "primary"}
+                        onClick={() =>
+                          void toggleConnection(
+                            draft.id,
+                            runtime.get(draft.id)?.status === "online" ? "disconnect" : "connect",
+                          )
+                        }
+                        disabled={busyControlId === draft.id || busy !== null}
+                      >
+                        {busyControlId === draft.id
+                          ? (runtime.get(draft.id)?.status === "online" ? t("devices.disconnecting") : t("devices.connecting"))
+                          : (runtime.get(draft.id)?.status === "online" ? t("devices.disconnect") : t("devices.connect"))}
+                      </ConfigButton>
+                    )}
                     <ConfigButton
                       variant="danger"
                       size="small"
@@ -347,14 +639,59 @@ export function DevicesConfig({
                   </ConfigDetailActions>
                 </ConfigDetailHeader>
 
+                {/* Remote Pi environment status notice (clean & native) */}
+                {!addMode && runtime.get(draft.id)?.status === "online" && (
+                  <ConfigNotice
+                    action={
+                      envInfo?.hasPi === false ? (
+                        <ConfigButton
+                          size="small"
+                          variant="primary"
+                          onClick={() => void installPi(draft.id)}
+                          disabled={installingPi}
+                        >
+                          {installingPi ? t("devices.envInstalling") : t("devices.envInstall")}
+                        </ConfigButton>
+                      ) : (
+                        <ConfigButton
+                          size="small"
+                          variant="ghost"
+                          onClick={() => void checkEnv(draft.id)}
+                          disabled={envInfo?.loading || installingPi}
+                        >
+                          {envInfo?.loading ? t("i18n.loading") : "刷新检测"}
+                        </ConfigButton>
+                      )
+                    }
+                  >
+                    {envInfo?.loading ? (
+                      <span>{t("devices.envChecking")}</span>
+                    ) : envInfo?.error ? (
+                      <span>检测失败: {envInfo.error}</span>
+                    ) : envInfo?.hasPi ? (
+                      <span>
+                        pi 环境正常 ({envInfo.piVersion || "最新"}) · Node {envInfo.nodeVersion || "可用"} ({envInfo.system || "Linux"})
+                      </span>
+                    ) : envInfo?.hasPi === false ? (
+                      <span>
+                        ⚠️ {t("devices.envMissing")} (Node {envInfo.nodeVersion || "已就绪"})
+                      </span>
+                    ) : (
+                      <span>远程连接正常</span>
+                    )}
+                  </ConfigNotice>
+                )}
+
                 <div className="settings-device-form">
                   {field(t("devices.field.id"), "id", { placeholder: "my-vps", disabled: !addMode })}
                   {field(t("devices.field.name"), "name", { placeholder: "My VPS", mono: false })}
-                  {/* Which side opens the connection decides whether the fields
-                      below are even knowable, so it is asked first. */}
+
+                  {/* A new device is always a reverse tunnel: a dialled host comes
+                      from `~/.ssh/config` instead of being typed twice. An existing
+                      device keeps both options, since switching is a real edit. */}
                   <ConfigField label={t("devices.field.mode")}>
                     <div className="settings-device-modes" data-device-field="mode">
-                      {(["active_ssh", "reverse_tunnel"] as const).map((mode) => (
+                      {(addMode ? (["reverse_tunnel"] as const) : (["active_ssh", "reverse_tunnel"] as const)).map((mode) => (
                         <label
                           key={mode}
                           className="settings-device-mode"
@@ -367,6 +704,9 @@ export function DevicesConfig({
                             checked={draft.mode === mode}
                             onChange={() => {
                               setDraft((current) => (current ? { ...current, mode } : current));
+                              if (mode === "reverse_tunnel") {
+                                void fetchPairingCommand({ id: draft.id, name: draft.name });
+                              }
                             }}
                           />
                           <span>{t(`devices.mode.${mode}`)}</span>
@@ -374,39 +714,101 @@ export function DevicesConfig({
                       ))}
                     </div>
                   </ConfigField>
-                  {draft.mode === "reverse_tunnel" ? (
-                    <ConfigNotice>
-                      {t("devices.modeHint.reverse_tunnel")}
-                      <code className="settings-device-command">
-                        <span className="settings-device-command-label">{t("devices.tunnelCommand")}</span>
-                        {`ssh -N -R 0:localhost:22 ${draft.id.trim() || "<id>"}@<gateway> -p 22222`}
-                      </code>
-                    </ConfigNotice>
+
+                  {/* Mode-specific forms */}
+                  {draft.mode === "active_ssh" ? (
+                    <>
+                      <div className="settings-device-row">
+                        {field(t("devices.field.host"), "host", { placeholder: "203.0.113.10" })}
+                        {field(t("devices.field.port"), "port", { placeholder: "22" })}
+                      </div>
+                      {field(t("devices.field.username"), "username", { placeholder: "root" })}
+
+                      {/* Authentication method switch */}
+                      <ConfigField label={t("devices.authMethod")}>
+                        <div className="settings-device-modes">
+                          <label
+                            className="settings-device-mode"
+                            data-selected={authType === "key"}
+                          >
+                            <input
+                              type="radio"
+                              name="device-auth-type"
+                              checked={authType === "key"}
+                              onChange={() => {
+                                setAuthType("key");
+                                setDraft((curr) => curr ? { ...curr, password: "" } : curr);
+                              }}
+                            />
+                            <span>{t("devices.authMethodKey")}</span>
+                          </label>
+                          <label
+                            className="settings-device-mode"
+                            data-selected={authType === "password"}
+                          >
+                            <input
+                              type="radio"
+                              name="device-auth-type"
+                              checked={authType === "password"}
+                              onChange={() => {
+                                setAuthType("password");
+                                setDraft((curr) => curr ? { ...curr, privateKeyPath: "" } : curr);
+                              }}
+                            />
+                            <span>{t("devices.authMethodPassword")}</span>
+                          </label>
+                        </div>
+                      </ConfigField>
+
+                      {authType === "key" ? (
+                        field(t("devices.field.privateKeyPath"), "privateKeyPath", { placeholder: "~/.ssh/id_ed25519" })
+                      ) : (
+                        <ConfigField label={t("devices.field.password")}>
+                          <input
+                            className="mcp-add-input settings-device-input"
+                            type="password"
+                            value={draft.password}
+                            data-device-field="password"
+                            placeholder={draft.hasPassword ? t("devices.passwordSaved") : "••••••••"}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setDraft((current) => (current ? { ...current, password: value, privateKeyPath: "" } : current));
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") void save();
+                            }}
+                          />
+                        </ConfigField>
+                      )}
+
+                      {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
+                    </>
                   ) : (
-                    <div className="settings-device-row">
-                      {field(t("devices.field.host"), "host", { placeholder: "203.0.113.10" })}
-                      {field(t("devices.field.port"), "port", { placeholder: "22" })}
-                    </div>
+                    <>
+                      {field(t("devices.field.username"), "username", { placeholder: "root" })}
+                      {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
+
+                      {/* Native ConfigNotice for Reverse Tunnel Pairing Command */}
+                      <ConfigNotice
+                        action={
+                          <ConfigButton
+                            size="small"
+                            variant="secondary"
+                            onClick={() => copyCommand(pairingCommand)}
+                            disabled={!pairingCommand}
+                          >
+                            {pairingCopied ? t("devices.copied") : t("devices.copyCommand")}
+                          </ConfigButton>
+                        }
+                      >
+                        {t("devices.tunnelKeyAutoDesc")}
+                        <code className="settings-device-command">
+                          <span className="settings-device-command-label">{t("devices.tunnelCommand")}</span>
+                          {pairingCommand || `curl -fsSL ${typeof window !== "undefined" ? window.location.origin : ""}/api/devices/join | bash`}
+                        </code>
+                      </ConfigNotice>
+                    </>
                   )}
-                  {field(t("devices.field.username"), "username", { placeholder: "root" })}
-                  {field(t("devices.field.privateKeyPath"), "privateKeyPath", { placeholder: "~/.ssh/id_ed25519" })}
-                  <ConfigField label={t("devices.field.password")}>
-                    <input
-                      className="mcp-add-input settings-device-input"
-                      type="password"
-                      value={draft.password}
-                      data-device-field="password"
-                      placeholder={draft.hasPassword ? t("devices.passwordSaved") : ""}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setDraft((current) => (current ? { ...current, password: value } : current));
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void save();
-                      }}
-                    />
-                  </ConfigField>
-                  {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
                 </div>
 
                 <ConfigNotice>{t("devices.secretNote")}</ConfigNotice>
@@ -419,8 +821,15 @@ export function DevicesConfig({
       <ConfigFooter
         status={
           <ConfigFooterStatus
-            summary={status ?? (problem && draft ? t(problem) : t("devices.footerIdle"))}
-            tone={status ? "default" : problem && draft ? "warning" : "default"}
+            summary={
+              status ??
+              (sshHost
+                ? t("devices.sshReadOnlyShort")
+                : problem && draft
+                  ? t(problem)
+                  : t("devices.footerIdle"))
+            }
+            tone={status ? "default" : !sshHost && problem && draft ? "warning" : "default"}
           />
         }
       >

@@ -18,17 +18,24 @@ export interface DeviceInfo {
 }
 
 /**
- * Whether the switcher may move to this host. A disconnected host has nothing
- * to answer with, so picking it would only trade a working view for the offline
- * banner. "connecting" is on its way back and stays selectable.
+ * Whether the switcher may move to this host.
+ *
+ * An offline host is pickable on purpose: picking it *is* the request to dial
+ * it, and the switch only happens once the connection is up. Refusing the click
+ * here would leave a sleeping machine with no way back short of Settings.
  */
-export function deviceSelectable(status: DeviceInfo["status"]): boolean {
-  return status !== "offline";
+export function deviceSelectable(_status: DeviceInfo["status"]): boolean {
+  return true;
 }
 
 interface Props {
   selectedDeviceId: string;
-  onSelectDevice: (deviceId: string) => void;
+  /**
+   * Move to a host. It may dial first, so the dropdown stays open until the
+   * answer lands: closing on the click would hide the row that says what is
+   * happening, and the switch may still be refused.
+   */
+  onSelectDevice: (deviceId: string) => void | Promise<void>;
   onOpenTerminalOnDevice?: (deviceId: string) => void;
   onOpenSettings?: (section?: string) => void;
   /**
@@ -44,6 +51,12 @@ interface Props {
    * after the next poll.
    */
   refreshKey?: number;
+  /**
+   * The host a click is currently dialling. The row says so instead of
+   * pretending the switch already happened: a first handshake over a WAN link
+   * takes seconds, and a row that does nothing for seconds reads as broken.
+   */
+  connectingDeviceId?: string | null;
 }
 
 export function DeviceSelector({
@@ -53,6 +66,7 @@ export function DeviceSelector({
   onOpenSettings,
   compact = false,
   refreshKey = 0,
+  connectingDeviceId = null,
 }: Props) {
   const [devices, setDevices] = useState<DeviceInfo[]>([
     { id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" },
@@ -269,6 +283,7 @@ export function DeviceSelector({
               const isSelected = device.id === selectedDeviceId;
               const isOnline = device.status === "online";
               const selectable = deviceSelectable(device.status);
+              const connecting = connectingDeviceId === device.id;
               return (
                 <div
                   key={device.id}
@@ -277,7 +292,11 @@ export function DeviceSelector({
                   role="button"
                   tabIndex={selectable ? 0 : -1}
                   aria-disabled={selectable ? undefined : true}
-                  title={selectable ? undefined : `${device.name || device.id} is offline`}
+                  title={connecting
+                    ? `Connecting to ${device.name || device.id}…`
+                    : isOnline
+                      ? undefined
+                      : `${device.name || device.id} is offline: picking it dials it first`}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -296,8 +315,7 @@ export function DeviceSelector({
                   }}
                   onClick={() => {
                     if (!selectable) return;
-                    onSelectDevice(device.id);
-                    setOpen(false);
+                    void Promise.resolve(onSelectDevice(device.id)).then(() => setOpen(false));
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
@@ -319,8 +337,10 @@ export function DeviceSelector({
                           </span>
                         )}
                       </span>
-                      <span style={{ fontSize: 10, color: "var(--text-dim, #777)" }}>
-                        {device.remoteAddr || (device.mode === "reverse_tunnel" ? "Reverse Tunnel" : "Direct")}
+                      <span style={{ fontSize: 10, color: connecting ? "var(--accent, #6366f1)" : "var(--text-dim, #777)" }}>
+                        {connecting
+                          ? "connecting…"
+                          : device.remoteAddr || (device.mode === "reverse_tunnel" ? "Reverse Tunnel" : "Direct")}
                       </span>
                     </div>
                   </div>
@@ -340,9 +360,10 @@ export function DeviceSelector({
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onSelectDevice(device.id);
-                        onOpenTerminalOnDevice(device.id);
-                        setOpen(false);
+                        void Promise.resolve(onSelectDevice(device.id)).then(() => {
+                          onOpenTerminalOnDevice(device.id);
+                          setOpen(false);
+                        });
                       }}
                     >
                       Terminal

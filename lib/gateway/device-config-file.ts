@@ -254,6 +254,16 @@ function mergeConfig(current: ActiveDeviceConfig, input: DeviceConfigInput): { c
     if (value.trim().length === 0) delete merged[field];
     else merged[field] = value.trim();
   }
+
+  // Mutually exclusive credentials: if a new password is provided without a new key,
+  // clear any legacy keyPath; and if a new keyPath is provided without a new password,
+  // clear any legacy password.
+  if (typeof input.password === "string" && input.password.trim().length > 0 && !input.privateKeyPath) {
+    delete merged.privateKeyPath;
+  } else if (typeof input.privateKeyPath === "string" && input.privateKeyPath.trim().length > 0 && !input.password) {
+    delete merged.password;
+  }
+
   if (input.port !== undefined) {
     const port = typeof input.port === "string" ? Number(input.port.trim() === "" ? NaN : input.port) : input.port;
     if (typeof port !== "number" || Number.isNaN(port)) return { reason: `port ${String(input.port)} is not a number` };

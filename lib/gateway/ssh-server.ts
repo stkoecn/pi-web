@@ -334,6 +334,16 @@ export class SSHServer {
     if (entry && entry.info.mode === 'reverse_tunnel') this.registry.unregister(deviceId);
   }
 
+  /** Manually disconnect a client reverse tunnel */
+  async disconnectTunnel(deviceId: string): Promise<void> {
+    const tunnel = this.tunnels.get(deviceId);
+    if (!tunnel) return;
+    try {
+      tunnel.client.end();
+    } catch {}
+    await this.closeTunnel(deviceId);
+  }
+
   /** Devices currently dialled in, for the API and for a reload to compare against. */
   listTunnels(): { deviceId: string; boundPort: number }[] {
     return Array.from(this.tunnels.values()).map(({ deviceId, boundPort }) => ({ deviceId, boundPort }));

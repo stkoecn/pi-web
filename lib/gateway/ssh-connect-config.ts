@@ -46,6 +46,7 @@ export function buildConnectConfig(
   }
   if (config.privateKey === undefined && device.password) {
     config.password = device.password;
+    config.tryKeyboard = true;
   }
 
   return warning ? { config, warning } : { config };

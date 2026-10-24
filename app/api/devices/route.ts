@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getGateway } from '@/lib/gateway/singleton';
+import { sshHostToDevice } from '@/lib/gateway/ssh-config';
 import {
   addDeviceToConfigs,
   publicDeviceConfig,
@@ -36,11 +37,36 @@ export async function GET() {
   try {
     const gateway = getGateway();
     const file = readDevicesFile(gateway.configPath());
+    // `~/.ssh/config` already says which machines this user reaches, and with
+    // which user, port and key. Listing those here means nobody retypes them;
+    // `configs` stays the file's own entries, so the pane can still tell the
+    // two apart (a discovered host has no `hasPassword`, no mode, and cannot be
+    // edited or deleted until it is added).
+    const ssh = gateway.readSshHosts();
+    const configured = new Set(file.configs.map((config) => config.id));
     return NextResponse.json({
       devices: gateway.listDevices(),
       configPath: file.path,
       configs: file.configs.map(publicDeviceConfig),
       issues: file.issues,
+      sshConfigPath: ssh.path,
+      sshHosts: ssh.hosts.map((host) => {
+        const config = sshHostToDevice(host);
+        return {
+          id: config.id,
+          name: host.alias,
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
+          configured: configured.has(config.id),
+          // `ssh` would tunnel through a jump host; the gateway dials straight
+          // at the target. Saying so beats a click that times out.
+          ...(host.unsupported ? { unsupported: host.unsupported } : {}),
+        };
+      }),
+      sshProblems: ssh.problems,
+      ...(ssh.error ? { sshError: ssh.error } : {}),
       ...(file.error ? { fileError: file.error } : {}),
     });
   } catch (error) {
