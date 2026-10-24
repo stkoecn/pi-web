@@ -412,11 +412,11 @@ export function DevicesConfig({
           <ConfigSidebarList>
             {loading ? (
               <div className="config-sidebar-message">{t("i18n.loading")}</div>
-            ) : configs.length === 0 && !addMode ? (
+            ) : configs.length === 0 && sshOnlyHosts.length === 0 && !addMode ? (
               <div className="config-sidebar-message is-empty">{t("devices.empty")}</div>
             ) : (
               <>
-                <ConfigSidebarGroupLabel>{t("devices.groupSaved")}</ConfigSidebarGroupLabel>
+                <ConfigSidebarGroupLabel>{t("devices.groupHosts")}</ConfigSidebarGroupLabel>
                 {configs.map((config) => {
                   const live = runtime.get(config.id);
                   const active = !addMode && selectedId === config.id;
@@ -434,6 +434,9 @@ export function DevicesConfig({
                       <ConfigSidebarText className="is-grow">
                         {config.name || config.id}
                       </ConfigSidebarText>
+                      <span className="settings-device-kind" data-device-kind="reverse_tunnel">
+                        {t("devices.kind.reverse_tunnel")}
+                      </span>
                       <span className="settings-device-item-state">
                         {t(`devices.status.${live?.status ?? "offline"}`)}
                       </span>
@@ -455,7 +458,6 @@ export function DevicesConfig({
             )}
             {sshOnlyHosts.length > 0 && (
               <>
-                <ConfigSidebarGroupLabel>{t("devices.groupSsh")}</ConfigSidebarGroupLabel>
                 {sshOnlyHosts.map((host) => {
                   const live = runtime.get(host.id);
                   const active = !addMode && selectedSshId === host.id;
@@ -473,6 +475,9 @@ export function DevicesConfig({
                       <ConfigSidebarText className="is-grow">
                         {host.name}
                       </ConfigSidebarText>
+                      <span className="settings-device-kind" data-device-kind="active_ssh">
+                        {t("devices.kind.active_ssh")}
+                      </span>
                       <span
                         className="settings-device-item-state"
                         title={host.unsupported ?? undefined}
@@ -514,7 +519,12 @@ export function DevicesConfig({
               <>
                 <ConfigDetailHeader>
                   <ConfigDetailHeaderInfo>
-                    <ConfigDetailTitle>{sshHost.name}</ConfigDetailTitle>
+                    <ConfigDetailTitle>
+                      {sshHost.name}
+                      <span className="settings-device-kind" data-device-kind="active_ssh">
+                        {t("devices.kind.active_ssh")}
+                      </span>
+                    </ConfigDetailTitle>
                     <code className="config-detail-subtitle">
                       {sshHost.username}@{sshHost.host}:{sshHost.port}
                     </code>
@@ -591,6 +601,11 @@ export function DevicesConfig({
                   <ConfigDetailHeaderInfo>
                     <ConfigDetailTitle>
                       {addMode ? t("devices.add") : draft.name || draft.id}
+                      {!addMode && (
+                        <span className="settings-device-kind" data-device-kind="reverse_tunnel">
+                          {t("devices.kind.reverse_tunnel")}
+                        </span>
+                      )}
                     </ConfigDetailTitle>
                     {!addMode && (
                       <code className="config-detail-subtitle">

@@ -2673,6 +2673,25 @@ select.mcp-add-input {
   font-size: 10px;
 }
 
+/* Which direction the connection opens. Both kinds of host sit in one list, so
+   the row has to say which one it is: a tunnel this gateway waits for, or a
+   machine ssh already knows how to dial. */
+.settings-device-kind {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 9px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.settings-device-kind[data-device-kind="active_ssh"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
 /* Two mutually exclusive answers to "who opens the connection?", so they read
    as one control rather than a field with an implicit default. */
 .settings-device-modes {

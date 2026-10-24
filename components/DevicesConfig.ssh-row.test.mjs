@@ -72,6 +72,22 @@ test("showing an ssh row is not undone by the land-on-a-device effect", () => {
   );
 });
 
+test("both directions sit in one list, and every row says which it is", () => {
+  // Two separate groups made the ssh hosts look like a different kind of thing
+  // rather than the other half of the same list.
+  // One list, plus the "not saved yet" and "broken entries" labels.
+  assert.doesNotMatch(source, /ConfigSidebarGroupLabel>\{t\("devices\.groupSsh"\)/);
+  assert.doesNotMatch(source, /devices\.groupSaved/);
+  assert.doesNotMatch(source, /devices\.groupSsh/);
+  assert.match(source, /devices\.groupHosts/);
+  // A row that does not say which direction it opens is the one thing a reader
+  // cannot infer: both kinds are machines in the same list.
+  assert.match(source, /data-device-kind="reverse_tunnel"/);
+  assert.match(source, /data-device-kind="active_ssh"/);
+  assert.match(source, /devices\.kind\.reverse_tunnel/);
+  assert.match(source, /devices\.kind\.active_ssh/);
+});
+
 test("one machine is one row: a saved device hides its ssh stanza", () => {
   // A device the gateway dials also has a stanza, so an unfiltered list would
   // show the same machine twice — once editable, once read-only.
