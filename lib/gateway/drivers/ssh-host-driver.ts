@@ -2,7 +2,7 @@ import ssh2 from 'ssh2';
 import type { Client, SFTPWrapper, ClientChannel } from 'ssh2';
 import type { IHostDriver, TerminalOptions, TerminalSession, FileEntry, ExecResult, RPCChannel } from '../types/host-driver';
 import { randomUUID } from 'node:crypto';
-import { PersistentShellPool } from './persistent-shell';
+import { PersistentShellPool, REMOTE_PATH_PREFIX } from './persistent-shell';
 import { withChannelRetry } from './channel-retry';
 
 export class SSHHostDriver implements IHostDriver {
@@ -321,7 +321,10 @@ export class SSHHostDriver implements IHostDriver {
       }
     }
 
-    let command = `pi ${args.join(' ')}`;
+    // The same PATH a user-installed `pi` needs: sshd hands an `exec` request
+    // to a non-interactive shell that reads no rc file, so `pi` is not on PATH
+    // when it was installed under `$HOME/.local/node/bin`.
+    let command = `${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
     if (opts.cwd) {
       command = `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${command}`;
     }

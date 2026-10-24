@@ -34,6 +34,21 @@ export interface ShellExecOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Directories a user-installed tool can live in, ahead of the default PATH.
+ *
+ * sshd runs an `exec` request through `$SHELL -c`, and a non-interactive `sh`
+ * reads no rc file, so the PATH is the bare system one: a `pi` installed by
+ * `npm install -g` under `$HOME/.local/node` is simply not found, and every
+ * command fails with `pi: command not found`. Prepending the usual per-user
+ * bin directories makes a user-level install work without root.
+ *
+ * `$HOME` rather than `~`: tilde expands only when unquoted and never inside
+ * double quotes, so `PATH="...:~/bin"` silently adds a literal `~/bin`.
+ */
+export const REMOTE_PATH_PREFIX =
+  'PATH="$HOME/.local/bin:$HOME/.local/node/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"';
+
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 /** A command that runs this long leaves the channel in an unknown state. */
 const RECYCLE_AFTER_TIMEOUT_MS = 100;
@@ -72,7 +87,7 @@ class PersistentShell {
     this.opening = withChannelRetry(() => new Promise<ClientChannel>((resolve, reject) => {
       // `sh` rather than a login shell: no rc files, no prompt, no echo, and
       // nothing between us and the command.
-      this.client.exec('sh', (err: Error | undefined, stream: ClientChannel) => {
+      this.client.exec(`${REMOTE_PATH_PREFIX} exec sh`, (err: Error | undefined, stream: ClientChannel) => {
         if (err) return reject(err);
         stream.on('data', (data: Buffer) => this.onData(data));
         stream.stderr.on('data', () => {
