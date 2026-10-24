@@ -8,6 +8,7 @@ import {
   type DeviceFileIssue,
 } from './device-config-file';
 import { readSshConfig, sshHostToDevice, type SshConfigRead } from './ssh-config';
+import { isHostEnabled, readEnabledHosts, setHostEnabled } from './enabled-hosts';
 import type { IHostDriver } from './types/host-driver';
 import type { ActiveDeviceConfig, DeviceInfo } from './types/device';
 
@@ -85,7 +86,7 @@ export class GatewayManager {
     // user asked to see their machines, not to hold a connection on each. A
     // `devices.json` entry always wins for the same id, because that is where a
     // password-only host, a renamed display name or a reverse tunnel lives.
-    const discovered = this.discoverSshHosts(loaded.configs);
+    const discovered = this.discoverSshHosts(loaded.configs, { enabledOnly: true });
     for (const config of discovered) {
       console.log(`[Gateway] Offering ssh host ${config.id} (${config.host}:${config.port}), not dialled`);
     }
@@ -123,7 +124,10 @@ export class GatewayManager {
    * the user asked for, so it is listed offline rather than not at all.
    */
   public listDevices(): DeviceInfo[] {
-    const live = this.registry.list();
+    // A host the user switched off is not offered: the switcher is the list
+    // of hosts this gateway serves, and the switch exists to keep a machine
+    // out of it. `devices.json` entries and localhost are always in.
+    const live = this.registry.list().filter((device) => this.isDeviceEnabled(device.id));
     const known = new Set(live.map((device) => device.id));
     const waiting: DeviceInfo[] = this.configuredDevices
       .filter((config) => (config.mode ?? 'active_ssh') === 'reverse_tunnel')
@@ -209,7 +213,7 @@ export class GatewayManager {
     // Discovered hosts come and go with `~/.ssh/config`, which a reload may not
     // have touched. Re-offering them keeps a host that is not in devices.json
     // from disappearing from the switcher the first time someone edits the file.
-    for (const config of this.discoverSshHosts(configs)) {
+    for (const config of this.discoverSshHosts(configs, { enabledOnly: true })) {
       const entry = this.registry.get(config.id);
       if (entry) continue;
       await this.clientPool.addDevice(config, { connect: false });
@@ -245,6 +249,7 @@ export class GatewayManager {
    */
   public discoverSshHosts(
     configured: readonly ActiveDeviceConfig[] = this.configuredDevices,
+    options: { enabledOnly?: boolean } = {},
   ): ActiveDeviceConfig[] {
     const taken = new Set(configured.map((config) => config.id));
     const read = this.readSshHosts();
@@ -256,10 +261,21 @@ export class GatewayManager {
       const alias = problem.alias ? ` ${problem.alias}` : '';
       console.warn(`[Gateway] ssh config ${problem.where}:${alias} ${problem.reason}`);
     }
+    // A host ssh knows about is not a host this gateway serves. `~/.ssh/config`
+    // is the user's whole address book; the switcher should hold the few they
+    // turned on, so an untouched config does not mean twenty idle devices.
+    const enabled = options.enabledOnly === true ? readEnabledHosts() : undefined;
+    const offered = (id: string): boolean => {
+      if (!enabled) return true;
+      if (enabled.enabled.includes(id)) return true;
+      if (enabled.disabled.includes(id)) return false;
+      return enabled.defaultEnabled;
+    };
     const hosts: ActiveDeviceConfig[] = [];
     for (const host of read.hosts) {
       const config = sshHostToDevice(host);
       if (taken.has(config.id)) continue;
+      if (!offered(config.id)) continue;
       taken.add(config.id);
       hosts.push(config);
     }
@@ -291,6 +307,15 @@ export class GatewayManager {
     if (!target) {
       return { success: false, status: 'offline', error: `Unknown device ${deviceId}` };
     }
+    // A host ssh knows about but the user switched off is not dialled: the whole
+    // point of the switch is that nothing is opened until it is on.
+    if (!config && !isHostEnabled(deviceId)) {
+      return {
+        success: false,
+        status: 'offline',
+        error: `${deviceId} is switched off: turn it on in Settings > Devices first`,
+      };
+    }
 
     if (!config) {
       // A discovered host is not in the pool until someone asks for it.
@@ -300,6 +325,43 @@ export class GatewayManager {
       return this.connectDevice(deviceId);
     }
     return this.clientPool.manualConnect(deviceId);
+  }
+
+  /**
+   * Switch a discovered host on or off.
+   *
+   * Off also drops it from the pool: a host the user turned off must not keep
+   * a live connection and an entry in the switcher, and leaving the driver in
+   * place would do both. `devices.json` entries are not in this set — they are
+   * the request itself, so they have no switch to flip.
+   */
+  public async setDeviceEnabled(deviceId: string, enabled: boolean): Promise<void> {
+    if (deviceId === 'localhost') return;
+    const configured = this.configuredDevices.some((config) => config.id === deviceId);
+    if (configured) return;
+    await setHostEnabled(deviceId, enabled);
+    if (!enabled) {
+      this.clientPool.removeDevice(deviceId);
+      return;
+    }
+    // Switching on is what puts the host in the switcher: an entry that is not
+    // in the pool is not listed at all, so without this the switch would only
+    // take effect after a restart.
+    if (this.registry.get(deviceId)) return;
+    const config = this.discoverSshHosts().find((candidate) => candidate.id === deviceId);
+    if (config) await this.clientPool.addDevice(config, { connect: false });
+  }
+
+  /** Whether a discovered host is switched on; a `devices.json` entry always is. */
+  public isDeviceEnabled(deviceId: string): boolean {
+    if (deviceId === 'localhost') return true;
+    if (this.configuredDevices.some((config) => config.id === deviceId)) return true;
+    return isHostEnabled(deviceId);
+  }
+
+  /** The default for a host the switch file has never mentioned. */
+  public readEnabledDefault(): boolean {
+    return readEnabledHosts().defaultEnabled;
   }
 
   /** Devices currently dialled in over a reverse tunnel. */

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import {
   ConfigButton,
@@ -24,6 +24,7 @@ import {
   ConfigSidebarText,
   ConfigSplitView,
   ConfigStatusDot,
+  ConfigSwitch,
 } from "./SettingsUi";
 import {
   draftFromConfig,
@@ -164,6 +165,33 @@ export function DevicesConfig({
     }
   }, []);
 
+  // Switching a host on or off is a setting, not a connection: an enabled host
+  // is still only dialled when someone picks it. Turning one off drops any live
+  // connection, so the switcher stops offering a machine the user closed.
+  const toggleEnabled = useCallback(async (id: string, enabled: boolean) => {
+    setBusyControlId(id);
+    setError(null);
+    try {
+      const res = await fetch("/api/devices/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: enabled ? "enable" : "disable" }),
+      });
+      const body = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || body.error) {
+        setError(body.error ?? `Failed to ${enabled ? "enable" : "disable"} ${id}`);
+      } else {
+        setStatus(t(enabled ? "devices.enabled" : "devices.disabled", { name: id }));
+        await load();
+        onDevicesChanged?.();
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyControlId(null);
+    }
+  }, [load, onDevicesChanged, t]);
+
   const installPi = useCallback(async (id: string) => {
     setInstallingPi(true);
     try {
@@ -286,6 +314,15 @@ export function DevicesConfig({
 
   const problem = draft ? draftProblem(draft) : "devices.problem.id";
   /** The `~/.ssh/config` row being shown, if any. */
+  // The switch points at this note, so it needs a stable id: a tooltip alone
+  // never shows on a touch screen.
+  const switchNoteId = useId();
+
+  const isHostEnabled = useCallback(
+    (host: SshDiscoveredHost): boolean => host.enabled ?? false,
+    [],
+  );
+
   const sshHost = selectedSshId
     ? (data?.sshHosts ?? []).find((host) => host.id === selectedSshId)
     : undefined;
@@ -454,7 +491,9 @@ export function DevicesConfig({
                       >
                         {host.unsupported
                           ? host.unsupported
-                          : t(`devices.status.${live?.status ?? "offline"}`)}
+                          : isHostEnabled(host)
+                            ? t(`devices.status.${live?.status ?? "offline"}`)
+                            : t("devices.status.disabled")}
                       </span>
                     </ConfigSidebarItem>
                   );
@@ -576,6 +615,15 @@ export function DevicesConfig({
                     </code>
                   </ConfigDetailHeaderInfo>
                   <ConfigDetailActions>
+                    {/* The same place a models.json provider keeps its switch:
+                        the detail header, next to that host's own buttons. */}
+                    <ConfigSwitch
+                      checked={isHostEnabled(sshHost)}
+                      loading={busyControlId === sshHost.id}
+                      label={t("devices.enableHost", { name: sshHost.name })}
+                      describedBy={switchNoteId}
+                      onChange={(checked) => void toggleEnabled(sshHost.id, checked)}
+                    />
                     <ConfigButton
                       size="small"
                       variant={runtime.get(sshHost.id)?.status === "online" ? "secondary" : "primary"}
@@ -585,7 +633,9 @@ export function DevicesConfig({
                           runtime.get(sshHost.id)?.status === "online" ? "disconnect" : "connect",
                         )
                       }
-                      disabled={busyControlId === sshHost.id || busy !== null}
+                      // A host that is off has nothing to dial: the switch is
+                      // the only thing that may be clicked until it is on.
+                      disabled={busyControlId === sshHost.id || busy !== null || !isHostEnabled(sshHost)}
                     >
                       {busyControlId === sshHost.id
                         ? (runtime.get(sshHost.id)?.status === "online" ? t("devices.disconnecting") : t("devices.connecting"))
@@ -599,6 +649,13 @@ export function DevicesConfig({
                     {t("devices.sshJump", { hops: sshHost.jump.join(" → ") })}
                   </ConfigNotice>
                 )}
+
+                {/* Off by default: `~/.ssh/config` is an address book, not a list
+                    of machines to serve. The note is what the switch points at,
+                    because a tooltip never shows on a touch screen. */}
+                <p className="settings-device-switch-note" id={switchNoteId}>
+                  {isHostEnabled(sshHost) ? t("devices.enabledHint") : t("devices.disabledHint")}
+                </p>
                 {sshHost.unsupported && (
                   <ConfigNotice>{t("devices.sshUnsupported", { detail: sshHost.unsupported })}</ConfigNotice>
                 )}

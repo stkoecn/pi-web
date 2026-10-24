@@ -58,6 +58,12 @@ export interface SshDiscoveredHost {
   username: string;
   privateKeyPath?: string;
   configured: boolean;
+  /**
+   * Whether the switcher may offer it. A discovered host starts off: the ssh
+   * config is an address book, so the machines this gateway serves are the few
+   * the user switched on. A `devices.json` entry has no switch and is always on.
+   */
+  enabled?: boolean;
   /** `user@host:port` for each hop `ProxyJump` names, in order. */
   jump?: string[];
   /**
@@ -76,6 +82,8 @@ export interface DevicesResponse {
   /** The file the hosts were read from, for the pane's subtitle. */
   sshConfigPath?: string;
   sshHosts?: SshDiscoveredHost[];
+  /** What a host the switch file has never mentioned counts as. */
+  sshEnabledDefault?: boolean;
   /** Hosts the parser could not use (a missing key, a bad port, ProxyJump). */
   sshProblems?: SshConfigProblem[];
   sshError?: string;

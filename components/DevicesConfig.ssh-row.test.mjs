@@ -126,3 +126,45 @@ test("a stanza the pane cannot use is a row with a question mark, not a footnote
   const problems = source.indexOf("data-device-ssh-problem=");
   assert.ok(problems > active && problems < reverse, "problem rows sit under the active heading");
 });
+
+test("a discovered host is switched off until the user turns it on", () => {
+  // `~/.ssh/config` is the user's whole address book. Serving every stanza in
+  // the switcher would put machines there that were never offered, so each row
+  // starts off and the switch lives in its detail header.
+  assert.match(source, /isHostEnabled/);
+  assert.match(source, /devices\.status\.disabled/);
+  assert.match(source, /toggleEnabled\(sshHost\.id, checked\)/);
+  // A host that is off has nothing to dial, so its connect button is inert.
+  assert.match(source, /!isHostEnabled\(sshHost\)/);
+  // The detail pane explains what the switch means in both positions.
+  assert.match(source, /devices\.enabledHint/);
+  assert.match(source, /devices\.disabledHint/);
+});
+
+test("the switch sits in the detail header, as a models.json provider's does", () => {
+  // Left-side list rows are for picking a host, not for configuring one: a
+  // switch in every row made the list read as a wall of toggles.
+  const sshBranch = source.indexOf(") : sshHost ? (");
+  assert.ok(sshBranch > 0, "the ssh detail branch must exist");
+  const headerStart = source.indexOf("<ConfigDetailActions>", sshBranch);
+  assert.ok(headerStart > 0, "the ssh detail header must have an actions slot");
+  const actions = source.slice(headerStart, source.indexOf("</ConfigDetailActions>", headerStart));
+  assert.match(actions, /<ConfigSwitch/, "the switch belongs in the header actions");
+  assert.match(actions, /describedBy=\{switchNoteId\}/, "and points at the note under the header");
+  // The note is what the switch points at, so both sides exist.
+  assert.match(source, /id=\{switchNoteId\}/);
+  // No switch is rendered inside the sidebar list.
+  const sidebarStart = source.indexOf("<ConfigSidebarList>");
+  const sidebarEnd = source.indexOf("</ConfigSidebarList>", sidebarStart);
+  assert.doesNotMatch(source.slice(sidebarStart, sidebarEnd), /<ConfigSwitch/);
+});
+
+test("switching a host sends enable or disable, not a connection", () => {
+  const start = source.indexOf("const toggleEnabled = useCallback(");
+  assert.ok(start > 0, "the switch handler must exist");
+  const body = source.slice(start, source.indexOf("}, [load, onDevicesChanged, t]);", start));
+  assert.match(body, /action: enabled \? "enable" : "disable"/);
+  assert.match(body, /"\/api\/devices\/control"/);
+  // Off drops the connection on the gateway side, so a refresh must follow.
+  assert.match(body, /await load\(\)/);
+});

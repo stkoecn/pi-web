@@ -43,6 +43,7 @@ export async function GET() {
     // two apart (a discovered host has no `hasPassword`, no mode, and cannot be
     // edited or deleted until it is added).
     const ssh = gateway.readSshHosts();
+    const enabledDefault = gateway.readEnabledDefault();
     const configured = new Set(file.configs.map((config) => config.id));
     return NextResponse.json({
       devices: gateway.listDevices(),
@@ -60,6 +61,9 @@ export async function GET() {
           username: config.username,
           ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
           configured: configured.has(config.id),
+          // A discovered host is offered but inert until the user turns it on;
+          // `devices.json` entries are the request itself and have no switch.
+          enabled: configured.has(config.id) ? true : gateway.isDeviceEnabled(config.id),
           // The hops `ProxyJump` names, so the pane can say how it will be
           // reached instead of leaving the address looking unreachable.
           ...(host.jump && host.jump.length > 0
@@ -69,6 +73,7 @@ export async function GET() {
         };
       }),
       sshProblems: ssh.problems,
+      sshEnabledDefault: enabledDefault,
       ...(ssh.error ? { sshError: ssh.error } : {}),
       ...(file.error ? { fileError: file.error } : {}),
     });

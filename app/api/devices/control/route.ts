@@ -5,17 +5,30 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { id, action } = body as { id?: string; action?: "connect" | "disconnect" };
+    const { id, action } = body as {
+      id?: string;
+      action?: "connect" | "disconnect" | "enable" | "disable";
+    };
 
     if (!id || typeof id !== "string") {
       return Response.json({ error: "Missing or invalid device id" }, { status: 400 });
     }
 
-    if (action !== "connect" && action !== "disconnect") {
-      return Response.json({ error: "Action must be 'connect' or 'disconnect'" }, { status: 400 });
+    if (action !== "connect" && action !== "disconnect" && action !== "enable" && action !== "disable") {
+      return Response.json(
+        { error: "Action must be 'connect', 'disconnect', 'enable' or 'disable'" },
+        { status: 400 },
+      );
     }
 
     const gateway = getGateway();
+
+    // Switching a discovered host on or off. Turning one off also drops its
+    // connection, so the switcher cannot keep offering a host the user closed.
+    if (action === "enable" || action === "disable") {
+      await gateway.setDeviceEnabled(id, action === "enable");
+      return Response.json({ success: true, status: "offline" });
+    }
 
     if (action === "disconnect") {
       const result = await gateway.disconnectDevice(id);

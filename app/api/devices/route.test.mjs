@@ -33,6 +33,10 @@ const gateway = {
       })),
   ],
   listConfiguredDevices: () => configured.map((c) => ({ ...c })),
+  // The switch file lives in the agent directory; a test stubs it so the
+  // answer does not depend on what this machine has enabled.
+  isDeviceEnabled: () => true,
+  readEnabledDefault: () => false,
   // Discovery reads the real `~/.ssh/config`; a test must not depend on the
   // machine it runs on, so this stub answers with a fixed host instead.
   readSshHosts: () => ({
