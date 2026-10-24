@@ -115,6 +115,17 @@ class PersistentShell {
     return this.opening;
   }
 
+  /**
+   * Open the channel now instead of on the first command.
+   *
+   * Opening costs a full round trip — measured 2089 ms on a 282 ms-RTT link —
+   * and every page load issues a command within milliseconds of connecting.
+   * Paying it during connection setup keeps it off the first request.
+   */
+  async warm(): Promise<void> {
+    await this.open();
+  }
+
   private markDead() {
     this.dead = true;
     const pending = this.pending;
@@ -261,9 +272,16 @@ export class PersistentShellPool {
     // channel open costs a full round trip (250 ms on a WAN device) and the
     // first request after a page load always needs one.
     this.warmUp = this.acquire()
-      .then((shell) => {
-        shell.busy = false;
-        this.releaseWaiter();
+      .then(async (shell) => {
+        // `acquire()` only builds the wrapper: without this the channel is
+        // still opened by the first command, and `ready()` resolves in 0 ms
+        // while that command pays the full round trip.
+        try {
+          await shell.warm();
+        } finally {
+          shell.busy = false;
+          this.releaseWaiter();
+        }
       })
       .catch(() => {
         // A device that is not ready yet simply opens its shell on demand.
