@@ -484,12 +484,20 @@ function getPathToIdCache(): Map<string, string> {
 // live runtime wrapper exists, so a fingerprint-validated cache turns repeat
 // opens into ~1ms map hits.
 //
-// Budget: a count cap alone is not enough. Parsed entries retain roughly the
-// file's own size in heap (measured: an 82MB session holds ~94MB), so twelve
-// large sessions would pin ~1.1GB. Entries are therefore also capped by the
-// summed on-disk size of the cached files, and a single session larger than
-// SM_CACHE_LIMITS.maxFileBytes is served fresh instead of being cached — one
-// oversize session must not evict every useful entry.
+// Budget: a count cap alone is not enough. Parsed entries retain slightly MORE
+// than the file's own size in heap — measured against three real transcripts,
+// 30.3 MiB held 39 MiB, 25.3 MiB held 32 MiB, 11.7 MiB held 13 MiB (1.1-1.3x)
+// — so twelve large sessions would pin well over a gigabyte. Entries are
+// therefore also capped by the summed on-disk size of the cached files, and a
+// single session larger than SM_CACHE_LIMITS.maxFileBytes is served fresh
+// instead of being cached — one oversize session must not evict every useful
+// entry.
+//
+// The byte budget is deliberately far below what a machine could spare. This
+// cache is a latency optimisation for a transcript that was just viewed; the
+// cost of a miss is one re-parse (204 ms for a 30 MiB file), while the cost of
+// a generous budget is a resident set that never comes back down — the heap
+// grows to hold whatever was recently opened and the process keeps it.
 //
 // Safety: cached managers are READ-ONLY views. Any write path must go through
 // a live wrapper or SessionManager.open directly — call openSessionManager
@@ -515,11 +523,18 @@ declare global {
  */
 export const SM_CACHE_LIMITS = {
   /** Most sessions held at once. */
-  maxEntries: 12,
-  /** Summed on-disk size of cached sessions. */
-  maxTotalBytes: 256 * 1024 * 1024,
+  maxEntries: 6,
+  /**
+   * Summed on-disk size of cached sessions.
+   *
+   * Four large transcripts' worth. Eight would be ~380 MiB of resident heap for
+   * files nobody is looking at any more; the sidebar shows one session at a
+   * time, so the useful working set is the open one plus whatever the previous
+   * few clicks left behind.
+   */
+  maxTotalBytes: 96 * 1024 * 1024,
   /** A session larger than this is never cached — it would evict everything else. */
-  maxFileBytes: 64 * 1024 * 1024,
+  maxFileBytes: 32 * 1024 * 1024,
 };
 
 function getSmCache(): Map<string, SmCacheEntry> {
