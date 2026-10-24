@@ -7,8 +7,11 @@ over the LAN (192.168.1.8) and Tailscale (100.74.135.43), and phones/other hosts
 to open the UI.
 
 ```bash
-(NODE_OPTIONS=--max-old-space-size=4096 nohup node node_modules/next/dist/bin/next dev \
-  --turbopack -H 0.0.0.0 -p 9564 > /tmp/next-server.log 2>&1 &)
+(HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
+ https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 \
+ NODE_OPTIONS=--max-old-space-size=1024 \
+ nohup node node_modules/next/dist/bin/next dev --turbopack -H 0.0.0.0 -p 9564 \
+ > /tmp/next-server.log 2>&1 &)
 ```
 
 Restart it with:
@@ -24,6 +27,14 @@ Notes:
   result — `gateway.X is not a function` / `Export Y doesn't exist in target module`
   usually means the old build, not a broken edit.
 - `next build --webpack` OOMs even at a 12 GB heap. Stay on the dev server.
+- The proxy variables are not optional: without them `next/font` cannot reach Google
+  Fonts, every page falls back to Arial stretched to 134%, and the UI looks broken.
+  The dev server logs `next/font: Failed to download Noto Sans Mono` when this happens.
+- `--max-old-space-size=1024`, not 4096. The heap ceiling is what the process actually
+  grows to: measured against six transcripts totalling 100 MiB, the same walk peaked at
+  633 MB and settled to 459 MB with a 1 GB cap, where a 4 GB cap let the resident set
+  pass 1.2 GB. A cap that low still compiles every route and serves every page; it only
+  bounds how much garbage V8 keeps before collecting.
 - `-H 0.0.0.0` also means the reverse-tunnel SSH server binds `0.0.0.0:22222`.
 
 ## Tests
