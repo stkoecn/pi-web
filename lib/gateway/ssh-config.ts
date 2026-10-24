@@ -307,7 +307,18 @@ export function parseSshConfig(text: string, options: {
   const hosts: SshConfigHost[] = [];
   const seen = new Set<string>();
   for (const block of ordered) {
-    for (const alias of block.patterns) {
+    /**
+     * A block that names its address lists aliases of one machine.
+     *
+     * `Host ib-us2-et 10.8.8.22` with `HostName 10.8.8.22` is two ways to say
+     * the same host — same user, same port, same key — so the pane showed one
+     * machine twice. The first alias is the name the reader chose for it.
+     * Without `HostName` each pattern *is* an address, so those stay separate.
+     */
+    const aliasesOfOneHost = block.options.get("hostname") !== undefined || defaults.get("hostname") !== undefined
+      ? block.patterns.slice(0, 1)
+      : block.patterns;
+    for (const alias of aliasesOfOneHost) {
       if (isPattern(alias) || seen.has(alias)) continue;
       seen.add(alias);
       const lookup = (keyword: string) => block.options.get(keyword) ?? defaults.get(keyword);
