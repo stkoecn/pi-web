@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef } from "react";
 const DEVICES_POLL_MS = 15000;
 
 /** Square size of the compact (phone) button, matching the top bar's icons. */
+const NAME_MAX_WIDTH = 200;
 const COMPACT_BUTTON_SIZE = 36;
 
 export interface DeviceInfo {
@@ -150,7 +151,9 @@ export function DeviceSelector({
     <div
       ref={dropdownRef}
       data-device-selector={selectedDeviceId}
-      style={{ position: "relative", display: "inline-block", height: "100%" }}
+      // `minWidth: 0` lets the bar squeeze the name down to an ellipsis when
+      // the row is tight, instead of pushing the toolbar past the right edge.
+      style={{ position: "relative", display: "inline-block", height: "100%", minWidth: 0, flexShrink: 1 }}
     >
       <button
         type="button"
@@ -170,6 +173,11 @@ export function DeviceSelector({
           height: "100%",
           padding: compact ? 0 : "0 10px",
           width: compact ? COMPACT_BUTTON_SIZE : undefined,
+          // The name sets the width up to this cap. A fixed cap on the name
+          // alone cut "192.168.0.25.windsing" in half while the bar had room
+          // to spare, which reads as a broken control rather than an ellipsis.
+          maxWidth: compact ? COMPACT_BUTTON_SIZE : NAME_MAX_WIDTH + 40,
+          minWidth: 0,
           background: open ? "var(--bg-selected, rgba(255,255,255,0.08))" : "none",
           border: "none",
           borderRight: "1px solid var(--border)",
@@ -215,7 +223,14 @@ export function DeviceSelector({
 
         {!compact && (
           <>
-            <span style={{ maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis" }}>
+            <span
+              style={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                flex: "0 1 auto",
+              }}
+            >
               {currentDevice.id === "localhost" ? "Local" : currentDevice.name || currentDevice.id}
             </span>
 

@@ -72,20 +72,30 @@ test("showing an ssh row is not undone by the land-on-a-device effect", () => {
   );
 });
 
-test("both directions sit in one list, and every row says which it is", () => {
-  // Two separate groups made the ssh hosts look like a different kind of thing
-  // rather than the other half of the same list.
-  // One list, plus the "not saved yet" and "broken entries" labels.
-  assert.doesNotMatch(source, /ConfigSidebarGroupLabel>\{t\("devices\.groupSsh"\)/);
+test("the list is split in two by direction, and the detail says how it is reached", () => {
+  // Direction decides how a host behaves, and it is a property of the whole
+  // group: repeating a tag on 17 rows was noise, so the split carries it.
+  assert.match(source, /devices\.groupActive/);
+  assert.match(source, /devices\.groupReverse/);
+  assert.doesNotMatch(source, /devices\.groupHosts/);
   assert.doesNotMatch(source, /devices\.groupSaved/);
   assert.doesNotMatch(source, /devices\.groupSsh/);
-  assert.match(source, /devices\.groupHosts/);
-  // A row that does not say which direction it opens is the one thing a reader
-  // cannot infer: both kinds are machines in the same list.
-  assert.match(source, /data-device-kind="reverse_tunnel"/);
-  assert.match(source, /data-device-kind="active_ssh"/);
-  assert.match(source, /devices\.kind\.reverse_tunnel/);
-  assert.match(source, /devices\.kind\.active_ssh/);
+
+  // 主动 first: the hosts ssh already describes are the ones a reader looks for.
+  const active = source.indexOf('devices.groupActive');
+  const reverse = source.indexOf('devices.groupReverse');
+  const firstSshRow = source.indexOf('data-device-ssh-item=');
+  assert.ok(active > 0 && reverse > active, "the active group heading comes first");
+  assert.ok(firstSshRow > active && firstSshRow < reverse, "ssh rows sit under the active heading");
+
+  // The jump hops belong to one host, so they are shown in its detail.
+  assert.match(source, /devices\.sshJump/);
+  assert.match(source, /sshHost\.jump\.join\(" → "\)/);
+
+  // No direction tag on the rows themselves any more.
+  const listStart = source.indexOf("<ConfigSidebar>");
+  const listEnd = source.indexOf("</ConfigSidebar>");
+  assert.doesNotMatch(source.slice(listStart, listEnd), /settings-device-kind/);
 });
 
 test("one machine is one row: a saved device hides its ssh stanza", () => {

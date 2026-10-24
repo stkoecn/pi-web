@@ -416,48 +416,13 @@ export function DevicesConfig({
               <div className="config-sidebar-message is-empty">{t("devices.empty")}</div>
             ) : (
               <>
-                <ConfigSidebarGroupLabel>{t("devices.groupHosts")}</ConfigSidebarGroupLabel>
-                {configs.map((config) => {
-                  const live = runtime.get(config.id);
-                  const active = !addMode && selectedId === config.id;
-                  return (
-                    <ConfigSidebarItem
-                      key={config.id}
-                      active={active}
-                      data-device-config-item={config.id}
-                      onClick={() => select(config)}
-                    >
-                      <ConfigStatusDot
-                        active={live?.status === "online"}
-                        color={live?.status === "connecting" ? "#eab308" : undefined}
-                      />
-                      <ConfigSidebarText className="is-grow">
-                        {config.name || config.id}
-                      </ConfigSidebarText>
-                      <span className="settings-device-kind" data-device-kind="reverse_tunnel">
-                        {t("devices.kind.reverse_tunnel")}
-                      </span>
-                      <span className="settings-device-item-state">
-                        {t(`devices.status.${live?.status ?? "offline"}`)}
-                      </span>
-                    </ConfigSidebarItem>
-                  );
-                })}
-                {addMode && (
-                  <>
-                    <ConfigSidebarGroupLabel>{t("devices.groupNew")}</ConfigSidebarGroupLabel>
-                    <ConfigSidebarItem active>
-                      <ConfigStatusDot active={false} />
-                      <ConfigSidebarText className="is-grow">
-                        {draft?.name || draft?.id || t("devices.untitled")}
-                      </ConfigSidebarText>
-                    </ConfigSidebarItem>
-                  </>
+                {/* Two parts, because the direction is the one thing that decides
+                    how a host behaves: 主动 hosts are dialled by the gateway,
+                    被动 ones dial in. It is a property of the whole group, so it
+                    is a heading rather than a tag repeated on every row. */}
+                {sshOnlyHosts.length > 0 && (
+                  <ConfigSidebarGroupLabel>{t("devices.groupActive")}</ConfigSidebarGroupLabel>
                 )}
-              </>
-            )}
-            {sshOnlyHosts.length > 0 && (
-              <>
                 {sshOnlyHosts.map((host) => {
                   const live = runtime.get(host.id);
                   const active = !addMode && selectedSshId === host.id;
@@ -475,9 +440,6 @@ export function DevicesConfig({
                       <ConfigSidebarText className="is-grow">
                         {host.name}
                       </ConfigSidebarText>
-                      <span className="settings-device-kind" data-device-kind="active_ssh">
-                        {t("devices.kind.active_ssh")}
-                      </span>
                       <span
                         className="settings-device-item-state"
                         title={host.unsupported ?? undefined}
@@ -494,6 +456,43 @@ export function DevicesConfig({
                   <div className="config-sidebar-message is-error">
                     {t("devices.sshProblems", { count: String(data?.sshProblems?.length ?? 0) })}
                   </div>
+                )}
+                {(configs.length > 0 || addMode) && (
+                  <ConfigSidebarGroupLabel>{t("devices.groupReverse")}</ConfigSidebarGroupLabel>
+                )}
+                {configs.map((config) => {
+                  const live = runtime.get(config.id);
+                  const active = !addMode && selectedId === config.id;
+                  return (
+                    <ConfigSidebarItem
+                      key={config.id}
+                      active={active}
+                      data-device-config-item={config.id}
+                      onClick={() => select(config)}
+                    >
+                      <ConfigStatusDot
+                        active={live?.status === "online"}
+                        color={live?.status === "connecting" ? "#eab308" : undefined}
+                      />
+                      <ConfigSidebarText className="is-grow">
+                        {config.name || config.id}
+                      </ConfigSidebarText>
+                      <span className="settings-device-item-state">
+                        {t(`devices.status.${live?.status ?? "offline"}`)}
+                      </span>
+                    </ConfigSidebarItem>
+                  );
+                })}
+                {addMode && (
+                  <>
+                    <ConfigSidebarGroupLabel>{t("devices.groupNew")}</ConfigSidebarGroupLabel>
+                    <ConfigSidebarItem active>
+                      <ConfigStatusDot active={false} />
+                      <ConfigSidebarText className="is-grow">
+                        {draft?.name || draft?.id || t("devices.untitled")}
+                      </ConfigSidebarText>
+                    </ConfigSidebarItem>
+                  </>
                 )}
               </>
             )}
