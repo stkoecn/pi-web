@@ -20,7 +20,7 @@ test("a host from ~/.ssh/config is shown, never saved", () => {
 });
 
 test("the ssh row cannot be deleted, because nothing was written", () => {
-  const start = source.indexOf("{sshHost ? (");
+  const start = source.indexOf(") : sshHost ? (");
   const branch = source.slice(start, source.indexOf(") : !draft ? (", start));
   assert.ok(branch.length > 0, "the read-only branch must exist");
   assert.doesNotMatch(branch, /onClick=\{\(\) => void remove\(\)\}/);
@@ -65,10 +65,10 @@ test("showing an ssh row is not undone by the land-on-a-device effect", () => {
   // the moment the row was picked.
   const start = source.indexOf("// Land on a device rather than an empty pane");
   const guard = source.slice(start, source.indexOf("const first =", start));
-  assert.match(guard, /if \(addMode \|\| draft \|\| selectedSshId\) return;/);
+  assert.match(guard, /if \(addMode \|\| draft \|\| selectedSshId \|\| selectedProblem !== null\) return;/);
   assert.match(
     source,
-    /\}, \[addMode, configs, draft, fetchPairingCommand, selectedId, selectedSshId\]\);/,
+    /\}, \[addMode, configs, draft, fetchPairingCommand, selectedId, selectedProblem, selectedSshId\]\);/,
   );
 });
 
@@ -108,4 +108,21 @@ test("one machine is one row: a saved device hides its ssh stanza", () => {
   assert.match(body, /!configs\.some\(\(config\) => config\.id === host\.id\)/);
   assert.match(source, /\{sshOnlyHosts\.map\(\(host\) => \{/);
   assert.doesNotMatch(source, /data\?\.sshHosts\?\.map/);
+});
+
+test("a stanza the pane cannot use is a row with a question mark, not a footnote", () => {
+  // "2 hosts cannot be used, see the server log" is not something a reader can
+  // act on: the row is where the host would have been, and the reason is in its
+  // detail pane.
+  assert.match(source, /data-device-ssh-problem=/);
+  assert.match(source, /className="settings-device-problem"/);
+  assert.match(source, /devices\.sshProblemShort/);
+  assert.match(source, /devices\.sshProblemFix/);
+  // The count-only line is gone.
+  assert.doesNotMatch(source, /devices\.sshProblems/);
+  // Problems stay inside the 主动 group, right after the hosts it could read.
+  const active = source.indexOf("devices.groupActive");
+  const reverse = source.indexOf("devices.groupReverse");
+  const problems = source.indexOf("data-device-ssh-problem=");
+  assert.ok(problems > active && problems < reverse, "problem rows sit under the active heading");
 });

@@ -252,7 +252,10 @@ export class GatewayManager {
       console.warn(`[Gateway] Cannot read ${read.path}: ${read.error}`);
       return [];
     }
-    for (const problem of read.problems) console.warn(`[Gateway] ssh config: ${problem}`);
+    for (const problem of read.problems) {
+      const alias = problem.alias ? ` ${problem.alias}` : '';
+      console.warn(`[Gateway] ssh config ${problem.where}:${alias} ${problem.reason}`);
+    }
     const hosts: ActiveDeviceConfig[] = [];
     for (const host of read.hosts) {
       const config = sshHostToDevice(host);

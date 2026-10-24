@@ -29,11 +29,28 @@ export interface SshConfigHost {
   unsupported?: string;
 }
 
+/**
+ * One stanza the pane cannot offer, with the reason already phrased.
+ *
+ * A plain string list was only ever read by a developer: it went to the log and
+ * the pane showed "N hosts cannot be used, see the log". The alias and the
+ * reason are what a reader needs, so they are kept apart from the file/line
+ * prefix that is still useful in the log.
+ */
+export interface SshConfigProblem {
+  /** `path:line` as it reads in the log. */
+  where: string;
+  /** The `Host` alias the line is about, when the line is about one. */
+  alias?: string;
+  /** The reason, without the prefix. */
+  reason: string;
+}
+
 export interface SshConfigRead {
   path: string;
   hosts: SshConfigHost[];
   /** Lines the parser skipped, so a silent miss is explainable. */
-  problems: string[];
+  problems: SshConfigProblem[];
   /** Set when the file itself could not be read. Missing file is not an error. */
   error?: string;
 }
@@ -94,7 +111,7 @@ function expandTokens(value: string, alias: string, hostName: string, username: 
     .replace(/^~(?=$|\/)/, home);
 }
 
-function parseBlocks(text: string, sourcePath: string, problems: string[]): Block[] {
+function parseBlocks(text: string, sourcePath: string, problems: SshConfigProblem[]): Block[] {
   const blocks: Block[] = [];
   let current: Block | null = null;
   const lines = text.split(/\r?\n/);
@@ -118,7 +135,7 @@ function parseBlocks(text: string, sourcePath: string, problems: string[]): Bloc
     if (!current) {
       // A keyword before the first Host block applies to every host; the
       // gateway has no use for a global default that is not a host.
-      problems.push(`${sourcePath}:${index + 1}: ${parsed.keyword} outside a Host block`);
+      problems.push({ where: `${sourcePath}:${index + 1}`, reason: `${parsed.keyword} outside a Host block` });
       continue;
     }
     // First obtained value wins, exactly as ssh resolves it.
@@ -128,7 +145,12 @@ function parseBlocks(text: string, sourcePath: string, problems: string[]): Bloc
 }
 
 /** `Include` files are read in place, so a shared `config.d/*.conf` works. */
-function readIncludes(patterns: string[], sourcePath: string, home: string, problems: string[]): string[] {
+function readIncludes(
+  patterns: string[],
+  sourcePath: string,
+  home: string,
+  problems: SshConfigProblem[],
+): string[] {
   const texts: string[] = [];
   for (const pattern of patterns) {
     const expanded = expandTokens(pattern, "", "", "", home);
@@ -137,14 +159,14 @@ function readIncludes(patterns: string[], sourcePath: string, home: string, prob
     try {
       matches = fs.globSync(absolute).sort();
     } catch (error) {
-      problems.push(`${sourcePath}: cannot expand Include ${pattern}: ${message(error)}`);
+      problems.push({ where: sourcePath, reason: `cannot expand Include ${pattern}: ${message(error)}` });
       continue;
     }
     for (const match of matches) {
       try {
         texts.push(fs.readFileSync(match, "utf8"));
       } catch (error) {
-        problems.push(`${match}: cannot read Include: ${message(error)}`);
+        problems.push({ where: match, reason: `cannot read Include: ${message(error)}` });
       }
     }
   }
@@ -174,7 +196,7 @@ function resolveJumpChain(
   exists: (filePath: string) => boolean,
   sourcePath: string,
   line: number,
-  problems: string[],
+  problems: SshConfigProblem[],
 ): JumpHost[] | undefined {
   const hops: JumpHost[] = [];
   for (const entry of value.split(",").map((part) => part.trim()).filter(Boolean)) {
@@ -188,12 +210,15 @@ function resolveJumpChain(
     const match = /^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/.exec(entry);
     const host = match?.[2];
     if (!match || !host) {
-      problems.push(`${sourcePath}:${line}: ProxyJump ${entry} is neither a host alias nor user@host:port`);
+      problems.push({
+        where: `${sourcePath}:${line}`,
+        reason: `ProxyJump ${entry} is neither a host alias nor user@host:port`,
+      });
       return undefined;
     }
     const port = match[3] === undefined ? 22 : Number(match[3]);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      problems.push(`${sourcePath}:${line}: ProxyJump ${entry} has a port that is not a port`);
+      problems.push({ where: `${sourcePath}:${line}`, reason: `ProxyJump ${entry} has a port that is not a port` });
       return undefined;
     }
     const hop: JumpHost = {
@@ -224,12 +249,12 @@ export function parseSshConfig(text: string, options: {
   home?: string;
   osUser?: string;
   exists?: (filePath: string) => boolean;
-} = {}): { hosts: SshConfigHost[]; problems: string[] } {
+} = {}): { hosts: SshConfigHost[]; problems: SshConfigProblem[] } {
   const sourcePath = options.sourcePath ?? path.join(options.home ?? os.homedir(), ".ssh", "config");
   const home = options.home ?? os.homedir();
   const osUser = options.osUser ?? os.userInfo().username;
   const exists = options.exists ?? ((filePath: string) => fs.existsSync(filePath));
-  const problems: string[] = [];
+  const problems: SshConfigProblem[] = [];
 
   const blocks = parseBlocks(text, sourcePath, problems);
 
@@ -291,7 +316,11 @@ export function parseSshConfig(text: string, options: {
       const portText = lookup("port");
       const port = portText === undefined ? 22 : Number(portText);
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        problems.push(`${sourcePath}:${block.line}: ${alias} has port ${String(portText)}, which is not a port`);
+        problems.push({
+          where: `${sourcePath}:${block.line}`,
+          alias,
+          reason: `has port ${String(portText)}, which is not a port`,
+        });
         continue;
       }
       const host: SshConfigHost = { alias, hostName, port, username };
@@ -299,7 +328,13 @@ export function parseSshConfig(text: string, options: {
       if (keyPath) {
         const resolved = expandTokens(keyPath, alias, hostName, username, home);
         if (exists(resolved)) host.privateKeyPath = resolved;
-        else problems.push(`${sourcePath}:${block.line}: ${alias} names a key that does not exist: ${resolved}`);
+        else {
+          problems.push({
+            where: `${sourcePath}:${block.line}`,
+            alias,
+            reason: `names a key that does not exist: ${resolved}`,
+          });
+        }
       }
       // `ProxyJump` is a chain of logins the gateway opens itself (see
       // `lib/gateway/ssh-jump.ts`), so the hops have to be resolved here: each
@@ -324,7 +359,11 @@ export function parseSshConfig(text: string, options: {
       // real machine that happens to use a `git` login is the one case it gets
       // wrong — and `devices.json` still describes that one by hand.
       if (username === "git" && !jump) {
-        problems.push(`${sourcePath}:${block.line}: ${alias} logs in as "git", so it is a code host, not a machine`);
+        problems.push({
+          where: `${sourcePath}:${block.line}`,
+          alias,
+          reason: `logs in as "git", so it is a code host, not a machine`,
+        });
         continue;
       }
       hosts.push(host);

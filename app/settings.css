@@ -2687,9 +2687,35 @@ select.mcp-add-input {
   white-space: nowrap;
 }
 
+/* A stanza the pane cannot use: a question mark, since the reason lives in the
+   detail pane and the row only has to be findable in the list. */
+.settings-device-problem {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+  margin-right: 1px;
+  border: 1px solid #eab308;
+  border-radius: 50%;
+  color: #eab308;
+  font-size: 7px;
+  line-height: 1;
+}
+
+.settings-device-problem::before {
+  content: "?";
+}
+
 .settings-device-kind[data-device-kind="active_ssh"] {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
   color: var(--accent);
+}
+
+.settings-device-kind[data-device-kind="problem"] {
+  border-color: color-mix(in srgb, #eab308 45%, var(--border));
+  color: #eab308;
 }
 
 /* Two mutually exclusive answers to "who opens the connection?", so they read

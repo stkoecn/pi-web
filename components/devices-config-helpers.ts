@@ -43,6 +43,13 @@ export interface DeviceFileIssue {
  * `devices.json` already describes the same id, in which case this row is the
  * saved device and the discovery adds nothing.
  */
+/** A `~/.ssh/config` line the pane cannot turn into a host. */
+export interface SshConfigProblem {
+  where: string;
+  alias?: string;
+  reason: string;
+}
+
 export interface SshDiscoveredHost {
   id: string;
   name: string;
@@ -70,7 +77,7 @@ export interface DevicesResponse {
   sshConfigPath?: string;
   sshHosts?: SshDiscoveredHost[];
   /** Hosts the parser could not use (a missing key, a bad port, ProxyJump). */
-  sshProblems?: string[];
+  sshProblems?: SshConfigProblem[];
   sshError?: string;
   fileError?: string;
 }

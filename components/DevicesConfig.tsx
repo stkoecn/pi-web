@@ -57,6 +57,8 @@ export function DevicesConfig({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** The `~/.ssh/config` row on screen, when it is not a saved device. */
   const [selectedSshId, setSelectedSshId] = useState<string | null>(null);
+  /** Index into `sshProblems` when the reader picked a line the pane cannot use. */
+  const [selectedProblem, setSelectedProblem] = useState<number | null>(null);
   const [draft, setDraft] = useState<DeviceDraft | null>(null);
   const [addMode, setAddMode] = useState(false);
   const [busy, setBusy] = useState<null | "save" | "delete" | "reload">(null);
@@ -209,18 +211,19 @@ export function DevicesConfig({
   // An `~/.ssh/config` row is also a reason to stay put: it has no draft, so
   // without this the pane would bounce straight back to the first saved device.
   useEffect(() => {
-    if (addMode || draft || selectedSshId) return;
+    if (addMode || draft || selectedSshId || selectedProblem !== null) return;
     if (configs.length === 0) return;
     const first = configs.find((config) => config.id === selectedId) ?? configs[0];
     setSelectedId(first.id);
     const d = draftFromConfig(first);
     setDraft(d);
     void fetchPairingCommand({ id: d.id, name: d.name });
-  }, [addMode, configs, draft, fetchPairingCommand, selectedId, selectedSshId]);
+  }, [addMode, configs, draft, fetchPairingCommand, selectedId, selectedProblem, selectedSshId]);
 
   const select = (config: DeviceConfigEntry) => {
     setAddMode(false);
     setSelectedSshId(null);
+    setSelectedProblem(null);
     setReloadWarning(null);
     setStatus(null);
     setSelectedId(config.id);
@@ -252,6 +255,7 @@ export function DevicesConfig({
     }
     setAddMode(false);
     setSelectedId(null);
+    setSelectedProblem(null);
     setSelectedSshId(host.id);
     setDraft(null);
     setEnvInfo(null);
@@ -271,6 +275,7 @@ export function DevicesConfig({
   const startAdd = () => {
     setAddMode(true);
     setSelectedSshId(null);
+    setSelectedProblem(null);
     setSelectedId(null);
     setDraft(emptyDraft());
     setEnvInfo(null);
@@ -284,6 +289,8 @@ export function DevicesConfig({
   const sshHost = selectedSshId
     ? (data?.sshHosts ?? []).find((host) => host.id === selectedSshId)
     : undefined;
+  const sshProblem =
+    selectedProblem === null ? undefined : data?.sshProblems?.[selectedProblem];
 
   const save = async () => {
     if (!draft) return;
@@ -452,11 +459,35 @@ export function DevicesConfig({
                     </ConfigSidebarItem>
                   );
                 })}
-                {(data?.sshProblems?.length ?? 0) > 0 && (
-                  <div className="config-sidebar-message is-error">
-                    {t("devices.sshProblems", { count: String(data?.sshProblems?.length ?? 0) })}
-                  </div>
-                )}
+                {(data?.sshProblems ?? []).map((problem, index) => (
+                  // A stanza the pane cannot use is a row, not a footnote: it
+                  // is a host the reader wrote in the file and expects to see,
+                  // so it stays where it would have been and says why.
+                  <ConfigSidebarItem
+                    key={`ssh-problem-${problem.where}-${index}`}
+                    active={selectedProblem === index}
+                    data-device-ssh-problem={problem.alias ?? problem.where}
+                    title={problem.reason}
+                    onClick={() => {
+                      setAddMode(false);
+                      setSelectedId(null);
+                      setSelectedSshId(null);
+                      setDraft(null);
+                      setStatus(null);
+                      setError(null);
+                      setReloadWarning(null);
+                      setSelectedProblem(index);
+                    }}
+                  >
+                    <span aria-hidden="true" className="settings-device-problem" />
+                    <ConfigSidebarText className="is-grow">
+                      {problem.alias ?? problem.where}
+                    </ConfigSidebarText>
+                    <span className="settings-device-item-state">
+                      {t("devices.sshProblemShort")}
+                    </span>
+                  </ConfigSidebarItem>
+                ))}
                 {(configs.length > 0 || addMode) && (
                   <ConfigSidebarGroupLabel>{t("devices.groupReverse")}</ConfigSidebarGroupLabel>
                 )}
@@ -514,7 +545,23 @@ export function DevicesConfig({
 
         <ConfigDetail>
           <ConfigDetailStack className="is-fill">
-            {sshHost ? (
+            {sshProblem ? (
+              <>
+                <ConfigDetailHeader>
+                  <ConfigDetailHeaderInfo>
+                    <ConfigDetailTitle>
+                      {sshProblem.alias ?? sshProblem.where}
+                      <span className="settings-device-kind" data-device-kind="problem">
+                        {t("devices.sshProblemShort")}
+                      </span>
+                    </ConfigDetailTitle>
+                    <code className="config-detail-subtitle">{sshProblem.where}</code>
+                  </ConfigDetailHeaderInfo>
+                </ConfigDetailHeader>
+                <ConfigNotice>{sshProblem.reason}</ConfigNotice>
+                <ConfigNotice>{t("devices.sshProblemFix")}</ConfigNotice>
+              </>
+            ) : sshHost ? (
               <>
                 <ConfigDetailHeader>
                   <ConfigDetailHeaderInfo>
@@ -727,13 +774,21 @@ export function DevicesConfig({
           <ConfigFooterStatus
             summary={
               status ??
-              (sshHost
-                ? t("devices.sshReadOnlyShort")
-                : problem && draft
-                  ? t(problem)
-                  : t("devices.footerIdle"))
+              (sshProblem
+                ? t("devices.sshProblemShort")
+                : sshHost
+                  ? t("devices.sshReadOnlyShort")
+                  : problem && draft
+                    ? t(problem)
+                    : t("devices.footerIdle"))
             }
-            tone={status ? "default" : !sshHost && problem && draft ? "warning" : "default"}
+            tone={
+              status
+                ? "default"
+                : sshProblem || (!sshHost && problem && draft)
+                  ? "warning"
+                  : "default"
+            }
           />
         }
       >
