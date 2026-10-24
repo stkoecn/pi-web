@@ -546,6 +546,54 @@ export function AppShell() {
   // Settings › Devices writes devices.json, which the switcher caches for 15 s.
   // This counter lets an edit or a reload reach the switcher without waiting.
   const [devicesRefreshKey, setDevicesRefreshKey] = useState(0);
+  const [missingPiDevice, setMissingPiDevice] = useState<string | null>(null);
+  const [installingPiDevice, setInstallingPiDevice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedDeviceId || selectedDeviceId === "localhost") {
+      setMissingPiDevice(null);
+      return;
+    }
+    const devId = selectedDeviceId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/devices/env?id=${encodeURIComponent(devId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.online && data.hasPi === false) {
+          setMissingPiDevice(devId);
+        } else if (!cancelled && data.hasPi) {
+          setMissingPiDevice(null);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeviceId]);
+
+  const handleInstallPiOnDevice = useCallback(async (devId: string) => {
+    setInstallingPiDevice(devId);
+    try {
+      const res = await fetch("/api/devices/env", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: devId, action: "install_pi" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMissingPiDevice(null);
+        setModelsRefreshKey((k) => k + 1);
+      } else {
+        alert(`安装失败: ${data.stderr || data.error || "未知错误"}`);
+      }
+    } catch (err: any) {
+      alert(`安装请求失败: ${err?.message || String(err)}`);
+    } finally {
+      setInstallingPiDevice(null);
+    }
+  }, []);
   const deviceHref = useCallback(
     (params: Record<string, string | number | null | undefined> | null, pathname?: string) =>
       deviceAwareHref(params, selectedDeviceIdRef.current, pathname),
@@ -840,7 +888,10 @@ export function AppShell() {
     setNewSessionDraftId(draftId);
     activeNewSessionDraftKeyRef.current = draftKey;
     setSelectedSession(null);
-    setNewSessionCwd(cwd);
+    setNewSessionCwd((prev) => {
+      if (prev && prev !== cwd) return null;
+      return prev;
+    });
     setSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -958,6 +1009,16 @@ export function AppShell() {
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
     router.replace(deviceHref({ cwd }), { scroll: false });
+    // The fresh composer takes the caret once it renders (#1313), unless the
+    // move came from the new-session bar, whose control keeps focus instead
+    // (newSessionBarFocusRef), or a phone would raise the keyboard for it.
+    // A dialog still open over the page (Ctrl+Alt+N under Settings) keeps it.
+    if (!isMobile && !newSessionBarFocusRef.current) {
+      requestAnimationFrame(() => {
+        if (document.activeElement?.closest("[aria-modal='true']")) return;
+        chatInputRef.current?.focus();
+      });
+    }
   }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, isMobile, newSessionCwd, router, deviceHref, selectedSession]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
@@ -1225,6 +1286,8 @@ export function AppShell() {
     setActiveCwd(nextCwd);
     setSelectedSession(null);
     setNewSessionCwd(nextCwd);
+    setSessionKey((k) => k + 1);
+    setModelsRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
     clearTabOpenSession();
     // On a phone the drawer covers the chat, and picking a host is a request to
@@ -1542,6 +1605,60 @@ export function AppShell() {
       </div>
     </>
   );
+
+  const renderPiMissingWarning = (mobileBanner: boolean) => {
+    if (!missingPiDevice) return null;
+    return (
+      <button
+        type="button"
+        onClick={() => void handleInstallPiOnDevice(missingPiDevice)}
+        disabled={Boolean(installingPiDevice)}
+        title={`远程设备 [${missingPiDevice}] 尚未安装 pi 环境，点击一键安装`}
+        aria-label="一键安装远程 pi 环境"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: mobileBanner ? "flex-start" : "center",
+          gap: 6,
+          width: mobileBanner ? "100%" : undefined,
+          minHeight: mobileBanner ? 28 : undefined,
+          height: mobileBanner ? undefined : "100%",
+          padding: mobileBanner ? "4px 12px" : "0 10px",
+          background: mobileBanner ? "var(--bg-panel)" : "none",
+          border: "none",
+          borderRight: mobileBanner ? "none" : "1px solid var(--border)",
+          borderBottom: mobileBanner ? "1px solid var(--border)" : "none",
+          color: "var(--accent)",
+          cursor: installingPiDevice ? "wait" : "pointer",
+          flexShrink: 0,
+          fontSize: 11,
+          lineHeight: 1.35,
+          fontFamily: "inherit",
+          textAlign: "left",
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <span>
+          {installingPiDevice
+            ? "正在安装远程环境..."
+            : `安装 pi 环境 (${missingPiDevice})`}
+        </span>
+      </button>
+    );
+  };
 
   const renderProjectTrustWarning = (mobileBanner: boolean) => {
     if (!showChat || !projectTrust?.requiresTrust || projectTrust.trusted) return null;
@@ -1897,7 +2014,7 @@ export function AppShell() {
           }}
           data-mobile-toolbar-action={mobile ? "tools" : undefined}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: Array.isArray(systemTools) && systemTools.some((tool) => tool.active) ? "var(--accent)" : "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: systemTools?.some((tool) => tool.active) ? "var(--accent)" : "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z" />
           </svg>
           {!mobile && <span>{translate("tools.label")}</span>}
@@ -2197,21 +2314,19 @@ export function AppShell() {
       background: "var(--bg)",
     }}>
       {/* Mobile overlay backdrop */}
-      {isMobile && (
-        <div
-          className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
-          onClick={() => setSidebarOpen(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 199,
-            background: "rgba(0,0,0,0.4)",
-            opacity: sidebarOpen ? 1 : 0,
-            pointerEvents: sidebarOpen ? "auto" : "none",
-            transition: "opacity 0.25s ease",
-          }}
-        />
-      )}
+      <div
+        className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
+        onClick={() => setSidebarOpen(false)}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 199,
+          background: "rgba(0,0,0,0.4)",
+          opacity: sidebarOpen ? 1 : 0,
+          pointerEvents: sidebarOpen ? "auto" : "none",
+          transition: "opacity 0.25s ease",
+        }}
+      />
 
       {/* Left sidebar */}
       <div
@@ -2293,6 +2408,7 @@ export function AppShell() {
                 selectedDeviceId={selectedDeviceId}
                 onSelectDevice={handleSelectDevice}
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                onOpenSettings={(sec) => setSettingsSection((sec as any) || "devices")}
                 refreshKey={devicesRefreshKey}
                 compact
               />
@@ -2329,7 +2445,8 @@ export function AppShell() {
               {!isNarrowMobile && renderChatToolbarActions(true)}
               {renderSessionStatsButton(true)}
               {renderMainFileToggle(true)}
-              {isNarrowMobile && mobileToolbarMoreOpen && (                <div
+              {isNarrowMobile && mobileToolbarMoreOpen && (
+                <div
                   id="mobile-toolbar-actions"
                   role="toolbar"
                   aria-label={translate("chat.moreControls")}
@@ -2359,9 +2476,11 @@ export function AppShell() {
                 selectedDeviceId={selectedDeviceId}
                 onSelectDevice={handleSelectDevice}
                 onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                onOpenSettings={(sec) => setSettingsSection((sec as any) || "devices")}
                 refreshKey={devicesRefreshKey}
               />
               {renderProjectTrustWarning(false)}
+              {renderPiMissingWarning(false)}
               {renderChatToolbarActions(false)}
               {renderSessionStatsButton(false)}
             </>
@@ -2618,6 +2737,7 @@ export function AppShell() {
 
         </div>
         {isMobile && renderProjectTrustWarning(true)}
+        {isMobile && renderPiMissingWarning(true)}
         </div>
 
         {/* Chat content */}

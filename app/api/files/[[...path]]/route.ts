@@ -750,7 +750,8 @@ async function handleRemoteFileRequest(
               if (next.mtimeMs === lastMtime && next.size === lastSize) return;
               lastMtime = next.mtimeMs;
               lastSize = next.size;
-              send("change", { size: next.size, mtime: next.mtimeMs });
+              // The same shape the local watch sends: lib/file-version.ts reads an ISO string.
+              send("change", { size: next.size, mtime: new Date(next.mtimeMs).toISOString() });
             })
             .catch(() => { /* device hiccup: try again on the next tick */ })
             .finally(() => { polling = false; });
@@ -885,7 +886,7 @@ export async function GET(
       }
       const chunk = readTextPreviewChunk(filePath, stat.size, offset);
       const language = getLanguage(filePath);
-      return NextResponse.json({ ...chunk, language, size: stat.size });
+      return NextResponse.json({ ...chunk, language, size: stat.size, mtime: stat.mtime.toISOString() });
     }
 
     if (type === "download") {
@@ -906,6 +907,8 @@ export async function GET(
       const documentMime = getDocumentMime(filePath);
       return NextResponse.json({
         size: stat.size,
+        // The watch's `change` events carry the same pair (lib/file-version.ts).
+        mtime: stat.mtime.toISOString(),
         language: getLanguage(filePath),
         mime: imageMime || audioMime || videoMime || documentMime || "text/plain",
         previewKind: documentPreviewKind(filePath),

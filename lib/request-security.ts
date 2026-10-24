@@ -130,9 +130,8 @@ function isUserInitiatedDocumentNavigation(request: Request): boolean {
 }
 
 /**
- * Only trust local names, IP literals, or a hostname this machine answers to:
- * the ones selected by the operator, plus its own OS hostname (see
- * ownHostnames). IP literals preserve LAN access but cannot be DNS-rebound
+ * Only trust local names, IP literals, or the hostname explicitly selected by
+ * the operator. IP literals preserve LAN access but cannot be DNS-rebound
  * because the browser keeps the literal address in the Host header.
  */
 export function isApiRequestHostAllowed(

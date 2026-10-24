@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -100,6 +100,54 @@ test("a hand-edited override pi accepts does not block saving an unrelated provi
   const response = await PUT(put(edited));
   assert.equal(response.status, 200);
   assert.deepEqual(await (await GET()).json(), edited);
+});
+
+test("model-level endpoints round-trip through Save, override only that model, and can return to inheritance", async () => {
+  const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+  const config = { providers: { relay: {
+    baseUrl: "https://synthetic.invalid", api: "anthropic-messages", apiKey: "synthetic-not-a-key",
+    models: [
+      { id: "one", api: "openai-responses", baseUrl: "https://synthetic.invalid/v1", headers: { "x-example": "keep" } },
+      { id: "two" },
+    ],
+  } } };
+  const options = { authPath: join(testAgentDir, "auth.json"), modelsPath, modelsStorePath: join(testAgentDir, "models-store.json"), refreshOnCreate: false };
+  assert.equal((await PUT(put(config))).status, 200);
+  assert.deepEqual(await (await GET()).json(), config);
+  const runtime = await ModelRuntime.create(options);
+  assert.equal(runtime.getError(), undefined);
+  assert.equal(runtime.getModel("relay", "one").baseUrl, "https://synthetic.invalid/v1");
+  assert.equal(runtime.getModel("relay", "two").baseUrl, "https://synthetic.invalid");
+  assert.equal(runtime.getModel("relay", "two").api, "anthropic-messages");
+  delete config.providers.relay.models[0].baseUrl;
+  assert.equal((await PUT(put(config))).status, 200);
+  assert.deepEqual(await (await GET()).json(), config);
+  const reset = await ModelRuntime.create(options);
+  assert.equal(reset.getModel("relay", "one").baseUrl, "https://synthetic.invalid");
+  assert.equal(reset.getModel("relay", "one").api, "openai-responses");
+});
+
+test("a symlinked models.json keeps its link: Save writes through it to its target", async () => {
+  const targetPath = join(testAgentDir, "models-target.json");
+  await writeFile(targetPath, JSON.stringify({ providers: { relay: { models: [{ id: "a" }] } } }));
+  await rm(modelsPath, { force: true });
+  await symlink(targetPath, modelsPath);
+
+  const draft = { providers: { relay: { models: [{ id: "a" }, { id: "b" }] } } };
+  assert.equal((await PUT(put(draft))).status, 200);
+  assert.deepEqual(await (await GET()).json(), draft);
+  assert.equal((await lstat(modelsPath)).isSymbolicLink(), true);
+  assert.deepEqual(JSON.parse(await readFile(targetPath, "utf8")), draft);
+});
+
+test("a dangling models.json symbolic link is refused instead of replaced", async () => {
+  await rm(modelsPath, { force: true });
+  await symlink(join(testAgentDir, "models-gone.json"), modelsPath);
+
+  const response = await PUT(put({ providers: {} }));
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /dangling symbolic link/);
+  assert.equal((await lstat(modelsPath)).isSymbolicLink(), true);
 });
 
 test("model-level endpoints round-trip through Save, override only that model, and can return to inheritance", async () => {
