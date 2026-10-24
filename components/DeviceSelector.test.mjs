@@ -6,7 +6,7 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { DeviceSelector } = await jiti.import("./DeviceSelector.tsx");
+const { DeviceSelector, deviceSelectable } = await jiti.import("./DeviceSelector.tsx");
 
 const noop = () => {};
 
@@ -63,4 +63,22 @@ test("the phone top bar renders the switcher, not only the desktop bar", async (
   // Both call sites share one handler, so a phone switches host the same way.
   const handlers = source.match(/onSelectDevice=\{handleSelectDevice\}/g) ?? [];
   assert.equal(handlers.length, 2);
+});
+
+test("a disconnected host cannot be picked, so the switcher never trades a working view for the offline banner", async () => {
+  // The row used to call onSelectDevice() unconditionally, so tapping an
+  // offline host replaced a working chat with a 503. Only "offline" is barred:
+  // "connecting" is on its way back and must stay reachable.
+  assert.equal(deviceSelectable("offline"), false);
+  assert.equal(deviceSelectable("online"), true);
+  assert.equal(deviceSelectable("connecting"), true);
+
+  const source = await readFile(new URL("./DeviceSelector.tsx", import.meta.url), "utf8");
+  assert.match(source, /data-device-disabled=\{selectable \? undefined : "true"\}/);
+  assert.match(source, /aria-disabled=\{selectable \? undefined : true\}/);
+  assert.match(source, /tabIndex=\{selectable \? 0 : -1\}/);
+  // The guard sits in the handler itself, not only in the styling.
+  assert.match(source, /if \(!selectable\) return;[\s\S]{0,40}onSelectDevice\(device\.id\);/);
+  // A host with no connection has no shell to open either.
+  assert.match(source, /onOpenTerminalOnDevice && selectable &&/);
 });

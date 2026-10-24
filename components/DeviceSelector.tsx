@@ -17,10 +17,20 @@ export interface DeviceInfo {
   lastSeen?: number;
 }
 
+/**
+ * Whether the switcher may move to this host. A disconnected host has nothing
+ * to answer with, so picking it would only trade a working view for the offline
+ * banner. "connecting" is on its way back and stays selectable.
+ */
+export function deviceSelectable(status: DeviceInfo["status"]): boolean {
+  return status !== "offline";
+}
+
 interface Props {
   selectedDeviceId: string;
   onSelectDevice: (deviceId: string) => void;
   onOpenTerminalOnDevice?: (deviceId: string) => void;
+  onOpenSettings?: (section?: string) => void;
   /**
    * Icon-only form for the phone top bar, where the device name has no room:
    * the server glyph plus the status dot, one square button. The dropdown
@@ -40,6 +50,7 @@ export function DeviceSelector({
   selectedDeviceId,
   onSelectDevice,
   onOpenTerminalOnDevice,
+  onOpenSettings,
   compact = false,
   refreshKey = 0,
 }: Props) {
@@ -257,28 +268,34 @@ export function DeviceSelector({
             {devices.map((device) => {
               const isSelected = device.id === selectedDeviceId;
               const isOnline = device.status === "online";
+              const selectable = deviceSelectable(device.status);
               return (
                 <div
                   key={device.id}
                   data-device-item={device.id}
+                  data-device-disabled={selectable ? undefined : "true"}
                   role="button"
-                  tabIndex={0}
+                  tabIndex={selectable ? 0 : -1}
+                  aria-disabled={selectable ? undefined : true}
+                  title={selectable ? undefined : `${device.name || device.id} is offline`}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
                     padding: "7px 12px",
                     background: isSelected ? "var(--bg-selected, rgba(255,255,255,0.08))" : "transparent",
-                    cursor: "pointer",
+                    cursor: selectable ? "pointer" : "not-allowed",
+                    opacity: selectable ? 1 : 0.5,
                     transition: "background 0.1s",
                   }}
                   onMouseEnter={(e) => {
-                    if (!isSelected) e.currentTarget.style.background = "var(--bg-hover, rgba(255,255,255,0.04))";
+                    if (!isSelected && selectable) e.currentTarget.style.background = "var(--bg-hover, rgba(255,255,255,0.04))";
                   }}
                   onMouseLeave={(e) => {
                     if (!isSelected) e.currentTarget.style.background = "transparent";
                   }}
                   onClick={() => {
+                    if (!selectable) return;
                     onSelectDevice(device.id);
                     setOpen(false);
                   }}
@@ -308,7 +325,7 @@ export function DeviceSelector({
                     </div>
                   </div>
 
-                  {onOpenTerminalOnDevice && (
+                  {onOpenTerminalOnDevice && selectable && (
                     <button
                       type="button"
                       title={`Open shell on ${device.name || device.id}`}
@@ -338,14 +355,33 @@ export function DeviceSelector({
 
           <div
             style={{
-              padding: "6px 12px 2px 12px",
+              padding: "8px 12px",
               borderTop: "1px solid var(--border, #333)",
-              fontSize: 10,
+              fontSize: 11,
               color: "var(--text-dim, #777)",
-              lineHeight: 1.4,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
             }}
           >
-            <div>反向隧道注册: <code>ssh -NR 0:localhost:22 tunnel@server -p 22222</code></div>
+            <span>✨ 新设备免密接入</span>
+            {onOpenSettings && (
+              <span
+                role="button"
+                tabIndex={0}
+                style={{
+                  color: "var(--accent, #6366f1)",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+                onClick={() => {
+                  setOpen(false);
+                  onOpenSettings("devices");
+                }}
+              >
+                一键命令 →
+              </span>
+            )}
           </div>
         </div>
       )}
