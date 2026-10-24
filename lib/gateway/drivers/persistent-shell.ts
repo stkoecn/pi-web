@@ -257,16 +257,20 @@ export class PersistentShellPool {
     // VPS, 24 concurrent commands took 2416 ms on three channels and 956 ms on
     // eight.
     //
-    // Four, not eight: sshd's default `MaxSessions 10` is a budget for the
-    // WHOLE connection, and this pool is not the only consumer of it. One SFTP
-    // channel stays open for the connection's lifetime, and every open remote
-    // session holds an `exec` channel for its `pi --mode rpc` process. With
-    // eight shells plus one SFTP plus four open sessions we asked for thirteen
-    // and the extras were refused — `POST /api/agent/new` then failed with
-    // `(SSH) Channel open failure: open failed` about one time in three. Four
-    // shells leaves room for a handful of sessions while still beating three
-    // channels on a concurrent page load.
-    private readonly size = 4,
+    // sshd's default `MaxSessions 10` is a budget for the WHOLE connection, and
+    // this pool is not its only consumer: one SFTP channel stays open for the
+    // connection's lifetime, and every open remote session holds an `exec`
+    // channel for its `pi --mode rpc` process. So the pool must leave room.
+    //
+    // Six rather than four: measured on the same 282 ms-RTT VPS, eight
+    // concurrent commands took 1451 ms on four channels and 871 ms on six, and
+    // twelve took 1870 ms against 897 ms. Eight channels were no better than
+    // six at those widths (1134 / 620 ms) and cost two more of the ten slots,
+    // which is the trade the earlier comment was right to worry about: a
+    // refused channel is now retried rather than failing the request, but a
+    // retry is still a round trip. Six leaves four slots for SFTP plus three
+    // open sessions, and one spare.
+    private readonly size = 6,
   ) {
     // Open the first channel immediately rather than on the first command: a
     // channel open costs a full round trip (250 ms on a WAN device) and the
