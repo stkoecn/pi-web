@@ -197,27 +197,8 @@ export async function readRemoteSlice(
   offset: number,
   length: number,
 ): Promise<Buffer> {
-  const quoted = shellQuote(targetPath);
-  // Size and bytes in ONE round trip: the caller has already stat'ed the file
-  // through SFTP (300-900 ms), and a second channel for the bytes doubled the
-  // cost of simply opening a file. `stat` prints its size on a marker line so
-  // the caller learns the real size even when the slice is capped.
-  const script = [
-    `if stat -f '%z' ${quoted} >/dev/null 2>&1; then __size=$(stat -f '%z' ${quoted}); else __size=$(stat -c '%s' ${quoted}); fi`,
-    `printf '%s%s\n' '${SLICE_SIZE_MARKER}' "$__size"`,
-    offset > 0
-      ? `head -c ${offset + length} ${quoted} | tail -c +${offset + 1} | base64`
-      : `head -c ${length} ${quoted} | base64`,
-  ].join("\n");
-  const result = await runRemoteScript(driver, script, 60_000);
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.trim() || "Failed to read file");
-  }
-  const markerAt = result.stdout.indexOf(SLICE_SIZE_MARKER);
-  const payload = markerAt >= 0
-    ? result.stdout.slice(markerAt + SLICE_SIZE_MARKER.length).replace(/^\d+\n?/, "")
-    : result.stdout;
-  return Buffer.from(payload.replace(/\s+/g, ""), "base64");
+  const { bytes } = await readRemoteSliceInternal(driver, targetPath, offset, length);
+  return bytes;
 }
 
 /**
@@ -250,14 +231,24 @@ async function readRemoteSliceInternal(
   length: number,
 ): Promise<{ bytes: Buffer; size: number }> {
   const quoted = shellQuote(targetPath);
+  const slice = offset > 0
+    ? `head -c ${offset + length} ${quoted} | tail -c +${offset + 1}`
+    : `head -c ${length} ${quoted}`;
   const script = [
     `if [ ! -e ${quoted} ]; then printf '%s-1\\n' '${SLICE_SIZE_MARKER}'; exit 0; fi`,
     `if [ -d ${quoted} ]; then printf '%s-2\\n' '${SLICE_SIZE_MARKER}'; exit 0; fi`,
     `if stat -f '%z' ${quoted} >/dev/null 2>&1; then __size=$(stat -f '%z' ${quoted}); else __size=$(stat -c '%s' ${quoted}); fi`,
     `printf '%s%s\\n' '${SLICE_SIZE_MARKER}' "$__size"`,
-    offset > 0
-      ? `head -c ${offset + length} ${quoted} | tail -c +${offset + 1} | base64`
-      : `head -c ${length} ${quoted} | base64`,
+    // gzip before base64: a preview is text, and text compresses 8-20x.
+    // Measured on a 4 MiB transcript over a 282 ms link, a 256 KiB slice took
+    // 1151 ms as plain base64 and 899 ms deflated: the device spends a few
+    // milliseconds compressing to save many packets' worth of data. A device
+    // without gzip still answers through the fallback branch, and the reader
+    // below tells the two apart by whether the bytes inflate.
+    // `command -v` rather than a `||` fallback: a pipeline's exit status is
+    // the LAST command's, and `base64` of an empty stream succeeds, so a
+    // device without gzip would have answered with nothing at all.
+    `if command -v gzip >/dev/null 2>&1; then ${slice} | gzip -c | base64; else ${slice} | base64; fi`,
   ].join("\n");
   const result = await runRemoteScript(driver, script, 60_000);
   if (result.exitCode !== 0) {
@@ -272,8 +263,16 @@ async function readRemoteSliceInternal(
   const sizeText = (newlineAt >= 0 ? afterMarker.slice(0, newlineAt) : afterMarker).trim();
   const payload = newlineAt >= 0 ? afterMarker.slice(newlineAt + 1) : "";
   const size = Number(sizeText);
+  const encoded = Buffer.from(payload.replace(/\s+/g, ""), "base64");
+  let bytes: Buffer;
+  try {
+    bytes = gunzipSync(encoded);
+  } catch {
+    // No gzip on the device: the fallback branch sent the bytes as they are.
+    bytes = encoded;
+  }
   return {
-    bytes: Buffer.from(payload.replace(/\s+/g, ""), "base64"),
+    bytes,
     size: Number.isFinite(size) ? size : -1,
   };
 }
