@@ -5,6 +5,7 @@ import { DeviceRegistry } from './device-registry';
 import { SSHHostDriver } from './drivers/ssh-host-driver';
 import { OfflineHostDriver } from './drivers/offline-host-driver';
 import { buildConnectConfig } from './ssh-connect-config';
+import { openJumpSocket, type JumpSocket } from './ssh-jump';
 
 const SSHClientClass = ssh2.Client;
 
@@ -14,6 +15,14 @@ export class SSHClientPool {
   private reconnectTimers = new Map<string, NodeJS.Timeout>();
   private activeClients = new Map<string, Client>();
   private connectingClients = new Map<string, Client>();
+  /**
+   * The jump sockets a device is currently dialled through, if any.
+   *
+   * A hop is a client of its own, and the target's connection only lives while
+   * its socket does. Ending it with the target keeps a re-dial from stacking
+   * tunnels on the same jump host.
+   */
+  private jumpSockets = new Map<string, JumpSocket>();
   /**
    * Which connect attempt currently owns each device.
    *
@@ -73,6 +82,8 @@ export class SSHClientPool {
   }
 
   removeDevice(deviceId: string): void {
+    this.jumpSockets.get(deviceId)?.close();
+    this.jumpSockets.delete(deviceId);
     this.configs.delete(deviceId);
     // Bumping the generation makes every event from the closing client a no-op.
     this.generations.set(deviceId, (this.generations.get(deviceId) ?? 0) + 1);
@@ -107,11 +118,46 @@ export class SSHClientPool {
     const client = new SSHClientClass();
     this.connectingClients.set(config.id, client);
 
+    const built = buildConnectConfig(live);
     const connectConfig: ConnectConfig = {
-      ...buildConnectConfig(live).config,
+      ...built.config,
       host: live.host,
       port: live.port,
     };
+
+    // A `ProxyJump` host is not dialled: its socket comes from the hop. The
+    // target client cannot tell the difference — it reads SSH bytes off the
+    // forwarded channel exactly as it would off a TCP connection.
+    if (live.jump && live.jump.length > 0) {
+      try {
+        const jump = await openJumpSocket(live.jump, { host: live.host, port: live.port }, {
+          onWarning: (message) => console.warn(`[Gateway] ${message}`),
+        });
+        if (superseded()) {
+          jump.close();
+          return;
+        }
+        this.jumpSockets.get(live.id)?.close();
+        this.jumpSockets.set(live.id, jump);
+        connectConfig.sock = jump.sock as unknown as ConnectConfig['sock'];
+      } catch (error) {
+        if (superseded()) return;
+        this.connectingClients.delete(config.id);
+        const existing = this.registry.get(config.id);
+        if (existing && existing.info.mode === 'active_ssh') {
+          this.registry.register(
+            {
+              ...existing.info,
+              status: 'offline',
+              lastSeen: Date.now(),
+            },
+            new OfflineHostDriver(config.id, message(error)),
+          );
+        }
+        this.scheduleReconnect(config, retryCount);
+        return;
+      }
+    }
 
     client.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
       if (live.password) {
@@ -161,6 +207,8 @@ export class SSHClientPool {
     });
 
     client.on('error', (err) => {
+      this.jumpSockets.get(config.id)?.close();
+      this.jumpSockets.delete(config.id);
       if (superseded()) return;
       this.connectingClients.delete(config.id);
       const existing = this.registry.get(config.id);
@@ -178,6 +226,10 @@ export class SSHClientPool {
     });
 
     client.on('close', () => {
+      // The hop belongs to this connection: ending it with the target keeps a
+      // reconnect from leaving the old tunnel open on the jump host.
+      this.jumpSockets.get(config.id)?.close();
+      this.jumpSockets.delete(config.id);
       if (superseded()) return;
       this.connectingClients.delete(config.id);
       this.activeClients.delete(config.id);
@@ -317,5 +369,12 @@ export class SSHClientPool {
       try { client.destroy(); } catch {}
     }
     this.activeClients.clear();
+
+    for (const jump of this.jumpSockets.values()) jump.close();
+    this.jumpSockets.clear();
   }
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

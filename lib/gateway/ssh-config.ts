@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ActiveDeviceConfig } from "./types/device";
+import type { ActiveDeviceConfig, JumpHost } from "./types/device";
 
 /**
  * The hosts `~/.ssh/config` already knows about.
@@ -23,6 +23,8 @@ export interface SshConfigHost {
   username: string;
   /** Absolute path to the key, when the block named one that exists. */
   privateKeyPath?: string;
+  /** Hops to dial through before the target, resolved from `ProxyJump`. */
+  jump?: JumpHost[];
   /** Set when the block uses a keyword the gateway cannot honour. */
   unsupported?: string;
 }
@@ -154,6 +156,63 @@ function message(error: unknown): string {
 }
 
 /**
+ * Turn a `ProxyJump` value into the hops the gateway will dial.
+ *
+ * The value is a comma-separated list of either bare aliases (`wscomp`) or
+ * `user@host:port` triples. An alias is resolved against the config, so a hop
+ * keeps its own key and port. Anything unresolvable yields an empty list, and
+ * the caller reports the host as unsupported rather than dialling straight at
+ * a target that is unreachable by design. `undefined` means "could not resolve";
+ * an empty list is `ProxyJump none`, which is a decision to dial directly.
+ */
+function resolveJumpChain(
+  value: string,
+  byAlias: Map<string, JumpHost>,
+  defaults: Map<string, string>,
+  home: string,
+  osUser: string,
+  exists: (filePath: string) => boolean,
+  sourcePath: string,
+  line: number,
+  problems: string[],
+): JumpHost[] | undefined {
+  const hops: JumpHost[] = [];
+  for (const entry of value.split(",").map((part) => part.trim()).filter(Boolean)) {
+    const known = byAlias.get(entry);
+    if (known) {
+      hops.push(known);
+      continue;
+    }
+    // `user@host:port` — the form ssh allows without a config block.
+    // Numbered groups, not named ones: the project targets a pre-ES2018 lib.
+    const match = /^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/.exec(entry);
+    const host = match?.[2];
+    if (!match || !host) {
+      problems.push(`${sourcePath}:${line}: ProxyJump ${entry} is neither a host alias nor user@host:port`);
+      return undefined;
+    }
+    const port = match[3] === undefined ? 22 : Number(match[3]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      problems.push(`${sourcePath}:${line}: ProxyJump ${entry} has a port that is not a port`);
+      return undefined;
+    }
+    const hop: JumpHost = {
+      alias: entry,
+      host,
+      port,
+      username: match[1] ?? defaults.get("user") ?? osUser,
+    };
+    const keyPath = defaults.get("identityfile");
+    if (keyPath) {
+      const resolvedKey = expandTokens(keyPath, entry, host, hop.username, home);
+      if (exists(resolvedKey)) hop.privateKeyPath = resolvedKey;
+    }
+    hops.push(hop);
+  }
+  return hops;
+}
+
+/**
  * Every host a user could `ssh` to, in the order the file defines them.
  *
  * Wildcard blocks still contribute their keywords to the concrete blocks that
@@ -194,6 +253,32 @@ export function parseSshConfig(text: string, options: {
     }
   }
 
+  /**
+   * Every alias' own connection fields, resolved before any host is emitted.
+   *
+   * `ProxyJump wscomp` names an alias whose block may sit anywhere in the file,
+   * so the hops are looked up here rather than as the loop reaches them.
+   */
+  const byAlias = new Map<string, JumpHost>();
+  for (const block of ordered) {
+    for (const alias of block.patterns) {
+      if (isPattern(alias) || byAlias.has(alias)) continue;
+      const lookup = (keyword: string) => block.options.get(keyword) ?? defaults.get(keyword);
+      const hostName = expandTokens(lookup("hostname") ?? alias, alias, alias, lookup("user") ?? osUser, home);
+      const username = lookup("user") ?? osUser;
+      const portText = lookup("port");
+      const port = portText === undefined ? 22 : Number(portText);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+      const hop: JumpHost = { alias, host: hostName, port, username };
+      const keyPath = lookup("identityfile");
+      if (keyPath) {
+        const resolvedKey = expandTokens(keyPath, alias, hostName, username, home);
+        if (exists(resolvedKey)) hop.privateKeyPath = resolvedKey;
+      }
+      byAlias.set(alias, hop);
+    }
+  }
+
   const hosts: SshConfigHost[] = [];
   const seen = new Set<string>();
   for (const block of ordered) {
@@ -216,12 +301,23 @@ export function parseSshConfig(text: string, options: {
         if (exists(resolved)) host.privateKeyPath = resolved;
         else problems.push(`${sourcePath}:${block.line}: ${alias} names a key that does not exist: ${resolved}`);
       }
-      // ssh2 has no ProxyJump: the connection would go straight at the target,
-      // which is unreachable by design. Listing the host and saying why is
-      // better than a connect that fails as a timeout.
+      // `ProxyJump` is a chain of logins the gateway opens itself (see
+      // `lib/gateway/ssh-jump.ts`), so the hops have to be resolved here: each
+      // one is an alias that may carry its own user, port and key.
       const jump = lookup("proxyjump");
-      if (jump) host.unsupported = `ProxyJump ${jump}`;
-      else if (lookup("proxycommand")) host.unsupported = "ProxyCommand";
+      if (jump) {
+        if (jump.trim().toLowerCase() === "none") {
+          // `ProxyJump none` cancels a default set by a `Host *` block.
+        } else {
+          const resolved = resolveJumpChain(jump, byAlias, defaults, home, osUser, exists, sourcePath, block.line, problems);
+          if (resolved === undefined) host.unsupported = `ProxyJump ${jump}`;
+          else if (resolved.length > 0) host.jump = resolved;
+        }
+      } else if (lookup("proxycommand")) {
+        // A shell command is not something the gateway can run without handing
+        // it a shell; that stays unsupported and says so.
+        host.unsupported = "ProxyCommand";
+      }
       // `User git` is how every hosting service is written, and there is no
       // shell on the other end: a device row for github.com can only ever
       // fail. Skipping it is a rule about the *account*, not the address, so a
@@ -282,5 +378,6 @@ export function sshHostToDevice(host: SshConfigHost): ActiveDeviceConfig {
     mode: "active_ssh",
   };
   if (host.privateKeyPath) config.privateKeyPath = host.privateKeyPath;
+  if (host.jump && host.jump.length > 0) config.jump = host.jump;
   return config;
 }

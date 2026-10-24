@@ -51,6 +51,8 @@ export interface SshDiscoveredHost {
   username: string;
   privateKeyPath?: string;
   configured: boolean;
+  /** `user@host:port` for each hop `ProxyJump` names, in order. */
+  jump?: string[];
   /**
    * Set when `ssh` would need something the gateway cannot do, such as
    * `ProxyJump`. The row still fills the form - the address is right - but

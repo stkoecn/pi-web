@@ -136,14 +136,24 @@ test("POST refuses a duplicate id with 409, and leaves the file alone", async ()
   assert.equal(syncs.length, 0);
 });
 
-test("POST rejects an id that would break URLs, and a missing host", async () => {
-  const badId = await POST(request("POST", { id: "my box", host: "h", username: "u" }));
+test("POST rejects an id that would break URLs, and a missing username", async () => {
+  const badId = await POST(request("POST", { id: "my box", username: "u" }));
   assert.equal(badId.status, 400);
   assert.match((await badId.json()).error, /may use only letters/);
 
-  const noHost = await POST(request("POST", { id: "box", username: "u" }));
-  assert.equal(noHost.status, 400);
-  assert.match((await noHost.json()).error, /host/);
+  // No host is not a problem any more: a reverse tunnel dials *in*, so the
+  // gateway never needs an address. The login is still required, because the
+  // tunnel's ssh user is the device id it registers under.
+  const noUser = await POST(request("POST", { id: "box" }));
+  assert.equal(noUser.status, 400);
+  assert.match((await noUser.json()).error, /username/);
+  assert.deepEqual(saved().map((c) => c.id), ["wsmac", "vps"]);
+});
+
+test("POST refuses a dialled host: that lives in ~/.ssh/config", async () => {
+  const res = await POST(request("POST", { id: "box", host: "h", username: "u", mode: "active_ssh" }));
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Only reverse tunnels are saved here/);
   assert.deepEqual(saved().map((c) => c.id), ["wsmac", "vps"]);
 });
 

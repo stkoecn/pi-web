@@ -60,8 +60,11 @@ export async function GET() {
           username: config.username,
           ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
           configured: configured.has(config.id),
-          // `ssh` would tunnel through a jump host; the gateway dials straight
-          // at the target. Saying so beats a click that times out.
+          // The hops `ProxyJump` names, so the pane can say how it will be
+          // reached instead of leaving the address looking unreachable.
+          ...(host.jump && host.jump.length > 0
+            ? { jump: host.jump.map((hop) => `${hop.username}@${hop.host}:${hop.port}`) }
+            : {}),
           ...(host.unsupported ? { unsupported: host.unsupported } : {}),
         };
       }),

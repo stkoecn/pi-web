@@ -548,6 +548,11 @@ export function DevicesConfig({
                   </ConfigDetailActions>
                 </ConfigDetailHeader>
 
+                {sshHost.jump && sshHost.jump.length > 0 && (
+                  <ConfigNotice>
+                    {t("devices.sshJump", { hops: sshHost.jump.join(" → ") })}
+                  </ConfigNotice>
+                )}
                 {sshHost.unsupported && (
                   <ConfigNotice>{t("devices.sshUnsupported", { detail: sshHost.unsupported })}</ConfigNotice>
                 )}

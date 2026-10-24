@@ -90,6 +90,7 @@ export const zhCNLocale: LocalePlugin = {
     "devices.groupNew": "尚未保存",
     "devices.groupIssues": "被跳过的条目",
     "devices.sshProblems": "~/.ssh/config 里有 {count} 个主机无法使用，详见服务端日志",
+    "devices.sshJump": "经 {hops} 跳板到达，与 ssh 一致",
     "devices.sshUnsupported": "~/.ssh/config 里这个主机需要 {detail}，网关做不到。保存前请先修改。",
     "devices.sshReadOnly": "这台主机来自 ~/.ssh/config。这里只是列出并可直接连接，它不是设备：要修改请编辑 ~/.ssh/config。",
     "devices.sshReadOnlyShort": "来自 ~/.ssh/config（只读）",

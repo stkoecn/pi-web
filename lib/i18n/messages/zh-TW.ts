@@ -90,6 +90,7 @@ export const zhTWLocale: LocalePlugin = {
     "devices.groupNew": "尚未儲存",
     "devices.groupIssues": "被略過的項目",
     "devices.sshProblems": "~/.ssh/config 裡有 {count} 個主機無法使用，詳見伺服器日誌",
+    "devices.sshJump": "經 {hops} 跳板到達，與 ssh 一致",
     "devices.sshUnsupported": "~/.ssh/config 裡這個主機需要 {detail}，閘道做不到。儲存前請先修改。",
     "devices.sshReadOnly": "這台主機來自 ~/.ssh/config。這裡只是列出並可直接連線，它不是裝置：要修改請編輯 ~/.ssh/config。",
     "devices.sshReadOnlyShort": "來自 ~/.ssh/config（唯讀）",

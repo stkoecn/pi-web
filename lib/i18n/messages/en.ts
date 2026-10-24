@@ -90,6 +90,7 @@ export const enLocale: LocalePlugin = {
     "devices.groupNew": "Not saved yet",
     "devices.groupIssues": "Skipped entries",
     "devices.sshProblems": "{count} host(s) in ~/.ssh/config cannot be used; see the server log",
+    "devices.sshJump": "Reached through {hops}, as ssh would",
     "devices.sshUnsupported": "~/.ssh/config needs {detail}, which the gateway cannot do. Edit the host before saving.",
     "devices.sshReadOnly": "This host comes from ~/.ssh/config. It is listed and can be connected, but it is not a device: edit ~/.ssh/config to change it.",
     "devices.sshReadOnlyShort": "From ~/.ssh/config (read-only)",
