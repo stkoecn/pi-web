@@ -62,7 +62,6 @@ export function DevicesConfig({
   const [busy, setBusy] = useState<null | "save" | "delete" | "reload">(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busyControlId, setBusyControlId] = useState<string | null>(null);
-  const [authType, setAuthType] = useState<"key" | "password">("key");
   const [pairingCommand, setPairingCommand] = useState<string>("");
   const [pairingCopied, setPairingCopied] = useState(false);
   const [envInfo, setEnvInfo] = useState<{
@@ -216,10 +215,7 @@ export function DevicesConfig({
     setSelectedId(first.id);
     const d = draftFromConfig(first);
     setDraft(d);
-    setAuthType(first.hasPassword || (!first.privateKeyPath && !d.privateKeyPath) ? "password" : "key");
-    if (d.mode === "reverse_tunnel") {
-      void fetchPairingCommand({ id: d.id, name: d.name });
-    }
+    void fetchPairingCommand({ id: d.id, name: d.name });
   }, [addMode, configs, draft, fetchPairingCommand, selectedId, selectedSshId]);
 
   const select = (config: DeviceConfigEntry) => {
@@ -230,16 +226,13 @@ export function DevicesConfig({
     setSelectedId(config.id);
     const d = draftFromConfig(config);
     setDraft(d);
-    setAuthType(config.hasPassword || (!config.privateKeyPath && !d.privateKeyPath) ? "password" : "key");
     const live = runtime.get(config.id);
     if (live?.status === "online") {
       void checkEnv(config.id);
     } else {
       setEnvInfo(null);
     }
-    if (d.mode === "reverse_tunnel") {
-      void fetchPairingCommand({ id: d.id, name: d.name });
-    }
+    void fetchPairingCommand({ id: d.id, name: d.name });
   };
 
   /**
@@ -279,9 +272,7 @@ export function DevicesConfig({
     setAddMode(true);
     setSelectedSshId(null);
     setSelectedId(null);
-    const d = { ...emptyDraft(), mode: "reverse_tunnel" as const };
-    setDraft(d);
-    setAuthType("key");
+    setDraft(emptyDraft());
     setEnvInfo(null);
     setStatus(null);
     setError(null);
@@ -455,7 +446,7 @@ export function DevicesConfig({
                     <ConfigSidebarItem active>
                       <ConfigStatusDot active={false} />
                       <ConfigSidebarText className="is-grow">
-                        {draft?.name || draft?.host || t("devices.untitled")}
+                        {draft?.name || draft?.id || t("devices.untitled")}
                       </ConfigSidebarText>
                     </ConfigSidebarItem>
                   </>
@@ -603,10 +594,7 @@ export function DevicesConfig({
                     </ConfigDetailTitle>
                     {!addMode && (
                       <code className="config-detail-subtitle">
-                        {runtime.get(draft.id)?.remoteAddr ||
-                          (draft.mode === "reverse_tunnel"
-                            ? t("devices.mode.reverse_tunnel")
-                            : `${draft.host}:${draft.port}`)}
+                        {runtime.get(draft.id)?.remoteAddr || t("devices.mode.reverse_tunnel")}
                       </code>
                     )}
                   </ConfigDetailHeaderInfo>
@@ -683,132 +671,29 @@ export function DevicesConfig({
                 )}
 
                 <div className="settings-device-form">
-                  {field(t("devices.field.id"), "id", { placeholder: "my-vps", disabled: !addMode })}
-                  {field(t("devices.field.name"), "name", { placeholder: "My VPS", mono: false })}
+                  {field(t("devices.field.id"), "id", { placeholder: "home-nas", disabled: !addMode })}
+                  {field(t("devices.field.name"), "name", { placeholder: "Home NAS", mono: false })}
+                  {field(t("devices.field.username"), "username", { placeholder: "windsing" })}
+                  {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
 
-                  {/* A new device is always a reverse tunnel: a dialled host comes
-                      from `~/.ssh/config` instead of being typed twice. An existing
-                      device keeps both options, since switching is a real edit. */}
-                  <ConfigField label={t("devices.field.mode")}>
-                    <div className="settings-device-modes" data-device-field="mode">
-                      {(addMode ? (["reverse_tunnel"] as const) : (["active_ssh", "reverse_tunnel"] as const)).map((mode) => (
-                        <label
-                          key={mode}
-                          className="settings-device-mode"
-                          data-device-mode={mode}
-                          data-selected={draft.mode === mode}
-                        >
-                          <input
-                            type="radio"
-                            name="device-mode"
-                            checked={draft.mode === mode}
-                            onChange={() => {
-                              setDraft((current) => (current ? { ...current, mode } : current));
-                              if (mode === "reverse_tunnel") {
-                                void fetchPairingCommand({ id: draft.id, name: draft.name });
-                              }
-                            }}
-                          />
-                          <span>{t(`devices.mode.${mode}`)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </ConfigField>
-
-                  {/* Mode-specific forms */}
-                  {draft.mode === "active_ssh" ? (
-                    <>
-                      <div className="settings-device-row">
-                        {field(t("devices.field.host"), "host", { placeholder: "203.0.113.10" })}
-                        {field(t("devices.field.port"), "port", { placeholder: "22" })}
-                      </div>
-                      {field(t("devices.field.username"), "username", { placeholder: "root" })}
-
-                      {/* Authentication method switch */}
-                      <ConfigField label={t("devices.authMethod")}>
-                        <div className="settings-device-modes">
-                          <label
-                            className="settings-device-mode"
-                            data-selected={authType === "key"}
-                          >
-                            <input
-                              type="radio"
-                              name="device-auth-type"
-                              checked={authType === "key"}
-                              onChange={() => {
-                                setAuthType("key");
-                                setDraft((curr) => curr ? { ...curr, password: "" } : curr);
-                              }}
-                            />
-                            <span>{t("devices.authMethodKey")}</span>
-                          </label>
-                          <label
-                            className="settings-device-mode"
-                            data-selected={authType === "password"}
-                          >
-                            <input
-                              type="radio"
-                              name="device-auth-type"
-                              checked={authType === "password"}
-                              onChange={() => {
-                                setAuthType("password");
-                                setDraft((curr) => curr ? { ...curr, privateKeyPath: "" } : curr);
-                              }}
-                            />
-                            <span>{t("devices.authMethodPassword")}</span>
-                          </label>
-                        </div>
-                      </ConfigField>
-
-                      {authType === "key" ? (
-                        field(t("devices.field.privateKeyPath"), "privateKeyPath", { placeholder: "~/.ssh/id_ed25519" })
-                      ) : (
-                        <ConfigField label={t("devices.field.password")}>
-                          <input
-                            className="mcp-add-input settings-device-input"
-                            type="password"
-                            value={draft.password}
-                            data-device-field="password"
-                            placeholder={draft.hasPassword ? t("devices.passwordSaved") : "••••••••"}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              setDraft((current) => (current ? { ...current, password: value, privateKeyPath: "" } : current));
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") void save();
-                            }}
-                          />
-                        </ConfigField>
-                      )}
-
-                      {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
-                    </>
-                  ) : (
-                    <>
-                      {field(t("devices.field.username"), "username", { placeholder: "root" })}
-                      {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
-
-                      {/* Native ConfigNotice for Reverse Tunnel Pairing Command */}
-                      <ConfigNotice
-                        action={
-                          <ConfigButton
-                            size="small"
-                            variant="secondary"
-                            onClick={() => copyCommand(pairingCommand)}
-                            disabled={!pairingCommand}
-                          >
-                            {pairingCopied ? t("devices.copied") : t("devices.copyCommand")}
-                          </ConfigButton>
-                        }
+                  <ConfigNotice
+                    action={
+                      <ConfigButton
+                        size="small"
+                        variant="secondary"
+                        onClick={() => copyCommand(pairingCommand)}
+                        disabled={!pairingCommand}
                       >
-                        {t("devices.tunnelKeyAutoDesc")}
-                        <code className="settings-device-command">
-                          <span className="settings-device-command-label">{t("devices.tunnelCommand")}</span>
-                          {pairingCommand || `curl -fsSL ${typeof window !== "undefined" ? window.location.origin : ""}/api/devices/join | bash`}
-                        </code>
-                      </ConfigNotice>
-                    </>
-                  )}
+                        {pairingCopied ? t("devices.copied") : t("devices.copyCommand")}
+                      </ConfigButton>
+                    }
+                  >
+                    {t("devices.tunnelKeyAutoDesc")}
+                    <code className="settings-device-command">
+                      <span className="settings-device-command-label">{t("devices.tunnelCommand")}</span>
+                      {pairingCommand || `curl -fsSL ${typeof window !== "undefined" ? window.location.origin : ""}/api/devices/join | bash`}
+                    </code>
+                  </ConfigNotice>
                 </div>
 
                 <ConfigNotice>{t("devices.secretNote")}</ConfigNotice>

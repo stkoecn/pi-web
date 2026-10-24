@@ -1,18 +1,11 @@
 [
   {
-    "id": "wsmac",
-    "name": "wsmac (Mac Mini / Local)",
-    "host": "192.168.1.7",
-    "port": 22,
+    "id": "winsingair",
+    "name": "winsingair",
+    "host": "127.0.0.1",
+    "port": 0,
     "username": "windsing",
-    "privateKeyPath": "~/.ssh/wshome"
-  },
-  {
-    "id": "fuckip-us",
-    "name": "fuckip-us (US VPS)",
-    "host": "155.103.66.113",
-    "port": 35683,
-    "username": "root",
-    "privateKeyPath": "~/.ssh/wshome"
+    "privateKeyPath": "~/.pi/gateway_ed25519",
+    "mode": "reverse_tunnel"
   }
 ]

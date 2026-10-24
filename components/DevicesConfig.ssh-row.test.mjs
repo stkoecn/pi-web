@@ -35,17 +35,28 @@ test("the ssh row cannot be deleted, because nothing was written", () => {
 test("a new device can only be a reverse tunnel", () => {
   const start = source.indexOf("const startAdd =");
   const body = source.slice(start, source.indexOf("const problem =", start));
-  assert.match(body, /mode: "reverse_tunnel"/);
+  // No mode radio, no host, no port, no password: the draft is the tunnel
+  // draft, and `draftToBody` stamps `mode: "reverse_tunnel"` on every save.
+  assert.match(body, /setDraft\(emptyDraft\(\)\)/);
   assert.match(body, /setSelectedSshId\(null\)/);
+  assert.doesNotMatch(body, /mode:/);
 });
 
-test("the mode switch hides active_ssh while adding, and keeps both when editing", () => {
-  // A dialled host arrives from ~/.ssh/config, so offering to type one here
-  // would be a second, drifting way to describe the same machine.
-  assert.match(
-    source,
-    /addMode\s*\?\s*\(\["reverse_tunnel"\] as const\)\s*:\s*\(\["active_ssh", "reverse_tunnel"\] as const\)/,
+test("the form has no way to type a dialled host", () => {
+  // A host the gateway reaches arrives from ~/.ssh/config, so a second, drifting
+  // way to describe the same machine must not exist in the pane.
+  // The last such block is the editable one: the read-only ssh branch has its own.
+  const form = source.slice(
+    source.lastIndexOf('<div className="settings-device-form">'),
+    source.indexOf('{t("devices.secretNote")}'),
   );
+  assert.doesNotMatch(form, /data-device-field="host"/);
+  assert.doesNotMatch(form, /data-device-field="port"/);
+  assert.doesNotMatch(form, /data-device-field="password"/);
+  assert.doesNotMatch(form, /devices\.authMethod/);
+  assert.doesNotMatch(form, /devices\.field\.mode/);
+  // The tunnel command is the whole point of the form.
+  assert.match(form, /devices\.tunnelCommand/);
 });
 
 test("showing an ssh row is not undone by the land-on-a-device effect", () => {

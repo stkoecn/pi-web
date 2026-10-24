@@ -4,6 +4,7 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
 const {
+  PAIRING_KEY_PATH,
   draftFromConfig,
   draftProblem,
   draftToBody,
@@ -13,97 +14,81 @@ const {
 } = await jiti.import("./devices-config-helpers.ts");
 
 const saved = {
-  id: "wsmac",
-  name: "wsmac (Mac Mini)",
-  host: "192.168.1.7",
-  port: 22,
+  id: "winsingair",
+  name: "winsingair",
   username: "windsing",
-  privateKeyPath: "~/.ssh/wshome",
+  privateKeyPath: PAIRING_KEY_PATH,
   defaultCwd: "/Users/windsing/proj",
-  mode: "active_ssh",
+  mode: "reverse_tunnel",
   hasPassword: false,
 };
 
-test("a saved password is reported but never sent back", () => {
-  const draft = draftFromConfig({ ...saved, hasPassword: true });
-  assert.equal(draft.hasPassword, true);
-  assert.equal(draft.password, "");
-  // The blank field means "keep the saved one": the body must not carry an
-  // empty password, which `PUT` would read as clearing it.
-  assert.equal("password" in draftToBody(draft), false);
-});
-
-test("a typed password is sent", () => {
-  const body = draftToBody({ ...draftFromConfig(saved), password: "hunter2" });
-  assert.equal(body.password, "hunter2");
-});
-
-test("the port travels as the text in the field, and blank visible fields are sent", () => {
-  const body = draftToBody({ ...draftFromConfig(saved), port: " 2222 ", privateKeyPath: "" });
-  assert.equal(body.port, "2222");
-  assert.equal(body.host, "192.168.1.7");
-  // Clearing the key path is visible in the form, so it must reach the server.
-  assert.equal(body.privateKeyPath, "");
-});
-
-test("an empty draft fills the default port and passes only once the rest is filled", () => {
-  const draft = emptyDraft();
-  assert.equal(draft.port, "22");
-  assert.equal(draft.mode, "active_ssh");
-  assert.equal(draftProblem(draft), "devices.problem.id");
-  assert.equal(draftProblem({ ...draft, id: "vps" }), "devices.problem.host");
-  assert.equal(draftProblem({ ...draft, id: "vps", host: "h" }), "devices.problem.username");
-  assert.equal(
-    draftProblem({ ...draft, id: "vps", host: "h", username: "root", port: "0" }),
-    "devices.problem.port",
-  );
-  assert.equal(
-    draftProblem({ ...draft, id: "vps", host: "h", username: "root", port: "65536" }),
-    "devices.problem.port",
-  );
-  assert.equal(
-    draftProblem({ ...draft, id: "vps", host: "h", username: "root", port: "22" }),
-    null,
-  );
-});
-
-test("a dialled-in device is valid with no address at all", () => {
-  // Nothing is known about a reverse-tunnel host until it connects, so a form
-  // that insisted on host/port could never be completed for one.
-  const draft = { ...emptyDraft(), mode: "reverse_tunnel", id: "home", username: "windsing" };
-  assert.equal(draftProblem(draft), null);
+test("a tunnel draft has no address, port or password to carry", () => {
+  const draft = draftFromConfig(saved);
+  // The gateway cannot dial this host, so there is no address to ask for, and
+  // the device already holds the key the gateway pairs with: nothing secret is
+  // typed here at all.
+  assert.equal("host" in draft, false);
+  assert.equal("port" in draft, false);
+  assert.equal("password" in draft, false);
   const body = draftToBody(draft);
-  assert.equal(body.mode, "reverse_tunnel");
-  // Whatever address the file happens to hold is not checked for this mode:
-  // the gateway cannot dial it, so a stale value must not block a save.
-  assert.equal(draftProblem({ ...draft, host: "h", port: "0" }), null);
+  assert.equal("host" in body, false);
+  assert.equal("port" in body, false);
+  assert.equal("password" in body, false);
 });
 
-test("the mode travels with every save so switching direction is a real edit", () => {
-  assert.equal(draftToBody(draftFromConfig(saved)).mode, "active_ssh");
-  const reverse = draftFromConfig({ ...saved, mode: "reverse_tunnel" });
-  assert.equal(reverse.mode, "reverse_tunnel");
-  assert.equal(draftToBody(reverse).mode, "reverse_tunnel");
+test("every save is a reverse tunnel, because that is the only entry this pane writes", () => {
+  assert.equal(draftToBody(emptyDraft()).mode, "reverse_tunnel");
+  assert.equal(draftToBody(draftFromConfig(saved)).mode, "reverse_tunnel");
+  // A saved entry that predates this rule still saves back as a tunnel rather
+  // than silently keeping a direction the form no longer offers.
+  const legacy = draftFromConfig({ ...saved, mode: "active_ssh" });
+  assert.equal(draftToBody(legacy).mode, "reverse_tunnel");
+});
+
+test("a new draft starts on the gateway's own pairing key", () => {
+  const draft = emptyDraft();
+  // The device authorises this key when it runs the join command, so the form
+  // opens with it filled in rather than asking for a path the user has to find.
+  assert.equal(draft.privateKeyPath, PAIRING_KEY_PATH);
+  assert.equal(draftFromConfig({ ...saved, privateKeyPath: undefined }).privateKeyPath, PAIRING_KEY_PATH);
+  assert.equal(draftFromConfig({ ...saved, privateKeyPath: "~/.ssh/other" }).privateKeyPath, "~/.ssh/other");
+});
+
+test("an empty draft passes only once an id and a username are filled", () => {
+  const draft = emptyDraft();
+  assert.equal(draftProblem(draft), "devices.problem.id");
+  assert.equal(draftProblem({ ...draft, id: "home-nas" }), "devices.problem.username");
+  assert.equal(draftProblem({ ...draft, id: "home-nas", username: "windsing" }), null);
+  // A default folder is optional: a device that dials in need not say where to
+  // start, and demanding one would block the common case.
+  assert.equal(draftProblem({ ...draft, id: "home-nas", username: "windsing", defaultCwd: "" }), null);
+});
+
+test("clearing the key path is visible in the form, so it reaches the server", () => {
+  const body = draftToBody({ ...draftFromConfig(saved), privateKeyPath: "" });
+  assert.equal(body.privateKeyPath, "");
+  assert.equal(body.defaultCwd, "/Users/windsing/proj");
 });
 
 test("an id must be usable in a URL and as a map key", () => {
   assert.equal(
-    draftProblem({ ...emptyDraft(), id: "my vps", host: "h", username: "u" }),
+    draftProblem({ ...emptyDraft(), id: "my nas", username: "u" }),
     "devices.problem.idFormat",
   );
   assert.equal(
-    draftProblem({ ...emptyDraft(), id: "-vps", host: "h", username: "u" }),
+    draftProblem({ ...emptyDraft(), id: "-nas", username: "u" }),
     "devices.problem.idFormat",
   );
   assert.equal(
-    draftProblem({ ...emptyDraft(), id: "us-east.1_a-b", host: "h", username: "u" }),
+    draftProblem({ ...emptyDraft(), id: "us-east.1_a-b", username: "u" }),
     null,
   );
 });
 
 test("an existing id is recognised so the form edits instead of adding a duplicate", () => {
-  assert.equal(isSavedId([saved], " wsmac "), true);
-  assert.equal(isSavedId([saved], "wsmac2"), false);
+  assert.equal(isSavedId([saved], " winsingair "), true);
+  assert.equal(isSavedId([saved], "winsingair2"), false);
 });
 
 test("a reload summary distinguishes a real change from a no-op", () => {

@@ -82,40 +82,33 @@ export interface DeviceReloadResponse {
   error?: string;
 }
 
-/** Every field the editor holds, as text: an input's value, never a parsed number. */
+/**
+ * A device the gateway cannot dial: one that dials in.
+ *
+ * There is no address, port or password here because there is nothing to dial
+ * and nobody types a secret the device already holds. A host the gateway
+ * reaches is read from `~/.ssh/config` instead, where ssh keeps its own
+ * credentials — so this form is only ever about the one direction ssh cannot
+ * describe.
+ */
 export interface DeviceDraft {
   id: string;
   name: string;
-  /**
-   * Which half of the gateway owns this device. A dialled device has an address
-   * to reach; a dialled-in one does not, and asking for a host it cannot have
-   * is the difference between "wrong password" and an unfillable form.
-   */
-  mode: "active_ssh" | "reverse_tunnel";
-  host: string;
-  port: string;
   username: string;
   privateKeyPath: string;
-  password: string;
   defaultCwd: string;
-  /** Whether the saved device already has a password this form never received. */
-  hasPassword: boolean;
 }
 
-const DEFAULT_PORT = "22";
+/** The gateway's own pairing key: the device authorises it, so nothing is typed. */
+export const PAIRING_KEY_PATH = "~/.pi/gateway_ed25519";
 
 export function emptyDraft(): DeviceDraft {
   return {
     id: "",
     name: "",
-    mode: "active_ssh",
-    host: "",
-    port: DEFAULT_PORT,
     username: "",
-    privateKeyPath: "",
-    password: "",
+    privateKeyPath: PAIRING_KEY_PATH,
     defaultCwd: "",
-    hasPassword: false,
   };
 }
 
@@ -123,35 +116,24 @@ export function draftFromConfig(config: DeviceConfigEntry): DeviceDraft {
   return {
     id: config.id,
     name: config.name ?? "",
-    mode: config.mode === "reverse_tunnel" ? "reverse_tunnel" : "active_ssh",
-    host: config.host,
-    port: String(config.port ?? DEFAULT_PORT),
     username: config.username,
-    privateKeyPath: config.privateKeyPath ?? "",
-    // Never echoed: the server does not send it, and a blank field means "keep
-    // the saved one", which is exactly what leaving it out does.
-    password: "",
+    privateKeyPath: config.privateKeyPath ?? PAIRING_KEY_PATH,
     defaultCwd: config.defaultCwd ?? "",
-    hasPassword: Boolean(config.hasPassword),
   };
 }
 
-/** Fields a save sends. Blank password means "leave the saved one alone". */
+/** Fields a save sends. `mode` is not a choice: this pane only writes tunnels. */
 export function draftToBody(draft: DeviceDraft): Record<string, unknown> {
-  const body: Record<string, unknown> = {
+  return {
     id: draft.id.trim(),
     name: draft.name.trim(),
-    mode: draft.mode,
-    host: draft.host.trim(),
-    port: draft.port.trim(),
+    mode: "reverse_tunnel",
     username: draft.username.trim(),
     // Sent even when blank: the path is visible in the form, so clearing it is
-    // what the user asked for. The password is not, so it is treated differently.
+    // what the user asked for.
     privateKeyPath: draft.privateKeyPath.trim(),
     defaultCwd: draft.defaultCwd.trim(),
   };
-  if (draft.password !== "") body.password = draft.password;
-  return body;
 }
 
 /**
@@ -162,16 +144,7 @@ export function draftToBody(draft: DeviceDraft): Record<string, unknown> {
 export function draftProblem(draft: DeviceDraft): string | null {
   if (!draft.id.trim()) return "devices.problem.id";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(draft.id.trim())) return "devices.problem.idFormat";
-  // A dialled-in device has no address of its own until it connects: the gateway
-  // learns the address when the tunnel arrives, so demanding a host and port
-  // here would ask for values the user cannot know.
-  const dialled = draft.mode !== "reverse_tunnel";
-  if (dialled && !draft.host.trim()) return "devices.problem.host";
   if (!draft.username.trim()) return "devices.problem.username";
-  if (dialled) {
-    const port = Number(draft.port.trim());
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return "devices.problem.port";
-  }
   return null;
 }
 
