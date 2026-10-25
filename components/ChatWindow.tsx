@@ -1,7 +1,7 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import Image from "next/image";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
@@ -30,7 +30,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { AppUpdateResponse } from "@/lib/api-types";
-import { appUpdateAvailable, appUpdateSnapshot, checkAppUpdate } from "@/lib/app-update-client";
+import { appUpdateAvailable, appUpdateSnapshot, checkAppUpdate, subscribeAppUpdate } from "@/lib/app-update-client";
 import type { ToolEntry } from "@/lib/tool-presets";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { getTranscriptNotices, summarizeCacheMisses, type CacheMissSummary } from "@/lib/transcript-notices";
@@ -98,42 +98,49 @@ interface Props {
 const CHAT_MINIMAP_WIDTH = 36;
 const CHAT_COLUMN_PADDING = 16;
 
-/** The running `pi` CLI's version, from the same answer the update link uses. */
-function NewSessionPiVersion() {
-  const [version, setVersion] = useState<string | null>(() => appUpdateSnapshot()?.piVersion ?? null);
-
+/**
+ * The `pi` version of the device this view is talking to.
+ *
+ * Read through `useSyncExternalStore`, not a `useState` initialiser: the module
+ * may already hold an answer when this first renders on the client, and seeding
+ * state from it painted a line the server's HTML does not have (React then
+ * refuses to patch the tree up). The server snapshot is `null`, so both sides
+ * agree on the first paint and the line fills in one commit later.
+ */
+function NewSessionPiVersion({ deviceId }: { deviceId: string }) {
+  const answer = useSyncExternalStore(
+    subscribeAppUpdate,
+    () => appUpdateSnapshot(deviceId),
+    () => null,
+  );
   useEffect(() => {
-    if (version) return;
-    let cancelled = false;
-    void checkAppUpdate().then((result) => {
-      if (!cancelled && result?.piVersion) setVersion(result.piVersion);
-    });
-    return () => { cancelled = true; };
-  }, [version]);
+    if (!answer) void checkAppUpdate(deviceId);
+  }, [answer, deviceId]);
 
-  // No CLI on this host, or it would not answer: say nothing rather than a
+  const version = answer?.piVersion;
+  // No CLI on that host, or it would not answer: say nothing rather than a
   // number that no process is running.
   if (!version) return null;
   return <span className="new-session-meta-pi">pi v{version}</span>;
 }
 
 function NewSessionUpdateLink({
+  deviceId,
   label,
 }: {
+  deviceId: string;
   label: (version: string) => string;
 }) {
-  const [update, setUpdate] = useState<AppUpdateResponse | null>(() => appUpdateAvailable(appUpdateSnapshot()));
-
+  const answer = useSyncExternalStore(
+    subscribeAppUpdate,
+    () => appUpdateSnapshot(deviceId),
+    () => null,
+  );
   useEffect(() => {
-    if (appUpdateAvailable(appUpdateSnapshot())) return;
-    let cancelled = false;
-    void checkAppUpdate().then((result) => {
-      const available = appUpdateAvailable(result);
-      if (!cancelled && available) setUpdate(available);
-    });
-    return () => { cancelled = true; };
-  }, []);
+    if (!answer) void checkAppUpdate(deviceId);
+  }, [answer, deviceId]);
 
+  const update = appUpdateAvailable(answer);
   if (!update) return null;
   const accessibleLabel = label(update.latestVersion);
 
@@ -1506,9 +1513,9 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                   <span className="new-session-brand-name">Pi Web</span>
                   <span className="new-session-meta">
                     <span>web v{process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}</span>
-                    <NewSessionUpdateLink label={(version) => t("appUpdate.releaseNotes", { version })} />
+                    <NewSessionUpdateLink deviceId={deviceId} label={(version) => t("appUpdate.releaseNotes", { version })} />
                     <span aria-hidden="true">·</span>
-                    <NewSessionPiVersion />
+                    <NewSessionPiVersion deviceId={deviceId} />
                   </span>
                 </div>
               </div>

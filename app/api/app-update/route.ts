@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { devicePiVersion } from "@/lib/device-pi-version";
 import type { AppUpdateResponse } from "@/lib/api-types";
 import { getPiWebReleaseUrl, isNewerStableVersion } from "@/lib/app-update";
 import { piCliVersion } from "@/lib/pi-cli-version";
@@ -26,14 +28,12 @@ function getCache(): AppUpdateCache {
 }
 
 /**
- * The registry's latest release, plus the `pi` CLI this gateway runs.
+ * The registry's latest release.
  *
- * `piVersion` is asked of the binary rather than taken from the build: the
- * bundled SDK copy is pinned by package.json and can differ from the CLI that
- * answers prompts, which is the number the versions line is about.
+ * Deliberately carries no `piVersion`: this answer is cached for half a day,
+ * while the version belongs to one device and can change under it.
  */
 async function fetchLatestVersion(): Promise<AppUpdateResponse> {
-  const piVersion = await piCliVersion();
   const response = await fetch(NPM_LATEST_URL, {
     cache: "no-store",
     headers: { Accept: "application/json" },
@@ -51,7 +51,6 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
     latestVersion,
     updateAvailable: isNewerStableVersion(latestVersion, CURRENT_VERSION),
     releaseUrl,
-    ...(piVersion ? { piVersion } : {}),
   };
 }
 
@@ -76,9 +75,34 @@ async function loadUpdateStatus(): Promise<AppUpdateResponse> {
   }
 }
 
-export async function GET() {
+/**
+ * The `pi` version to show for this request's device.
+ *
+ * A device answers for itself: the CLI is upgraded on each machine on its own
+ * schedule, so the gateway's number is not the number answering a prompt there.
+ * The gateway's own probe is the fallback when the device cannot be asked.
+ */
+async function versionFor(deviceId: string): Promise<string | undefined> {
+  if (!isRemoteDevice(deviceId)) return piCliVersion();
+  try {
+    const { getGateway } = await import("@/lib/gateway/singleton");
+    const driver = getGateway().getOnlineDriver(deviceId);
+    if (!driver) return undefined;
+    return await devicePiVersion(deviceId, {
+      exec: (command, { timeoutMs }) => driver.exec(command, [], { timeoutMs }),
+    });
+  } catch {
+    // A device that is not connected answers nothing. The release check above
+    // is about Pi Web, not about that host, so it still gets through: the
+    // versions line simply has no pi number to show.
+    return undefined;
+  }
+}
+
+export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
   if (SKIP_VERSION_CHECK) {
-    const piVersion = await piCliVersion();
+    const piVersion = await versionFor(deviceId);
     return NextResponse.json({
       currentVersion: CURRENT_VERSION,
       latestVersion: CURRENT_VERSION,
@@ -88,7 +112,10 @@ export async function GET() {
     } satisfies AppUpdateResponse);
   }
   try {
-    return NextResponse.json(await loadUpdateStatus());
+    const [status, piVersion] = await Promise.all([loadUpdateStatus(), versionFor(deviceId)]);
+    // `undefined` rather than absent: a device whose CLI cannot be read must not
+    // inherit the cached answer of a device that could.
+    return NextResponse.json({ ...status, piVersion });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
