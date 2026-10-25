@@ -9,8 +9,14 @@ export const dynamic = "force-dynamic";
  * `PATH="$PATH:~/..."` added a literal `~/...` entry and never found anything.
  * The node directory comes first because that is where the installer below puts
  * it — no root, no apt.
+ *
+ * `~/.local/share/pi-node/current/bin` is where pi's own installer puts a
+ * private Node next to the `pi` shim. That shim's shebang is `#!/usr/bin/env
+ * node`, so without its directory first a host whose system node is older than
+ * pi needs (18 on Debian 12) runs the shim with that node and dies on the first
+ * modern syntax — reporting "no pi" for a pi that is installed.
  */
-const PATH_PROBE = `export PATH="$HOME/.local/node/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH:/usr/local/bin:/usr/bin:/usr/local/node/bin"
+const PATH_PROBE = `export PATH="$HOME/.local/share/pi-node/current/bin:$HOME/.local/node/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH:/usr/local/bin:/usr/bin:/usr/local/node/bin"
 if [ -d "$HOME/.nvm/versions/node" ]; then
   LATEST_NVM="$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | tail -n 1)"
   [ -n "$LATEST_NVM" ] && export PATH="$HOME/.nvm/versions/node/$LATEST_NVM/bin:$PATH"

@@ -47,7 +47,7 @@ export interface ShellExecOptions {
  * double quotes, so `PATH="...:~/bin"` silently adds a literal `~/bin`.
  */
 export const REMOTE_PATH_PREFIX =
-  'PATH="$HOME/.local/bin:$HOME/.local/node/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"';
+  'PATH="$HOME/.local/share/pi-node/current/bin:$HOME/.local/bin:$HOME/.local/node/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"';
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 /** A command that runs this long leaves the channel in an unknown state. */
