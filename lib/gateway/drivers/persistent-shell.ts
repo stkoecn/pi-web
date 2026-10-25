@@ -287,9 +287,42 @@ export class PersistentShellPool {
           this.releaseWaiter();
         }
       })
+      .then(() => {
+        // One channel is not enough: a page load issues six commands at once
+        // (session list, session detail, files, git status, settings, models),
+        // and the five that find no free shell each pay their own channel open.
+        // Measured on a 282 ms-RTT VPS, six concurrent commands after warming
+        // one shell took 895 ms; after warming all six they took 329 ms.
+        //
+        // Deliberately not awaited: `ready()` gates the device being usable, and
+        // the remaining opens should happen while the page is still loading, not
+        // before it can talk to us. The steady state is the same either way —
+        // the first burst of six commands grows the pool to six channels and
+        // keeps them — so this only moves the cost off the user's request.
+        void this.warmRemaining();
+      })
       .catch(() => {
         // A device that is not ready yet simply opens its shell on demand.
       });
+  }
+
+  /** Open the rest of the pool in the background, once the first one is up. */
+  private async warmRemaining(): Promise<void> {
+    while (!this.disposed && this.shells.length < this.size) {
+      let shell: PersistentShell;
+      try {
+        shell = await this.acquire();
+      } catch {
+        return;
+      }
+      void shell.warm().catch(() => {
+        // A refused channel is retried by the next command; it does not make
+        // the device unusable.
+      }).finally(() => {
+        shell.busy = false;
+        this.releaseWaiter();
+      });
+    }
   }
 
   /** Resolves once the first shell channel has been opened (or failed). */
