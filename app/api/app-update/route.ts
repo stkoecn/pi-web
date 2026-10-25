@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { AppUpdateResponse } from "@/lib/api-types";
 import { getPiWebReleaseUrl, isNewerStableVersion } from "@/lib/app-update";
+import { piCliVersion } from "@/lib/pi-cli-version";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,15 @@ function getCache(): AppUpdateCache {
   return globalThis.__piWebAppUpdateCache ??= { expiresAt: 0 };
 }
 
+/**
+ * The registry's latest release, plus the `pi` CLI this gateway runs.
+ *
+ * `piVersion` is asked of the binary rather than taken from the build: the
+ * bundled SDK copy is pinned by package.json and can differ from the CLI that
+ * answers prompts, which is the number the versions line is about.
+ */
 async function fetchLatestVersion(): Promise<AppUpdateResponse> {
+  const piVersion = await piCliVersion();
   const response = await fetch(NPM_LATEST_URL, {
     cache: "no-store",
     headers: { Accept: "application/json" },
@@ -42,6 +51,7 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
     latestVersion,
     updateAvailable: isNewerStableVersion(latestVersion, CURRENT_VERSION),
     releaseUrl,
+    ...(piVersion ? { piVersion } : {}),
   };
 }
 
@@ -68,11 +78,13 @@ async function loadUpdateStatus(): Promise<AppUpdateResponse> {
 
 export async function GET() {
   if (SKIP_VERSION_CHECK) {
+    const piVersion = await piCliVersion();
     return NextResponse.json({
       currentVersion: CURRENT_VERSION,
       latestVersion: CURRENT_VERSION,
       updateAvailable: false,
       releaseUrl: "",
+      ...(piVersion ? { piVersion } : {}),
     } satisfies AppUpdateResponse);
   }
   try {

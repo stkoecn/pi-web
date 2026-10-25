@@ -16,6 +16,7 @@ const {
   scrambleFrame,
   scrambleFrameCount,
 } = await jiti.import("./PiWebTitle.tsx");
+const { checkAppUpdate, resetAppUpdateCheck } = await jiti.import("@/lib/app-update-client");
 const { SIDEBAR_MIN_WIDTH } = await jiti.import("@/lib/panel-layout.ts");
 const { getLocalePlugin } = await jiti.import("@/lib/i18n/registry.ts");
 
@@ -66,11 +67,20 @@ test("the scramble keeps the length and the spaces and settles left to right", (
   assert.equal(scrambleFrameCount(versions), versions.length * 4);
 });
 
-test("the brand is a button named for what its click shows, with the brand's text", () => {
+test("the brand is a button named for what its click shows, with the brand's text", async () => {
+  // The pi half comes from `/api/app-update`, not the build: the pinned SDK copy
+  // is not the CLI that answers prompts, so next.config.ts no longer bakes it.
+  resetAppUpdateCheck();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ currentVersion: "0.12.2", latestVersion: "0.12.2", updateAvailable: false, releaseUrl: "", piVersion: "1.3.0" }) });
+  try {
+    await checkAppUpdate();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   const html = renderToStaticMarkup(React.createElement(I18nProvider, null, React.createElement(PiWebTitle)));
   const app = process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0";
-  const pi = process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0";
-  assert.equal(html, `<button type="button" class="sidebar-brand" aria-label="Pi Web, versions: web ${app}, pi ${pi}">Pi Web</button>`);
+  assert.equal(html, `<button type="button" class="sidebar-brand" aria-label="Pi Web, versions: web ${app}, pi 1.3.0">Pi Web</button>`);
   assert.doesNotMatch(html, /style=/, "no inline styles: its look is app/sidebar.css's");
   // In every language, with the visible name in it.
   for (const locale of ["en", "zh-CN", "zh-TW"]) {

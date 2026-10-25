@@ -30,6 +30,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { AppUpdateResponse } from "@/lib/api-types";
+import { appUpdateAvailable, appUpdateSnapshot, checkAppUpdate } from "@/lib/app-update-client";
 import type { ToolEntry } from "@/lib/tool-presets";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { getTranscriptNotices, summarizeCacheMisses, type CacheMissSummary } from "@/lib/transcript-notices";
@@ -97,31 +98,23 @@ interface Props {
 const CHAT_MINIMAP_WIDTH = 36;
 const CHAT_COLUMN_PADDING = 16;
 
-// One update check per page. Every fresh composer mounts the header again
-// (each move of the new-session bar does), and a link that turned up late
-// each time would lengthen the versions line under the reader's eyes; from
-// the second header on it is there in the first paint.
-let appUpdateCheck: Promise<AppUpdateResponse | null> | null = null;
-let appUpdateFound: AppUpdateResponse | null = null;
+/** The running `pi` CLI's version, from the same answer the update link uses. */
+function NewSessionPiVersion() {
+  const [version, setVersion] = useState<string | null>(() => appUpdateSnapshot()?.piVersion ?? null);
 
-function checkAppUpdate(): Promise<AppUpdateResponse | null> {
-  appUpdateCheck ??= fetch("/api/app-update")
-    .then(async (response) => {
-      if (!response.ok) return null;
-      const result = await response.json() as AppUpdateResponse;
-      return result.updateAvailable && result.latestVersion && result.releaseUrl ? result : null;
-    })
-    .then((result) => {
-      appUpdateFound = result;
-      return result;
-    })
-    .catch(() => {
-      // Update checks are best-effort and must not interrupt a new session;
-      // a later header asks again.
-      appUpdateCheck = null;
-      return null;
+  useEffect(() => {
+    if (version) return;
+    let cancelled = false;
+    void checkAppUpdate().then((result) => {
+      if (!cancelled && result?.piVersion) setVersion(result.piVersion);
     });
-  return appUpdateCheck;
+    return () => { cancelled = true; };
+  }, [version]);
+
+  // No CLI on this host, or it would not answer: say nothing rather than a
+  // number that no process is running.
+  if (!version) return null;
+  return <span className="new-session-meta-pi">pi v{version}</span>;
 }
 
 function NewSessionUpdateLink({
@@ -129,13 +122,14 @@ function NewSessionUpdateLink({
 }: {
   label: (version: string) => string;
 }) {
-  const [update, setUpdate] = useState<AppUpdateResponse | null>(() => appUpdateFound);
+  const [update, setUpdate] = useState<AppUpdateResponse | null>(() => appUpdateAvailable(appUpdateSnapshot()));
 
   useEffect(() => {
-    if (appUpdateFound) return;
+    if (appUpdateAvailable(appUpdateSnapshot())) return;
     let cancelled = false;
     void checkAppUpdate().then((result) => {
-      if (!cancelled && result) setUpdate(result);
+      const available = appUpdateAvailable(result);
+      if (!cancelled && available) setUpdate(available);
     });
     return () => { cancelled = true; };
   }, []);
@@ -1514,7 +1508,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                     <span>web v{process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}</span>
                     <NewSessionUpdateLink label={(version) => t("appUpdate.releaseNotes", { version })} />
                     <span aria-hidden="true">·</span>
-                    <span className="new-session-meta-pi">pi v{process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0"}</span>
+                    <NewSessionPiVersion />
                   </span>
                 </div>
               </div>

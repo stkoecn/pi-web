@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { appUpdateSnapshot, checkAppUpdate } from "@/lib/app-update-client";
 
 /**
  * The sidebar's brand with the files below the sessions (its toolbar row,
@@ -88,7 +89,19 @@ export function PiWebTitle({ onWidthChange }: {
   const [versionShown, setVersionShown] = useState(false);
   const revertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION;
-  const piVersion = process.env.NEXT_PUBLIC_PI_VERSION;
+  // The pi CLI's own version, from `/api/app-update`: the build cannot know it
+  // (next.config.ts only sees the pinned SDK copy, which can differ from the
+  // binary that answers prompts). One page-wide request, so the click usually
+  // finds it already in hand; until then the line shows the placeholder.
+  const [piVersion, setPiVersion] = useState<string | undefined>(() => appUpdateSnapshot()?.piVersion);
+  useEffect(() => {
+    if (piVersion) return;
+    let cancelled = false;
+    void checkAppUpdate().then((result) => {
+      if (!cancelled && result?.piVersion) setPiVersion(result.piVersion);
+    });
+    return () => { cancelled = true; };
+  }, [piVersion]);
   const text = useScramble(versionShown ? brandVersionText(appVersion, piVersion) : BRAND_TEXT);
 
   useLayoutEffect(() => {

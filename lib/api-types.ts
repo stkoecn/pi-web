@@ -818,6 +818,13 @@ export interface AppUpdateResponse {
   latestVersion: string;
   updateAvailable: boolean;
   releaseUrl: string;
+  /**
+   * The pi CLI this gateway runs, as `pi --version` reports it, or absent when
+   * that could not be read. Deliberately not baked in at build time: the
+   * bundled SDK's version is whatever the package.json pinned, while the CLI
+   * that actually answers a prompt is whatever is installed.
+   */
+  piVersion?: string;
 }
 
 export interface PushConfigResponse {

@@ -5,11 +5,12 @@ import { fileURLToPath } from "url";
 
 const configDir = dirname(fileURLToPath(import.meta.url));
 const { version } = JSON.parse(readFileSync(join(configDir, "package.json"), "utf8")) as { version: string };
-let piVersion = "unknown";
-try {
-  const piPkgPath = join(configDir, "node_modules/@earendil-works/pi-coding-agent/package.json");
-  piVersion = (JSON.parse(readFileSync(piPkgPath, "utf8")) as { version: string }).version;
-} catch { /* package not found, use default */ }
+// The pi CLI's version is NOT baked in here. This file can only see the SDK
+// copy inside `node_modules`, which `package.json` pins and `npm install`
+// replaces — on a machine where the CLI was upgraded separately the two differ,
+// and the versions line under "Pi Web" was reporting the SDK's number while a
+// different binary answered every prompt. `/api/app-update` asks `pi --version`
+// instead; see lib/pi-cli-version.ts.
 
 // mdast-util-gfm-autolink-literal (remark-gfm) ships a RegExp lookbehind that
 // Safari parses only from 16.4, which blanked `/` on iOS 16.2 (#753). The loader
@@ -111,7 +112,6 @@ const nextConfig: NextConfig = {
   },
   env: {
     NEXT_PUBLIC_APP_VERSION: version,
-    NEXT_PUBLIC_PI_VERSION: piVersion,
   },
 };
 
