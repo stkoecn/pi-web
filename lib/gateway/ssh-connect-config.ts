@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ConnectConfig } from 'ssh2';
+import type { AuthenticationType, ConnectConfig } from 'ssh2';
 import type { ActiveDeviceConfig } from './types/device';
 
 /**
@@ -48,6 +48,24 @@ export function buildConnectConfig(
     config.password = device.password;
     config.tryKeyboard = true;
   }
+
+  // Start authentication at the method the config actually names.
+  //
+  // ssh2's default handler always offers `none` first (client.js
+  // `makeSimpleAuthHandler(['none', ...])`), and a server that requires auth
+  // answers USERAUTH_FAILURE — a whole round trip spent learning what we
+  // already know. Measured against a 282 ms RTT VPS the auth phase was: none ->
+  // FAILURE -> publickey check -> PK_OK -> publickey -> SUCCESS, three round
+  // trips; naming the method first makes it two.
+  //
+  // `none` stays last rather than being dropped: a server that accepts any user
+  // (a tunnel endpoint, a container) only answers `none`, and trying it after a
+  // rejected key costs nothing on the devices that do have credentials.
+  const methods: AuthenticationType[] = [];
+  if (config.privateKey !== undefined) methods.push('publickey');
+  if (config.password !== undefined) methods.push('password');
+  if (config.tryKeyboard) methods.push('keyboard-interactive');
+  if (methods.length > 0) config.authHandler = [...methods, 'none'];
 
   return warning ? { config, warning } : { config };
 }
