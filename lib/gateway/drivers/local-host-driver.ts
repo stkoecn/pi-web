@@ -17,7 +17,7 @@ export class LocalHostDriver implements IHostDriver {
 
   async createTerminal(opts: TerminalOptions = {}): Promise<TerminalSession> {
     const sessionId = randomUUID();
-    const isWin = process.platform === 'win32';
+    const isWin = !require("node:fs").existsSync("/bin/sh");
     const shell = opts.initialCmd
       ? (isWin ? 'cmd.exe' : '/bin/sh')
       : (process.env.SHELL || (isWin ? process.env.ComSpec || 'cmd.exe' : '/bin/sh'));
@@ -116,15 +116,25 @@ export class LocalHostDriver implements IHostDriver {
 
   async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<ExecResult> {
     try {
-      const { stdout, stderr } = await execFileAsync(cmd, args, {
-        cwd: opts?.cwd || process.cwd(),
-        env: { ...process.env, ...opts?.env },
-        shell: process.platform === 'win32',
-      });
+      // Avoid Turbopack build-time dead-code elimination folding process.platform.
+      // Check dynamically at runtime whether /bin/sh exists.
+      const hasPosixSh = require("node:fs").existsSync("/bin/sh");
+      const execPromise = (!args || args.length === 0)
+        ? execFileAsync(hasPosixSh ? "/bin/sh" : "cmd.exe", hasPosixSh ? ["-c", cmd] : ["/c", cmd], {
+            cwd: opts?.cwd || process.cwd(),
+            env: { ...process.env, ...opts?.env },
+          })
+        : execFileAsync(cmd, args, {
+            cwd: opts?.cwd || process.cwd(),
+            env: { ...process.env, ...opts?.env },
+            shell: !hasPosixSh,
+          });
+
+      const { stdout, stderr } = await execPromise;
       return { stdout: stdout.toString(), stderr: stderr.toString(), exitCode: 0 };
     } catch (err: any) {
       return {
-        stdout: err.stdout ? err.stdout.toString() : '',
+        stdout: err.stdout ? err.stdout.toString() : "",
         stderr: err.stderr ? err.stderr.toString() : (err.message || String(err)),
         exitCode: err.code ?? 1,
       };
@@ -139,7 +149,7 @@ export class LocalHostDriver implements IHostDriver {
 
     const proc = spawn('pi', args, {
       cwd: opts.cwd || process.cwd(),
-      shell: process.platform === 'win32',
+      shell: !require("node:fs").existsSync("/bin/sh"),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
