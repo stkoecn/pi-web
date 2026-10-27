@@ -2,6 +2,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
+import { withDeviceId } from "@/lib/device-context";
 import { listSessionFamilies, type SessionFamily } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
@@ -91,6 +92,7 @@ import { SessionSearch } from "./SessionSearch";
 import { SessionTree, sessionRowTitle, type SessionTreeReveal } from "./SessionTree";
 import { SidebarMenu, type SidebarMenuAnchor, type SidebarMenuItem } from "./SidebarMenu";
 import { SidebarToast, type SidebarToastAction, type SidebarToastData } from "./SidebarToast";
+import { deviceHomeOrRoot, loadHome, rememberHome } from "@/lib/device-home-client";
 import {
   ArchiveIcon,
   ChangesIcon,
@@ -185,10 +187,13 @@ function ToolbarIconButton({
   );
 }
 
-function sessionListUrl(summary: boolean, force: boolean): string {
-  if (summary) return "/api/sessions?summary=1";
-  if (force) return "/api/sessions?force=1";
-  return "/api/sessions";
+function sessionListUrl(summary: boolean, force: boolean, deviceId?: string): string {
+  const params = new URLSearchParams();
+  if (summary) params.set("summary", "1");
+  if (force) params.set("force", "1");
+  if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
+  const q = params.toString();
+  return q ? `/api/sessions?${q}` : "/api/sessions";
 }
 
 /** How a pick in the sidebar opens a session. */
@@ -221,6 +226,7 @@ interface Props {
   ) => void;
   onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" }) => void;
   onOpenTerminal?: (cwd: string) => void;
+  deviceId?: string;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -300,7 +306,10 @@ type ArchiveDeleteScope = "all" | "old";
 
 const UNREAD_SESSIONS_STORAGE_KEY = "pi-web:unread-session-ids";
 const LAST_CUSTOM_CWD_STORAGE_KEY = "pi-web:last-custom-cwd";
-const RUNNING_SESSIONS_POLL_MS = 2500;
+const RUNNING_SESSIONS_POLL_MS = 8000;
+/** A failing /api/agent/running poll backs off by 1.5x per attempt, up to this. */
+const RUNNING_SESSIONS_POLL_MAX_MS = 30000;
+const RUNNING_SESSIONS_POLL_BACKOFF_FACTOR = 1.5;
 const SESSION_DETAILS_HYDRATION_DELAY_MS = 750;
 /** "Archive sessions older than 7 days" in a project's menu. */
 const ARCHIVE_OLDER_THAN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -500,7 +509,7 @@ function buttonAnchor(element: HTMLElement, align: "start" | "end"): SidebarMenu
   return { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, align };
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, deviceId, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
@@ -666,7 +675,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     apply: applyUiStateRequest,
     snapshot: snapshotUiState,
     noteRevision: noteUiRevision,
-  } = useSessionUiState();
+  } = useSessionUiState(deviceId);
 
   // The explorer's scroll container is always mounted (empty without a cwd),
   // so the scrollbar hook stays bound to the element that is on the page.
@@ -744,11 +753,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     forgetRetiredSidebarKeys();
   }, []);
 
+  const deviceIdRef = useRef(deviceId);
+  deviceIdRef.current = deviceId;
+
+  // A `?session=` the URL asked for owns the cwd until the restore effect has
+  // picked it. `loadSessions` runs before that effect and used to adopt the
+  // device home (or the newest project) first, which fired `onCwdChange` and
+  // made the shell `router.replace(deviceHref(null))` — wiping the very
+  // `?session=` the page had been opened with. The restore then saw a URL that
+  // no longer carried it and its own replace was skipped as redundant.
+  const pendingInitialSessionRef = useRef<string | null>(initialSessionId);
+  if (!initialSessionId) pendingInitialSessionRef.current = null;
+
   const loadSessions = useCallback(async (showLoading = false, force = false, summary = false) => {
+    const currentDeviceId = deviceIdRef.current;
     const loadId = ++sessionLoadIdRef.current;
     try {
       if (showLoading) setLoading(true);
-      const res = await fetch(sessionListUrl(summary, force), {
+      const res = await fetch(sessionListUrl(summary, force, currentDeviceId), {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -763,6 +785,27 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       sessionListVersionRef.current = data.sessionListVersion;
       setAllSessions(data.sessions);
       if (!summary) setSessionDetailsLoaded(true);
+
+      setSelectedCwd((prev) => {
+        if (pendingInitialSessionRef.current) return prev;
+        if (currentDeviceId && currentDeviceId !== "localhost") {
+          // The device home is only a default, never an override: a workspace
+          // open runs this list three times, and re-adopting the home would
+          // move the cwd out from under a `?cwd=` the URL asked for (the
+          // composer then remounts in the home and `handleCwdChange` drops the
+          // query, so a new remote session lost its directory and navigated
+          // back to the empty page instead of keeping `?session=`). Only the
+          // placeholder — unset, or `/` before the home lookup lands — moves.
+          // Not `/root`: macOS devices answer `/Users/<name>`.
+          if (prev && prev !== "/") return prev;
+          return deviceHomeOrRoot(currentDeviceId);
+        }
+        if (!prev) {
+          const recent = getRecentProjects(data.sessions);
+          return recent[0]?.root ?? null;
+        }
+        return prev;
+      });
       // Treat the fetched running set as an initial fallback only. Once the
       // lightweight poll is live, a slow session-list fetch cannot overwrite it.
       if (!runningPollAuthoritativeRef.current) {
@@ -825,6 +868,25 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       }
     };
   }, [loadSessions, refreshKey]);
+
+  const prevDeviceIdRef = useRef(deviceId);
+  useEffect(() => {
+    if (prevDeviceIdRef.current === deviceId) return;
+    prevDeviceIdRef.current = deviceId;
+    const isRemote = deviceId && deviceId !== "localhost";
+    setSelectedCwd(isRemote ? deviceHomeOrRoot(deviceId) : (selectedCwdProp ?? null));
+    // Resolve the new device's home, then move the workspace there if the
+    // placeholder `/` is still what we are showing.
+    if (isRemote) {
+      void loadHome(deviceId).then((home) => {
+        if (!home || prevDeviceIdRef.current !== deviceId) return;
+        setSelectedCwd((current) => (current === "/" || !current ? home : current));
+      });
+    }
+    setAllSessions([]);
+    void loadSessions(true, true);
+    setExplorerKey((k) => k + 1);
+  }, [deviceId, selectedCwdProp, loadSessions]);
 
   // Only the server can raise a file-manager window, and only when the browser
   // runs on that same machine. Ask it once so the button can pick the right
@@ -902,6 +964,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
+    // Backoff state: grows 1.5x on a failed poll, snaps back on a good one.
+    let nextDelay = RUNNING_SESSIONS_POLL_MS;
 
     const clearTimer = () => {
       if (timer) clearTimeout(timer);
@@ -911,7 +975,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const schedule = () => {
       clearTimer();
       if (stopped || document.visibilityState !== "visible") return;
-      timer = setTimeout(() => void poll(), RUNNING_SESSIONS_POLL_MS);
+      timer = setTimeout(() => void poll(), nextDelay);
     };
 
     const poll = async () => {
@@ -919,12 +983,21 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const current = new AbortController();
       controller?.abort();
       controller = current;
+      let failed = false;
       try {
-        const res = await fetch("/api/agent/running", {
+        const currentDeviceId = deviceIdRef.current;
+        const deviceQuery =
+          currentDeviceId && currentDeviceId !== "localhost"
+            ? `?deviceId=${encodeURIComponent(currentDeviceId)}`
+            : "";
+        const res = await fetch(`/api/agent/running${deviceQuery}`, {
           cache: "no-store",
           signal: current.signal,
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          failed = true;
+          return;
+        }
         const data = await res.json() as {
           sessionListVersion: number;
           runningSessionIds?: string[];
@@ -947,8 +1020,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }
       } catch {
         // Keep the last known state; the next visible-tab poll retries.
+        // An abort (tab hidden, or a newer poll superseding this one) is not
+        // a failure, so it must not inflate the backoff.
+        failed = !current.signal.aborted;
       } finally {
-        if (controller === current) controller = null;
+        // Only the poll that still owns the controller may change the cadence;
+        // a superseded or tab-hidden-aborted poll must not reset it.
+        const ownsController = controller === current;
+        if (ownsController) controller = null;
+        if (ownsController) {
+          nextDelay = failed
+            ? Math.min(
+                RUNNING_SESSIONS_POLL_MAX_MS,
+                Math.round(nextDelay * RUNNING_SESSIONS_POLL_BACKOFF_FACTOR),
+              )
+            : RUNNING_SESSIONS_POLL_MS;
+        }
         schedule();
       }
     };
@@ -1038,10 +1125,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, [explorerRefreshKey]);
 
   useEffect(() => {
-    fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
-      if (d.home) setHomeDir(d.home);
-    }).catch(() => {});
-  }, []);
+    void loadHome(deviceIdRef.current).then((home) => {
+      if (!home) return;
+      rememberHome(deviceIdRef.current, home);
+      setHomeDir(home);
+    });
+  }, [deviceId]);
 
   const restoredRef = useRef(false);
 
@@ -1085,7 +1174,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     if (selectedCwdProp !== lastSyncedCwdPropRef.current) {
       lastSyncedCwdPropRef.current = selectedCwdProp;
-      setSelectedCwd(selectedCwdProp);
+      const isRemote = deviceId && deviceId !== "localhost";
+      if (isRemote && (selectedCwdProp.includes("\\") || /^[a-zA-Z]:/.test(selectedCwdProp))) {
+        // A Windows path arrived from a previous device: adopt this one's home.
+        setSelectedCwd(deviceHomeOrRoot(deviceId));
+      } else {
+        setSelectedCwd(selectedCwdProp);
+      }
     }
   }, [selectedCwdProp]);
 
@@ -1099,7 +1194,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     let cancelled = false;
     setWorktreeLoadingCwd(selectedCwd);
-    fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`)
+    const devQuery = deviceId && deviceId !== "localhost" ? `&deviceId=${encodeURIComponent(deviceId)}` : "";
+    fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}${devQuery}`)
       .then((r) => r.json())
       .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; worktrees?: WorktreeEntry[]; error?: string }) => {
         if (cancelled) return;
@@ -1134,20 +1230,26 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     if (allSessions.length === 0 || skipInitialProjectSelection) return;
 
-    if (selectedCwd === null) {
-      // If restoring a session, set cwd to match that session
-      if (initialSessionId && !restoredRef.current) {
-        restoredRef.current = true;
-        const target = allSessions.find((s) => s.id === initialSessionId);
-        if (target) {
-          setSelectedCwd(target.cwd);
-          onSelectSession(target, true);
-          return;
-        }
-        // Session not found — notify parent so it can show the placeholder
-        onInitialRestoreDone?.();
-        if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+    // The URL's `?session=` is restored first, and regardless of whether a cwd
+    // has already been adopted. `loadSessions` fills the cwd from the list it
+    // just read, so waiting for `selectedCwd === null` here raced with it and
+    // lost: a reload of `?session=…` landed on the project's newest session
+    // (or the empty page) instead of the session the URL named.
+    if (initialSessionId && !restoredRef.current) {
+      restoredRef.current = true;
+      pendingInitialSessionRef.current = null;
+      const target = allSessions.find((s) => s.id === initialSessionId);
+      if (target) {
+        setSelectedCwd(target.cwd);
+        onSelectSession(target, true);
+        return;
       }
+      // Session not found — notify parent so it can show the placeholder
+      onInitialRestoreDone?.();
+      if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+    }
+
+    if (selectedCwd === null) {
       const projects = getRecentProjects(allSessions);
       if (projects.length > 0) setSelectedCwd(projects[0].root);
     }
@@ -1176,7 +1278,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const res = await fetch("/api/cwd/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: path }),
+        body: JSON.stringify({ cwd: path, deviceId: deviceIdRef.current }),
       });
       const data = await res.json().catch(() => ({})) as {
         cwd?: string;
@@ -1246,7 +1348,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const res = await fetch("/api/worktrees", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: project.root, branch }),
+        body: JSON.stringify({ cwd: project.root, branch, deviceId: deviceIdRef.current }),
       });
       const data = await res.json().catch(() => ({})) as { path?: string; error?: string };
       if (!res.ok || data.error || !data.path) return { error: data.error ?? `HTTP ${res.status}` };
@@ -1268,7 +1370,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const res = await fetch("/api/worktrees", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: project.root, path, force }),
+        body: JSON.stringify({ cwd: project.root, path, force, deviceId: deviceIdRef.current }),
       });
       const data = await res.json().catch(() => ({})) as { error?: string; dirty?: boolean };
       if (!res.ok) {
@@ -1291,6 +1393,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const handleFilesPick = useCallback(({ cwd, projectKey, projectRoot }: NewSessionTarget) => {
     if (projectKey && projectRoot) setValidatedProject({ cwd, root: projectRoot, key: projectKey });
     setSelectedCwd(cwd);
+    setExplorerKey((k) => k + 1);
   }, []);
 
   // Clicking a session moves the effective cwd to that session's worktree.
@@ -1401,13 +1504,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }
       : null);
 
+  const isRemote = Boolean(deviceId && deviceId !== "localhost");
   // The tree of every project. Its group for the current project exists even
   // without sessions (a fresh custom path, a new worktree).
   const currentProjectKey = selectedProject?.key ?? null;
   const currentProjectRoot = selectedProject?.root ?? null;
+  // A group for the current folder exists even with no sessions, so a fresh
+  // custom path or worktree has somewhere to appear. On a remote device the
+  // "current folder" is just the default home, which would otherwise pin an
+  // empty project to the top of every sidebar.
+  const currentProjectIsReal = useMemo(() => {
+    if (!isRemote || !currentProjectKey) return true;
+    return allSessions.some((session) => (session.projectKey || session.projectRoot || session.cwd) === currentProjectKey);
+  }, [allSessions, currentProjectKey, isRemote]);
   const currentProject = useMemo(
-    () => (currentProjectKey && currentProjectRoot ? { key: currentProjectKey, root: currentProjectRoot } : null),
-    [currentProjectKey, currentProjectRoot],
+    () => (currentProjectKey && currentProjectRoot && currentProjectIsReal ? { key: currentProjectKey, root: currentProjectRoot } : null),
+    [currentProjectKey, currentProjectIsReal, currentProjectRoot],
   );
   // What the tree shows and every toggle reads: the saved choices over the
   // groups kept open for the page. Writes go to the saved choices alone
@@ -1416,9 +1528,32 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     () => effectiveGroupExpansion(groupExpansion, keptOpenGroups),
     [groupExpansion, keptOpenGroups],
   );
+  const effectiveUiState = useMemo(() => {
+    if (!isRemote) return uiState;
+    // Only folders that actually hold a session become groups. The device's home
+    // used to be pushed in unconditionally (it is the default `selectedCwd`), which
+    // pinned an empty "project" to the top of the sidebar on every remote device.
+    // The catalogue already groups by `projectKey` (see buildSessionTree), so the
+    // group list has to be keyed the same way: a plain path would create a second
+    // group for the same folder and hide its sessions.
+    const remoteProjects = new Map<string, { root: string; key: string; pinnedAt: number }>();
+    for (const session of allSessions) {
+      const root = session.projectRoot || session.cwd;
+      if (!root) continue;
+      const key = session.projectKey || root;
+      if (!remoteProjects.has(key)) remoteProjects.set(key, { root, key, pinnedAt: 0 });
+    }
+    const remoteRoots = Array.from(remoteProjects.keys());
+    return {
+      ...uiState,
+      projectOrder: remoteRoots,
+      projects: Object.fromEntries(remoteProjects),
+    };
+  }, [uiState, isRemote, allSessions]);
+
   const model = useMemo(() => buildSessionTree({
     sessions: allSessions,
-    uiState,
+    uiState: effectiveUiState,
     runningIds: runningSessionIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
@@ -1427,21 +1562,21 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     groupExpansion: shownGroupExpansion,
     moreShown,
     pinnedCollapsed,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
+  }), [allSessions, effectiveUiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
   // Built while the archive view is rendered, its way out included: it
   // leaves as it was, not empty.
   const archiveMounted = archiveMotion.archiveMounted;
   const archiveCollapsedSet = useMemo(() => new Set(archiveCollapsed), [archiveCollapsed]);
   const archiveRows = useMemo(() => (archiveMounted ? buildArchiveRows({
     sessions: allSessions,
-    uiState,
+    uiState: effectiveUiState,
     runningIds: runningSessionIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
     selectedSessionId,
     currentProject,
     collapsed: archiveCollapsedSet,
-  }) : []), [archiveMounted, allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
+  }) : []), [archiveMounted, allSessions, effectiveUiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
   // The archive's projects, top to bottom, folded or not.
   const archiveGroups = useMemo(
     () => archiveRows.flatMap((row) => (row.kind === "archive-group" ? [row] : [])),
@@ -1829,7 +1964,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     // skill-invoked session stays a no-op instead of persisting raw XML.)
     if (renameValue === title || name === (session.name ?? "")) return;
     try {
-      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+      await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(session.id)}`, deviceIdRef.current), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -1864,13 +1999,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setConfirmDeleteRootId((current) => (current === session.id ? null : current));
     try {
       // The server deletes the family's subagent sessions with it.
-      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+      const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(session.id)}`, deviceIdRef.current), { method: "DELETE" });
+      if (!res.ok) {
+        // A refused delete used to vanish silently: the row stayed and the next
+        // refresh showed the session still there, with no reason given. An
+        // offline device also needs the list resynced, so the row's running
+        // badge does not outlive the connection that justified it.
+        const data = await res.json().catch(() => ({})) as { error?: string; code?: string };
+        if (data.code === "device-offline") void loadSessions();
+        showToast(t("sidebar.deleteFailed", { error: data.error ?? `HTTP ${res.status}` }));
+        return;
+      }
       onSessionDeleted?.(session.id);
       void loadSessions();
-    } catch {
-      // The row stays; the next refresh shows what happened.
+    } catch (error) {
+      showToast(t("sidebar.deleteFailed", { error: error instanceof Error ? error.message : String(error) }));
     }
-  }, [loadSessions, onSessionDeleted]);
+  }, [loadSessions, onSessionDeleted, showToast, t]);
 
   // Only Shift skips the confirmation (Shift+click, Shift+Enter or Shift+D in the menu).
   const requestDelete = useCallback((family: SessionFamily, shiftKey: boolean) => {
@@ -1934,7 +2079,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     forkingIdsRef.current.add(source.id);
     const selectedAtClick = selectedSessionIdRef.current;
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(source.id)}/fork`, {
+      const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(source.id)}/fork`, deviceIdRef.current), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
@@ -2081,7 +2226,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     deletingRunsRef.current.add(runKey);
     showToast(t("sidebar.deletingSessions"));
     try {
-      const outcome = await deleteProjectSessions(ids, fetch);
+      const outcome = await deleteProjectSessions(ids, fetch, deviceIdRef.current);
       for (const id of outcome.deleted) onSessionDeleted?.(id);
       // A group goes with its last session (in the tree, unless it is
       // current or pinned): focus that fell to the page with it moves on.
@@ -2785,6 +2930,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     >
       {customPathOpen && (
         <DirectoryPicker
+          deviceId={deviceId}
           initialPath={customPathValue}
           busy={customPathValidating}
           error={customPathError}
@@ -2922,6 +3068,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           selectedSessionId={selectedSessionId}
           onSelectSession={handleSelectSessionFromList}
           archivedSessionIds={archiveIndex.ids}
+          deviceId={deviceId}
         >
           {/* The tree and the archive view share one cell: the archive
               slides in over the tree and away from it again. */}
@@ -3127,6 +3274,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               <FileExplorer
                 ref={fileExplorerRef}
                 cwd={explorerCwd}
+                deviceId={deviceId}
                 onOpenFile={onOpenFile ?? (() => {})}
                 refreshKey={explorerKey}
                 onAtMention={onAtMention}

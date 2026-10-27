@@ -30,6 +30,17 @@ function runHandleSessionDeleted(capturedSelectedSession, active) {
     crypto: globalThis.crypto,
     window: { location: { pathname: "/", search: "" } },
     router: { replace: (url) => { state.routerReplaced = url; } },
+    // AppShell's navigation goes through `deviceHref`, which keeps the selected
+    // device in the URL. This suite only asserts the query it builds, and only
+    // extracts callbacks, so the memoized helper is stubbed directly.
+    deviceHref: (params) => {
+      const search = new URLSearchParams();
+      for (const [key, value] of Object.entries(params ?? {})) {
+        if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+      }
+      const query = search.toString();
+      return query ? `?${query}` : "/";
+    },
     capturedSelectedSession,
     selectedSession: capturedSelectedSession, // the stale closure value, if the code reads it
     selectedSessionRef: { current: active },

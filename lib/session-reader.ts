@@ -16,6 +16,7 @@ import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-res
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { checkSessionMembership, listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
+import { withDeviceId } from "./device-context";
 
 export { getAgentDir };
 
@@ -154,7 +155,15 @@ function readSessionRelationEntries(filePath: string): SessionEntry[] {
   ];
 }
 
-export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise<SessionInfo[]> {
+export async function attachSessionProjectInfo(
+  sessions: SessionInfo[],
+  /**
+   * `platform` picks the path flavour used to derive `projectKey`. A remote
+   * device's `/Users/name` must not be normalized as a Windows path: the key
+   * would come out as `\users\name` and never match the folder it came from.
+   */
+  options: { platform?: NodeJS.Platform } = {},
+): Promise<SessionInfo[]> {
   const uniqueCwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
   const projectByCwd = new Map<string, ProjectInfo>();
   await Promise.all(uniqueCwds.map(async (cwd) => {
@@ -167,7 +176,7 @@ export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise
     return {
       ...session,
       projectRoot,
-      projectKey: projectIdentityKey(projectRoot),
+      projectKey: projectIdentityKey(projectRoot, options.platform),
       ...(project?.branch ? { branch: project.branch } : {}),
       ...(project?.isWorktree ? { isWorktree: true } : {}),
     };
@@ -475,12 +484,20 @@ function getPathToIdCache(): Map<string, string> {
 // live runtime wrapper exists, so a fingerprint-validated cache turns repeat
 // opens into ~1ms map hits.
 //
-// Budget: a count cap alone is not enough. Parsed entries retain roughly the
-// file's own size in heap (measured: an 82MB session holds ~94MB), so twelve
-// large sessions would pin ~1.1GB. Entries are therefore also capped by the
-// summed on-disk size of the cached files, and a single session larger than
-// SM_CACHE_LIMITS.maxFileBytes is served fresh instead of being cached — one
-// oversize session must not evict every useful entry.
+// Budget: a count cap alone is not enough. Parsed entries retain slightly MORE
+// than the file's own size in heap — measured against three real transcripts,
+// 30.3 MiB held 39 MiB, 25.3 MiB held 32 MiB, 11.7 MiB held 13 MiB (1.1-1.3x)
+// — so twelve large sessions would pin well over a gigabyte. Entries are
+// therefore also capped by the summed on-disk size of the cached files, and a
+// single session larger than SM_CACHE_LIMITS.maxFileBytes is served fresh
+// instead of being cached — one oversize session must not evict every useful
+// entry.
+//
+// The byte budget is deliberately far below what a machine could spare. This
+// cache is a latency optimisation for a transcript that was just viewed; the
+// cost of a miss is one re-parse (204 ms for a 30 MiB file), while the cost of
+// a generous budget is a resident set that never comes back down — the heap
+// grows to hold whatever was recently opened and the process keeps it.
 //
 // Safety: cached managers are READ-ONLY views. Any write path must go through
 // a live wrapper or SessionManager.open directly — call openSessionManager
@@ -506,11 +523,18 @@ declare global {
  */
 export const SM_CACHE_LIMITS = {
   /** Most sessions held at once. */
-  maxEntries: 12,
-  /** Summed on-disk size of cached sessions. */
-  maxTotalBytes: 256 * 1024 * 1024,
+  maxEntries: 6,
+  /**
+   * Summed on-disk size of cached sessions.
+   *
+   * Four large transcripts' worth. Eight would be ~380 MiB of resident heap for
+   * files nobody is looking at any more; the sidebar shows one session at a
+   * time, so the useful working set is the open one plus whatever the previous
+   * few clicks left behind.
+   */
+  maxTotalBytes: 96 * 1024 * 1024,
   /** A session larger than this is never cached — it would evict everything else. */
-  maxFileBytes: 64 * 1024 * 1024,
+  maxFileBytes: 32 * 1024 * 1024,
 };
 
 function getSmCache(): Map<string, SmCacheEntry> {
@@ -707,6 +731,12 @@ export interface BuildSessionContextOptions {
   excludeLeaf?: boolean;
   /** Session id used to build lazy URLs for historical tool-result images. */
   sessionId?: string;
+  /**
+   * Device the transcript lives on. Deferred image URLs are fetched by the
+   * browser long after this response, so the device has to be baked into the
+   * URL here — the fetch has no other way to know it.
+   */
+  deviceId?: string;
 }
 
 export function buildSessionContext(
@@ -870,6 +900,7 @@ function deferToolResultBase64Images(
   message: AgentMessage,
   sessionId: string | undefined,
   entryId: string,
+  deviceId?: string,
 ): AgentMessage {
   if (message.role !== "toolResult") return message;
 
@@ -892,7 +923,10 @@ function deferToolResultBase64Images(
       const source: ImageContent["source"] = {
         type: "url",
         media_type: image.mime,
-        url: `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/tool-result-image?blockIndex=${blockIndex}`,
+        url: withDeviceId(
+          `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/tool-result-image?blockIndex=${blockIndex}`,
+          deviceId,
+        ),
       };
       return [{ type: "image", source } satisfies ImageContent];
     }
@@ -931,7 +965,7 @@ function entryToUiMessage(
       if (entry.message.role === "system") return null;
       const displayMessage = withoutMessageSignatures(entry.message);
       let message = options.deferToolResultImages
-        ? deferToolResultBase64Images(normalizeToolCalls(displayMessage), options.sessionId, entry.id)
+        ? deferToolResultBase64Images(normalizeToolCalls(displayMessage), options.sessionId, entry.id, options.deviceId)
         : normalizeToolCalls(displayMessage);
       const legacyContent = message.role === "assistant" ? (message as { content: unknown }).content : undefined;
       if (typeof legacyContent === "string") {

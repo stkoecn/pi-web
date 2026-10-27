@@ -1,7 +1,7 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import Image from "next/image";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
@@ -30,6 +30,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { AppUpdateResponse } from "@/lib/api-types";
+import { appUpdateAvailable, appUpdateSnapshot, checkAppUpdate, subscribeAppUpdate } from "@/lib/app-update-client";
 import type { ToolEntry } from "@/lib/tool-presets";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { getTranscriptNotices, summarizeCacheMisses, type CacheMissSummary } from "@/lib/transcript-notices";
@@ -47,6 +48,8 @@ import {
 
 interface Props {
   session: SessionInfo | null;
+  /** Gateway device this chat talks to. `localhost` (the default) is the in-process host. */
+  deviceId?: string;
   searchTarget?: { sessionId: string; entryId: string; blockIndex?: number } | null;
   onSearchTargetHandled?: (target: { sessionId: string; entryId: string }) => void;
   initialScrollPosition?: ChatScrollPosition | null;
@@ -95,49 +98,49 @@ interface Props {
 const CHAT_MINIMAP_WIDTH = 36;
 const CHAT_COLUMN_PADDING = 16;
 
-// One update check per page. Every fresh composer mounts the header again
-// (each move of the new-session bar does), and a link that turned up late
-// each time would lengthen the versions line under the reader's eyes; from
-// the second header on it is there in the first paint.
-let appUpdateCheck: Promise<AppUpdateResponse | null> | null = null;
-let appUpdateFound: AppUpdateResponse | null = null;
+/**
+ * The `pi` version of the device this view is talking to.
+ *
+ * Read through `useSyncExternalStore`, not a `useState` initialiser: the module
+ * may already hold an answer when this first renders on the client, and seeding
+ * state from it painted a line the server's HTML does not have (React then
+ * refuses to patch the tree up). The server snapshot is `null`, so both sides
+ * agree on the first paint and the line fills in one commit later.
+ */
+function NewSessionPiVersion({ deviceId }: { deviceId: string }) {
+  const answer = useSyncExternalStore(
+    subscribeAppUpdate,
+    () => appUpdateSnapshot(deviceId),
+    () => null,
+  );
+  useEffect(() => {
+    if (!answer) void checkAppUpdate(deviceId);
+  }, [answer, deviceId]);
 
-function checkAppUpdate(): Promise<AppUpdateResponse | null> {
-  appUpdateCheck ??= fetch("/api/app-update")
-    .then(async (response) => {
-      if (!response.ok) return null;
-      const result = await response.json() as AppUpdateResponse;
-      return result.updateAvailable && result.latestVersion && result.releaseUrl ? result : null;
-    })
-    .then((result) => {
-      appUpdateFound = result;
-      return result;
-    })
-    .catch(() => {
-      // Update checks are best-effort and must not interrupt a new session;
-      // a later header asks again.
-      appUpdateCheck = null;
-      return null;
-    });
-  return appUpdateCheck;
+  const version = answer?.piVersion;
+  // No CLI on that host, or it would not answer: say nothing rather than a
+  // number that no process is running.
+  if (!version) return null;
+  return <span className="new-session-meta-pi">pi v{version}</span>;
 }
 
 function NewSessionUpdateLink({
+  deviceId,
   label,
 }: {
+  deviceId: string;
   label: (version: string) => string;
 }) {
-  const [update, setUpdate] = useState<AppUpdateResponse | null>(() => appUpdateFound);
-
+  const answer = useSyncExternalStore(
+    subscribeAppUpdate,
+    () => appUpdateSnapshot(deviceId),
+    () => null,
+  );
   useEffect(() => {
-    if (appUpdateFound) return;
-    let cancelled = false;
-    void checkAppUpdate().then((result) => {
-      if (!cancelled && result) setUpdate(result);
-    });
-    return () => { cancelled = true; };
-  }, []);
+    if (!answer) void checkAppUpdate(deviceId);
+  }, [answer, deviceId]);
 
+  const update = appUpdateAvailable(answer);
   if (!update) return null;
   const accessibleLabel = label(update.latestVersion);
 
@@ -247,7 +250,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMis
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
+export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
@@ -277,7 +280,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    loading, error, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
+    loading, error, offline, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -301,7 +304,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     handleToolPresetChange, handleThinkingLevelChange, handleSetDefaultModel, handleSetDefaultThinkingLevel, loadSlashCommands, scrollUserMsgToTop,
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
   } = useAgentSession({
-    session, sessionRunning, newSessionCwd, newSessionDraftKey, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd: wrappedOnAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, deviceId, sessionRunning, newSessionCwd, newSessionDraftKey, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd: wrappedOnAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
     onOpenSettings,
     deferInitialScroll: Boolean(pendingScrollRestore),
@@ -770,7 +773,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       return;
     }
     try {
-      const { status, data } = await uploadFiles(cwd, files, "skip");
+      const { status, data } = await uploadFiles(cwd, files, "skip", undefined, deviceId);
       if (status !== 200 && status !== 207) throw new Error(data.error ?? `HTTP ${status}`);
       const uploaded = data.uploaded ?? [];
       const skipped = data.skipped ?? [];
@@ -789,7 +792,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     } catch (uploadError) {
       addNotice({ type: "error", message: t("chat.dropFailed", { message: uploadError instanceof Error ? uploadError.message : String(uploadError) }) });
     }
-  }, [addNotice, chatInputRef, newSessionCwd, onFilesUploaded, session?.cwd, t]);
+  }, [addNotice, chatInputRef, deviceId, newSessionCwd, onFilesUploaded, session?.cwd, t]);
 
   const onDrop = useCallback((items: DroppedItem[]) => {
     const { images, files, folders } = splitDroppedItems(items);
@@ -1026,6 +1029,19 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {offline && (
+        // The device dropped while this session was open. Its transcript is
+        // still in memory, so the chat below stays readable; this strip only
+        // says why nothing new arrives. It sits above the message list, so it
+        // cannot be scrolled away with the transcript.
+        <div
+          role="status"
+          className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+        >
+          <span aria-hidden="true">⚠</span>
+          <span>{t("chat.deviceOffline")}</span>
+        </div>
+      )}
       {isDragOver && (
         <div className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[rgba(37,99,235,0.06)] backdrop-blur-[1px]">
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -1497,9 +1513,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   <span className="new-session-brand-name">Pi Web</span>
                   <span className="new-session-meta">
                     <span>web v{process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}</span>
-                    <NewSessionUpdateLink label={(version) => t("appUpdate.releaseNotes", { version })} />
+                    <NewSessionUpdateLink deviceId={deviceId} label={(version) => t("appUpdate.releaseNotes", { version })} />
                     <span aria-hidden="true">·</span>
-                    <span className="new-session-meta-pi">pi v{process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0"}</span>
+                    <NewSessionPiVersion deviceId={deviceId} />
                   </span>
                 </div>
               </div>

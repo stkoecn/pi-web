@@ -833,14 +833,22 @@ function isMcpResponse(value: unknown): value is McpResponse {
 }
 
 /** The URL of the overview: the global file alone without a project. */
-export function mcpOverviewUrl(cwd: string | null): string {
-  return cwd ? `/api/mcp?cwd=${encodeURIComponent(cwd)}` : "/api/mcp";
+export function mcpOverviewUrl(cwd: string | null, deviceId?: string): string {
+  // `encodeURIComponent`, not `URLSearchParams`: a path's spaces must stay %20
+  // in the URL the panel has always requested (the route decodes either form,
+  // but the tests and any cached URL key on this exact spelling).
+  const parts: string[] = [];
+  if (cwd) parts.push(`cwd=${encodeURIComponent(cwd)}`);
+  // A remote device's servers are its own; without this the panel describes
+  // this host's mcp.json.
+  if (deviceId && deviceId !== "localhost") parts.push(`deviceId=${encodeURIComponent(deviceId)}`);
+  return parts.length > 0 ? `/api/mcp?${parts.join("&")}` : "/api/mcp";
 }
 
-async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, signal?: AbortSignal): Promise<McpLoadResult> {
+async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, signal?: AbortSignal, deviceId?: string): Promise<McpLoadResult> {
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await fetchImpl(mcpOverviewUrl(cwd), { cache: "no-store", signal });
+    response = await fetchImpl(mcpOverviewUrl(cwd, deviceId), { cache: "no-store", signal });
   } catch (error) {
     return { ok: false, error: { error: error instanceof Error ? error.message : String(error) } };
   }
@@ -856,10 +864,10 @@ async function requestMcpOverview(cwd: string | null, fetchImpl: FetchLike, sign
 
 const CWD_REFUSALS = new Set<McpRefusalReason>(["cwd-invalid", "cwd-denied", "cwd-not-directory"]);
 
-async function loadWithin(cwd: string | null, fetchImpl: FetchLike, signal: AbortSignal): Promise<McpLoadResult> {
-  const first = await requestMcpOverview(cwd, fetchImpl, signal);
+async function loadWithin(cwd: string | null, fetchImpl: FetchLike, signal: AbortSignal, deviceId?: string): Promise<McpLoadResult> {
+  const first = await requestMcpOverview(cwd, fetchImpl, signal, deviceId);
   if (first.ok || !cwd || !first.error.reason || !CWD_REFUSALS.has(first.error.reason)) return first;
-  const global = await requestMcpOverview(null, fetchImpl, signal);
+  const global = await requestMcpOverview(null, fetchImpl, signal, deviceId);
   return global.ok ? { ...global, projectError: first.error } : global;
 }
 
@@ -876,9 +884,10 @@ export async function loadMcpOverview(
   fetchImpl: FetchLike = (input, init) => fetch(input, init),
   signal?: AbortSignal,
   timeoutMs: number = MCP_OVERVIEW_TIMEOUT_MS,
+  deviceId?: string,
 ): Promise<McpLoadResult> {
   return withinDeadline<McpLoadResult>(
-    (deadlineSignal) => loadWithin(cwd, fetchImpl, deadlineSignal),
+    (deadlineSignal) => loadWithin(cwd, fetchImpl, deadlineSignal, deviceId),
     () => ({ ok: false, error: { error: `GET /api/mcp did not answer within ${timeoutMs} ms`, timedOut: true } }),
     timeoutMs,
     signal,
@@ -1194,10 +1203,15 @@ export type McpActionResult = { ok: true; data: McpActionResponse } | { ok: fals
 /** How long a change may take; the panel's controls wait meanwhile, as the Code mode switch does. */
 export const MCP_ACTION_TIMEOUT_MS = 15_000;
 
-async function requestMcpAction(body: Record<string, unknown>, fetchImpl: FetchLike, signal: AbortSignal): Promise<McpActionResult> {
+/** The URL of a change: the same query the overview uses, so it lands on the same device. */
+function mcpActionUrl(deviceId?: string): string {
+  return deviceId && deviceId !== "localhost" ? `/api/mcp?deviceId=${encodeURIComponent(deviceId)}` : "/api/mcp";
+}
+
+async function requestMcpAction(body: Record<string, unknown>, fetchImpl: FetchLike, signal: AbortSignal, deviceId?: string): Promise<McpActionResult> {
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await fetchImpl("/api/mcp", {
+    response = await fetchImpl(mcpActionUrl(deviceId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1230,10 +1244,11 @@ export async function postMcpAction(
   fetchImpl: FetchLike = (input, init) => fetch(input, init),
   signal?: AbortSignal,
   timeoutMs: number = MCP_ACTION_TIMEOUT_MS,
+  deviceId?: string,
 ): Promise<McpActionResult> {
   const body: Record<string, unknown> = { ...request, ...(cwd ? { cwd } : {}) };
   return withinDeadline<McpActionResult>(
-    (deadlineSignal) => requestMcpAction(body, fetchImpl, deadlineSignal),
+    (deadlineSignal) => requestMcpAction(body, fetchImpl, deadlineSignal, deviceId),
     () => ({ ok: false, error: { error: `POST /api/mcp did not answer within ${timeoutMs} ms`, timedOut: true } }),
     timeoutMs,
     signal,

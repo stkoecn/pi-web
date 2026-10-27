@@ -102,15 +102,21 @@ export function setTabOpenNewSession(
   }
 }
 
-/** Forget this tab's session when it matches `sessionId`. */
+/**
+ * Forget this tab's session when it matches `sessionId`, or unconditionally
+ * when no id is given (e.g. switching to another device invalidates whatever
+ * the tab was showing).
+ */
 export function clearTabOpenSession(
-  sessionId: string,
+  sessionId?: string,
   storage: StorageLike | null = getBrowserStorage(),
 ): void {
-  if (!storage || !sessionId) return;
+  if (!storage) return;
   try {
-    const current = parseTabOpen(storage.getItem(STORAGE_KEY));
-    if (current?.kind !== "session" || current.sessionId !== sessionId) return;
+    if (sessionId) {
+      const current = parseTabOpen(storage.getItem(STORAGE_KEY));
+      if (current?.kind !== "session" || current.sessionId !== sessionId) return;
+    }
     storage.removeItem(STORAGE_KEY);
   } catch {
     // storage unavailable — memory is best-effort

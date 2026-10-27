@@ -1,207 +1,176 @@
-# Pi Web
+# Pi Web Gateway & Standalone Client
 
-[中文文档](./docs/README.zh-CN.md) | [日本語](./docs/README.ja.md) | [Русский](./docs/README.ru.md)
+轻量、高性能、解耦的 **Pi Web 设备连接网关与独立前端**。
 
-Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi). Pi Web uses the same local configuration and session files as pi, so you can browse and resume conversations, run agent turns, configure models and resources, and inspect project files from a browser.
+网关作为中心节点，内部维护统一的设备路由表，同时支持：
+1. **被动反向隧道 (Passive Reverse SSH Tunnel)**：无公网 IP 的边缘设备或内网服务器通过 `ssh -NR 0:localhost:22` 注册至网关；
+2. **主动 SSH (Active SSH Client Pool)**：网关主动连接具有公网 IP 的远程服务器，维护多路复用长连接；
+3. **本地开发模式 (Local Host Driver)**：无缝直连本地开发机环境。
 
-**[Try the interactive demo →](https://agegr.github.io/pi-web/)** The real Pi Web UI runs entirely in your browser, with sample sessions, files and models. There is nothing to install; replies are pre-written and no model is called.
+网关剥离了重型 `@earendil-works/pi-coding-agent` 和 `node-pty` 原生依赖，所有计算与 Agent 运行均在目标机器就地完成（通过 SSH 管道或 `pi --mode rpc` 通信），前端可独立部署于任何 CDN 或静态服务器。
 
-![Pi Web displaying a pi session with structured Markdown, tool calls, and project navigation](https://raw.githubusercontent.com/agegr/pi-web/main/docs/screenshot2.png)
+---
 
-## Features
+## 总体架构设计
 
-- **Session workspace**: browse, resume, rename, export, and delete conversations grouped by project, with running state, context usage, cost, and compaction details.
-- **Two ways to branch**: **New session** creates an independent session file from an earlier message; **Edit from here** creates a branch inside the current session.
-- **Project file tools**: browse and upload files, inspect Git diffs, and preview source, Markdown, images, audio, PDFs, and DOCX files with automatic refresh.
-- **Git worktrees**: switch checkouts from the sidebar while keeping sessions from the same repository grouped together.
-- **Web-based configuration**: manage provider login and API keys, models, model tests, plugin packages, and skills without leaving Pi Web.
-- **English, Simplified Chinese, and Traditional Chinese UI**: Pi Web follows the browser language initially and provides a language switcher in the top bar.
+```
+┌─────────────────┐           ┌──────────────────────────────────────────────────┐           ┌─────────────────┐
+│   Web 浏览器     │   HTTP    │                   pi-web 网关                    │   SSH     │   边缘设备 A    │
+│  (前端独立部署)  │◄─────────►│  ┌───────────────┐      ┌─────────────────────┐  │ 反向隧道  │   (无公网 IP)   │
+│                 │   /WS     │  │ Web / API 服务│      │     统一设备路由表    │  │◄──────────│  ssh -NR 0:...  │
+│  xterm.js       │           │  │ (HTTP / WS)   │      │   (DeviceRegistry)  │  │ (Port:    │                 │
+│  Agent 控制台   │           │  └───────┬───────┘      └──────────┬──────────┘  │  22222)   └─────────────────┘
+│  SFTP 文件管理  │           │          │                         │             │
+│  Git 状态查看   │           │          ▼                         ▼             │           ┌─────────────────┐
+└─────────────────┘           │     IHostDriver 抽象        底层 SSH 连接管理     │  主动 SSH │   云服务器 B    │
+                              │  (Terminal/SFTP/Git/RPC) ├─ SSHServer (Reverse)  │──────────►│   (有公网 IP)   │
+                              │                          └─ SSHClientPool(Active)│           │   sshd :22      │
+                              └──────────────────────────────────────────────────┘           └─────────────────┘
+```
 
-## Quick Start
+---
 
-Pi Web requires Node.js 22.19.0 or newer. Check your version with `node --version`, then run:
+## 核心特性
+
+- **纯 JS / TS 跨平台驱动**：基于 `ssh2` 实现完整的 SSH Client & SSH Server，无需编译 C++ 原生模块，全平台即开即用（支持 Bun 1.3+ 及 Node.js 22+）。
+- **统一 IHostDriver 抽象**：
+  - **终端 (Terminal)**：SSH PTY 会话双向管道与尺寸自动伸缩（FitAddon）。
+  - **远程文件 (SFTP)**：远程目录遍历、文件在线读取与写入。
+  - **版本控制 (Git)**：远程 `git status`、`git diff` 一键查询。
+  - **Pi Agent 会话 (RPC)**：通过 SSH 管道对接远端 `pi --mode rpc`，全双工流式传输工具调用和响应。
+- **动态端口分配与保活**：反向隧道使用 `-R 0` 动态分配内部转发端口，配合 SSH KeepAlive 与断线自动重连。
+- **完全解耦与独立部署**：前端与网关支持跨域独立部署（支持标准 CORS 与 WebSocket 跨源）。
+
+---
+
+## 目录结构
+
+```
+D:/proj/pi-web/
+├── src/
+│   ├── types/
+│   │   ├── device.ts             # 设备状态、连接模式与配置接口
+│   │   └── host-driver.ts        # IHostDriver、TerminalSession、RPCChannel 抽象
+│   ├── gateway/
+│   │   ├── device-registry.ts    # 统一设备路由表与事件中心
+│   │   ├── ssh-server.ts         # 被动反向隧道 Hub (ssh2.Server)
+│   │   ├── ssh-client-pool.ts    # 主动 SSH 连接池与多路复用管理器
+│   │   └── drivers/
+│   │       ├── ssh-host-driver.ts   # 基于 SSH2/SFTP/PTY 的远程驱动实现
+│   │       └── local-host-driver.ts # 本地系统直连驱动（开发与基准对比）
+│   ├── server/
+│   │   ├── http-api.ts           # REST API 与前端静态资源分发
+│   │   ├── ws-terminal.ts        # WebSocket <-> 终端 PTY 桥接
+│   │   ├── ws-agent-rpc.ts       # WebSocket <-> pi --mode rpc 桥接
+│   │   └── app.ts                # 整合启动服务
+│   ├── client/
+│   │   ├── index.html            # 独立前端单页 (SPA)
+│   │   ├── app.js                # 前端主逻辑 (xterm.js + Agent 流式输出 + SFTP)
+│   │   └── style.css             # UI 样式
+│   └── index.ts                  # 网关主入口
+├── test/
+│   └── e2e-verification.ts       # 全链路自动化端到端测试套件
+├── package.json
+└── tsconfig.json
+```
+
+---
+
+## 快速上手
+
+### 1. 运行网关服务
+
+默认端口：
+- **Web 控制台 / API**：`http://localhost:9564`
+- **SSH 反向隧道接入端口**：`0.0.0.0:22222`
+
+使用 Bun：
+```bash
+bun start
+# 或者开发热重载
+bun dev
+```
+
+使用 Node.js：
+```bash
+npm run start:node
+```
+
+### 2. 预设设备配置文件 (`devices.json`)
+
+系统启动时会自动读取根目录的 `devices.json` 并发起连接与注册，支持私钥路径（自动展开 `~`）与自动断线指数退避重连：
+```json
+[
+  {
+    "id": "wsmac",
+    "name": "wsmac (Mac Mini / Local)",
+    "host": "192.168.1.114",
+    "port": 22,
+    "username": "windsing",
+    "privateKeyPath": "~/.ssh/wshome"
+  },
+  {
+    "id": "fuckip-us",
+    "name": "fuckip-us (US VPS)",
+    "host": "155.103.66.113",
+    "port": 35683,
+    "username": "root",
+    "privateKeyPath": "~/.ssh/wshome"
+  }
+]
+```
+
+### 3. 连接设备
+
+#### 模式 A：被动反向隧道（无公网 IP 设备）
+
+在内网设备或边缘开发板上执行：
+```bash
+ssh -NR 0:localhost:22 node-device-01@<gateway-ip> -p 22222
+```
+网关将自动分配本地转发端口并将 `node-device-01` 注册进统一路由表。
+
+#### 模式 B：主动 SSH 连接（公网 IP 设备）
+
+在 Web 界面点击 **“+ 添加主动 SSH 设备”**，或通过 HTTP API 调用：
+```bash
+curl -X POST http://localhost:9564/api/devices/connect \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "vps-01",
+    "name": "云服务器测试机",
+    "host": "1.2.3.4",
+    "port": 22,
+    "username": "root",
+    "password": "your-password"
+  }'
+```
+
+---
+
+## 自动化端到端验证
+
+运行完整的 6 项全链路端到端自动化测试：
 
 ```bash
-npx @agegr/pi-web@latest
+bun test
+# 或
+npm run test:node
 ```
 
-The CLI opens a browser after the server is ready. If it does not, open [http://127.0.0.1:30141](http://127.0.0.1:30141). Pi Web listens only on `127.0.0.1` by default.
+测试覆盖内容：
+1. ✅ **Device Registry & REST API**：设备注册中心与 `/api/devices` 查询。
+2. ✅ **Localhost File & Exec Drivers**：文件写入、读取及命令执行一致性。
+3. ✅ **Passive Reverse SSH Tunnel**：模拟 `ssh -NR` 请求建立、动态端口分配与路由表注册。
+4. ✅ **Active SSH Target Connection Pool**：模拟远端 VPS 目标主机握手并执行远程命令 (`uname -a`)。
+5. ✅ **WebSocket Terminal PTY**：双向交互式终端输入与回显验证。
 
-If no model provider is configured yet, open the **Models** panel to sign in or add an API key.
+---
 
-To install the `pi-web` command globally:
+## 开发与上游维护规范
 
-```bash
-npm install -g @agegr/pi-web@latest
-pi-web
-```
+为了保证本项目的独立网关架构与官方原版 `@agegr/pi-web` 的可维护性与低冲突升级，请严格遵循以下工程规范：
 
-Commands:
+- 📖 **[REMOTE-DEVICE-CONTRACT.md](./REMOTE-DEVICE-CONTRACT.md)**：跨设备 API 与前端 Context 交互规范（必读）。
+- 🛠️ **[UPSTREAM-SYNC-GUIDE.md](./UPSTREAM-SYNC-GUIDE.md)**：上游同步升级工作流、Facade Guard 编码规范与测试验收指南。
 
-```bash
-pi-web version          # print the installed version
-pi-web status           # list running servers
-pi-web stop [--port N]  # stop a running server
-pi-web open [--port N]  # open a running server in the browser
-pi-web update [--check] # update a global npm install
-```
-
-To update, run `pi-web stop`, then `pi-web update` (or run the same install command again). To uninstall, run `npm uninstall -g @agegr/pi-web`.
-
-## Configuration
-
-For port and hostname, command-line options override the corresponding environment variables. Either `--no-open` or `PI_WEB_NO_OPEN=1` disables automatic browser opening. Run `pi-web --help` (or `-h`) to print startup options and exit without starting the server. Unknown options exit with an error.
-
-| Option or environment variable | Purpose | Default |
-| --- | --- | --- |
-| `--help`, `-h` | Print startup options and exit | — |
-| `--port <port>`, `-p <port>`, or `PORT` | Server port | `30141` |
-| `--hostname <host>`, `-H <host>`, or `PI_WEB_HOSTNAME` | Bind hostname | `127.0.0.1` |
-| `--no-open` or `PI_WEB_NO_OPEN=1` | Do not open a browser automatically | Browser opens |
-| `PI_WEB_APP_NAME` | PWA manifest `name` and `short_name`; surrounding whitespace is trimmed, empty values use the default | `Pi Web` |
-| `PI_WEB_SKIP_VERSION_CHECK=1` | Disable Pi Web update checks | Unset |
-| `PI_WEB_ALLOWED_HOSTS` | Additional exact proxy or custom hostnames, comma-separated | Unset |
-| `PI_WEB_PASSWORD` | Enable browser password login; API clients may use Basic Auth with username `pi` | Authentication disabled |
-| `PI_WEB_IDLE_TIMEOUT_MS` | Session idle timeout in milliseconds, up to `2147483647`; `0` disables idle shutdown; invalid or out-of-range values use the default | `600000` (10 min) |
-| `PI_WEB_SHUTDOWN_DEADLINE_MS` | How long extensions get to handle `session_shutdown` before a closing session is disposed anyway, in milliseconds up to `2147483647`; `0`, invalid or out-of-range values use the default | `5000` (5 s) |
-
-Set `PI_WEB_APP_NAME` before starting the server (for example, `PI_WEB_APP_NAME='Work Pi' pi-web`). After changing it, restart the server to serve the new manifest; no rebuild is required. Updates to the name of an already installed PWA are managed by the browser and are not guaranteed to appear immediately. This does not change the page title or icons.
-
-For example:
-
-```bash
-pi-web --help
-pi-web -p 8080 -H 0.0.0.0 --no-open
-```
-
-### Remote Access
-
-Binding to a non-loopback address exposes an agent that can execute high-privilege actions. On a trusted LAN, require a long random password:
-
-```bash
-PI_WEB_PASSWORD='a-long-random-password' pi-web --hostname 0.0.0.0
-```
-
-Password authentication does not encrypt the connection. Do not expose Pi Web over plain HTTP to the internet; use HTTPS through a trusted reverse proxy or a trusted VPN. If a reverse proxy sends an external hostname, add that exact name to `PI_WEB_ALLOWED_HOSTS`. This allow-list does not change the address Pi Web binds to.
-
-### HTTP Proxy
-
-Server-side model and API requests honor the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables.
-
-On macOS or Linux:
-
-```bash
-HTTP_PROXY=http://127.0.0.1:7890 \
-HTTPS_PROXY=http://127.0.0.1:7890 \
-NO_PROXY=localhost,127.0.0.1 \
-npx @agegr/pi-web@latest
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:HTTP_PROXY = "http://127.0.0.1:7890"
-$env:HTTPS_PROXY = "http://127.0.0.1:7890"
-$env:NO_PROXY = "localhost,127.0.0.1"
-npx @agegr/pi-web@latest
-```
-
-## Notes
-
-- **Agent data**: Pi Web reads pi data from `~/.pi/agent` by default, including session files under `sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`. Set `PI_CODING_AGENT_DIR` to use another pi agent directory.
-- **Filesystem access**: Pi Web must be able to read the agent data directory and the working directories recorded by its sessions. Run Pi Web in the same filesystem environment as pi when sharing existing sessions.
-- **Shared configuration**: the Models panel uses pi's model, settings, and credential storage, so changes are visible to both interfaces. An open session applies a saved edit of its model when you select the model again.
-- **File access boundary**: the file browser is limited to working directories selected in Pi Web and project or session roots it already knows about; it is not a general filesystem browser.
-- **Git worktrees**: see [Worktrees in Pi Web](./docs/worktrees.md) for switcher visibility, worktree creation, and removal behavior.
-
-### Downstream Session Context Menu
-
-Electron wrappers and other downstream integrations can provide a session-row
-context menu without patching `SessionSidebar`. Listen for the cancelable
-`pi-web:session-row-contextmenu` browser event and call `preventDefault()`
-synchronously when the integration will handle it:
-
-```js
-window.addEventListener("pi-web:session-row-contextmenu", (event) => {
-  event.preventDefault();
-  const { id, path, cwd, name, clientX, clientY, refresh } = event.detail;
-
-  void openSessionMenu({ id, path, cwd, name, clientX, clientY }).then((changed) => {
-    if (changed) refresh();
-  });
-});
-```
-
-The detail object contains `id`, `path`, `cwd`, optional `name`, pointer
-coordinates, and a `refresh()` callback for actions that change the session
-list. If no listener cancels the extension event, Pi Web opens its built-in
-session menu (pin, rename, fork, mark read or unread, archive, open in new
-tab, delete) at the pointer instead of the browser's native context menu.
-The row's `⋯` button always opens the built-in menu and does not dispatch the
-event. Sessions not yet saved to disk get no built-in menu, so the native one
-still appears for them. This hook is browser-side and independent of Pi agent
-extensions.
-
-### Extension Session Liveness
-
-Server-side Pi extensions with detached work can prevent automatic idle
-session eviction through the versioned global registry:
-
-```js
-const liveness = globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")];
-const release = liveness?.version === 1
-  ? liveness.register({
-      name: "my-extension",
-      sessionId,
-      sessionFile: sessionFile || undefined,
-      isActive: () => detachedJobs.size > 0,
-    })
-  : () => {};
-```
-
-Register once per active extension session and call the returned idempotent
-`release` function on session shutdown, replacement, or reload. `isActive`
-must be synchronous, cheap, and scoped to the supplied exact session id or
-file. Provider errors fail safe by preserving that session. This lease only
-affects automatic idle eviction; explicit shutdown and Stop fallback cleanup
-still take precedence.
-
-## Development
-
-```bash
-npm install
-npm run dev
-```
-
-The development server runs at [http://127.0.0.1:30141](http://127.0.0.1:30141). Run the common checks with:
-
-```bash
-npm test
-node_modules/.bin/tsc --noEmit
-npm run lint
-```
-
-Do not run `next build` or `npm run build` during normal development. It writes to `.next/` and can interfere with the development server; leave builds for release work.
-
-Before starting on a feature, read [Contributing](./CONTRIBUTING.md) for what is in scope and the pull request checklist.
-
-Contributor guides: [Internationalization](./docs/i18n.md) and [Release process](./docs/release.md).
-
-## Repository Layout
-
-```text
-app/             Next.js UI and API routes
-components/      React UI components
-hooks/           Client state and interaction hooks
-lib/             Session, agent, model, file, Git, and security logic
-public/          Static assets and PWA files
-bin/             npm CLI entrypoint and launch option parsing
-docs/            Focused user and contributor guides
-demo/            Static browser demo published to GitHub Pages (see demo/README.md)
-```
-
-See [AGENTS.md](./AGENTS.md) for the architecture notes and detailed file map.
-
-## License
-
-[MIT](./LICENSE)

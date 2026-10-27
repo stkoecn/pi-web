@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useClientDeviceId } from "@/components/DeviceIdContext";
+import { appUpdateSnapshot, checkAppUpdate, subscribeAppUpdate } from "@/lib/app-update-client";
 
 /**
  * The sidebar's brand with the files below the sessions (its toolbar row,
@@ -88,7 +90,22 @@ export function PiWebTitle({ onWidthChange }: {
   const [versionShown, setVersionShown] = useState(false);
   const revertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION;
-  const piVersion = process.env.NEXT_PUBLIC_PI_VERSION;
+  // The pi CLI's own version, from `/api/app-update`: the build cannot know it
+  // (next.config.ts only sees the pinned SDK copy, which can differ from the
+  // binary that answers prompts). Asked once per device, so the click usually
+  // finds it already in hand. Read through `useSyncExternalStore` rather than
+  // seeded state: this module can already hold an answer at the client's first
+  // render, and painting it then would differ from the server's HTML.
+  const deviceId = useClientDeviceId();
+  const piAnswer = useSyncExternalStore(
+    subscribeAppUpdate,
+    () => appUpdateSnapshot(deviceId),
+    () => null,
+  );
+  useEffect(() => {
+    if (!piAnswer) void checkAppUpdate(deviceId);
+  }, [piAnswer, deviceId]);
+  const piVersion = piAnswer?.piVersion;
   const text = useScramble(versionShown ? brandVersionText(appVersion, piVersion) : BRAND_TEXT);
 
   useLayoutEffect(() => {

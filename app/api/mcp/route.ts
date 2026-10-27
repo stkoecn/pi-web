@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { getAgentDir, type McpExposure } from "@earendil-works/pi-coding-agent";
 import type {
   McpActionItemResult,
@@ -110,6 +111,20 @@ async function validateProject(value: unknown): Promise<Project | Refusal> {
 
 // GET /api/mcp?cwd=<absolute project folder>
 export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // The servers a remote device runs are the device's own: read them from
+    // there instead of describing this machine's mcp.json.
+    const value = new URL(req.url).searchParams.get("cwd");
+    try {
+      const { readRemoteMcpOverview } = await import("@/lib/remote-settings");
+      const cwd = value || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
+      return NextResponse.json(await readRemoteMcpOverview(deviceId, cwd));
+    } catch (error) {
+      return refusal(500, "internal", errorMessage(error));
+    }
+  }
+
   const value = new URL(req.url).searchParams.get("cwd");
   let project: Project | undefined;
   if (value !== null) {
@@ -590,6 +605,8 @@ async function addServer(
 // `cwd` is the panel's project: required for a project server, and the
 // overview in the answer covers it.
 export async function POST(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) return postRemote(req, deviceId);
   if (!isApiRequestAllowed(req)) return refusal(403, "request-denied", "Untrusted API request");
   if (!hasJsonContentType(req)) return refusal(415, "content-type", "Content-Type must be application/json");
   let body: unknown;
@@ -657,6 +674,122 @@ export async function POST(req: Request) {
       default:
         return refusal(400, "invalid-request", "action must be add, enable, disable, remove, set-enabled, set-exposure, set-in-project, undo or sign-out");
     }
+  } catch (error) {
+    return refusal(500, "internal", errorMessage(error));
+  }
+}
+
+/**
+ * `POST /api/mcp` for a device: the same actions, on the device's own files.
+ *
+ * The gates are the same as the local route's, in the same order, and so are the
+ * refusals — `lib/remote-mcp-actions.ts` decides what each action means, this
+ * only parses the request and turns its answer into a response. The one thing
+ * that cannot be the same is trust: a device's folders are not paths on this
+ * machine, so the device is asked (`lib/remote-trust.ts`).
+ */
+async function postRemote(req: Request, deviceId: string): Promise<NextResponse> {
+  if (!isApiRequestAllowed(req)) return refusal(403, "request-denied", "Untrusted API request");
+  if (!hasJsonContentType(req)) return refusal(415, "content-type", "Content-Type must be application/json");
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return refusal(400, "invalid-request", "Invalid JSON body");
+  }
+  if (!isRecord(body)) return refusal(400, "invalid-request", "Expected a JSON object");
+
+  const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : null;
+  if (body.cwd !== undefined && body.cwd !== null && (typeof body.cwd !== "string" || !body.cwd.startsWith("/"))) {
+    return refusal(400, "cwd-invalid", "cwd must be an absolute path");
+  }
+
+  const internals = await mcpWritable();
+  if (internals instanceof Refusal) return internals.response();
+
+  try {
+    const { getGateway } = await import("@/lib/gateway/singleton");
+    const { getRemoteAgentDir } = await import("@/lib/remote-settings");
+    const actions = await import("@/lib/remote-mcp-actions");
+    const driver = await getGateway().getDriverForRequest(deviceId);
+    const agentDir = await getRemoteAgentDir(deviceId);
+    const context = await actions.openRemoteMcp(deviceId, driver, agentDir, cwd, internals);
+
+    const action = body.action;
+    switch (action) {
+      case "enable":
+      case "disable":
+      case "remove":
+      case "sign-out": {
+        const scope = readScope(body.scope);
+        const name = readName(body.name);
+        if (!scope || name === undefined) return refusal(400, "invalid-request", "scope must be \"global\" or \"project\", and name a server name");
+        const server = { scope, name };
+        const result = action === "remove"
+          ? await actions.removeRemoteServer(context, server)
+          : action === "sign-out"
+            ? await actions.signOutRemoteServer(context, server)
+            : await actions.switchRemoteServer(context, server, action === "enable");
+        return await remoteAnswer(deviceId, cwd, result);
+      }
+      case "set-enabled": {
+        const servers = readServerList(body.servers);
+        if (typeof body.enabled !== "boolean" || !servers) {
+          return refusal(400, "invalid-request", `enabled must be a boolean, and servers a list of 1 to ${MAX_BULK_SERVERS} { scope, name }`);
+        }
+        return await remoteAnswer(deviceId, cwd, await actions.switchRemoteServers(context, servers, body.enabled));
+      }
+      case "set-exposure": {
+        const scope = readScope(body.scope);
+        const name = readName(body.name);
+        if (!scope || name === undefined || !isMcpExposure(body.exposure)) {
+          return refusal(400, "invalid-request", `scope must be "global" or "project", name a server name, and exposure one of ${MCP_EXPOSURES.join(", ")}`);
+        }
+        return await remoteAnswer(deviceId, cwd, await actions.setRemoteServerExposure(context, { scope, name }, body.exposure));
+      }
+      case "set-in-project": {
+        const name = readName(body.name);
+        if (name === undefined || typeof body.enabled !== "boolean") {
+          return refusal(400, "invalid-request", "name must name a global server, and enabled be a boolean");
+        }
+        return await remoteAnswer(deviceId, cwd, await actions.switchRemoteServerInProject(context, name, body.enabled));
+      }
+      case "undo": {
+        if (typeof body.token !== "string" || body.token.length === 0 || body.token.length > 100) {
+          return refusal(400, "invalid-request", "token must be the token a remove answered with");
+        }
+        return await remoteAnswer(deviceId, cwd, await actions.undoRemoteRemoval(context, body.token));
+      }
+      case "add":
+        return await remoteAnswer(deviceId, cwd, await actions.addRemoteServer(context, body));
+      default:
+        return refusal(400, "invalid-request", "action must be add, enable, disable, remove, set-enabled, set-exposure, set-in-project, undo or sign-out");
+    }
+  } catch (error) {
+    // Identified by code as well as class: the gateway is imported through
+    // several module instances, so a duplicated class slips past `instanceof`.
+    if ((error as { code?: unknown } | null)?.code === "device-offline") {
+      return NextResponse.json({ error: errorMessage(error), reason: "internal" } satisfies McpErrorResponse, { status: 503 });
+    }
+    return refusal(500, "internal", errorMessage(error));
+  }
+}
+
+/**
+ * The answer to a remote action: the overview the pane would read next, plus
+ * what the action added. Read back from the device rather than patched in memory,
+ * so the listing a write answers with is the one the files now hold.
+ */
+async function remoteAnswer(
+  deviceId: string,
+  cwd: string | null,
+  result: import("@/lib/remote-mcp-actions").RemoteMcpResult,
+): Promise<NextResponse> {
+  if (!result.ok) return refusal(result.status, result.reason, result.error, result.params);
+  try {
+    const { readRemoteMcpOverview } = await import("@/lib/remote-settings");
+    const overview = await readRemoteMcpOverview(deviceId, cwd, { force: true });
+    return NextResponse.json({ ...overview, ...result.extra } satisfies McpActionResponse);
   } catch (error) {
     return refusal(500, "internal", errorMessage(error));
   }

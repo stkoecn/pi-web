@@ -28,6 +28,16 @@ export async function getAllowedFileRoots(): Promise<Set<string>> {
     if (s.projectRoot) roots.add(normalizeSlashes(s.projectRoot));
   }
 
+  try {
+    const { readSessionUiState } = await import("./session-ui-state");
+    const uiState = readSessionUiState();
+    if (uiState.projects) {
+      for (const p of Object.values(uiState.projects)) {
+        if (p?.root) roots.add(normalizeSlashes(p.root));
+      }
+    }
+  } catch {}
+
   for (const root of getAdditionalAllowedRoots()) roots.add(root);
 
   globalThis.__piAllowedRootsCache = { roots, expiresAt: now + ALLOWED_ROOTS_TTL_MS };

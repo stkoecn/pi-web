@@ -64,19 +64,28 @@ const secondaryActionStyle: CSSProperties = {
   color: "var(--text-muted)",
 };
 
-async function loadDirectories(directory?: string): Promise<BrowseResponse> {
-  const query = directory ? `?path=${encodeURIComponent(directory)}` : "";
+// The picker walks whichever filesystem the workspace lives on, so the device
+// travels with every call: without it a remote workspace browsed this machine.
+async function loadDirectories(directory?: string, deviceId?: string): Promise<BrowseResponse> {
+  const params = new URLSearchParams();
+  if (directory) params.set("path", directory);
+  if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
+  const query = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(`/api/cwd/browse${query}`);
   const data = await response.json() as BrowseResponse;
   if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
   return data;
 }
 
-async function createDirectory(parentPath: string, name: string): Promise<string> {
+async function createDirectory(parentPath: string, name: string, deviceId?: string): Promise<string> {
   const response = await fetch("/api/cwd/browse", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: parentPath, name }),
+    body: JSON.stringify({
+      path: parentPath,
+      name,
+      ...(deviceId && deviceId !== "localhost" ? { deviceId } : {}),
+    }),
   });
   const data = await response.json() as CreateDirectoryResponse;
   if (!response.ok || data.error || !data.path) {
@@ -113,9 +122,11 @@ interface Props {
   initialPath?: string;
   busy?: boolean;
   error?: string | null;
+  /** Gateway device whose filesystem is browsed; "localhost" means this host. */
+  deviceId?: string;
 }
 
-export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false, error }: Props) {
+export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false, error, deviceId }: Props) {
   const { t } = useI18n();
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [currentPath, setCurrentPath] = useState("");
@@ -134,7 +145,7 @@ export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false,
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await loadDirectories(directory);
+      const data = await loadDirectories(directory, deviceId);
       const nextPath = data.path ?? directory ?? "/";
       setCurrentPath(nextPath);
       setParentDirectory(data.parentPath ?? null);
@@ -146,7 +157,7 @@ export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false,
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [deviceId]);
 
   useEffect(() => {
     setPortalTarget(document.body);
@@ -175,7 +186,7 @@ export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false,
     setCreating(true);
     setCreateError(null);
     try {
-      const createdPath = await createDirectory(currentPath, name);
+      const createdPath = await createDirectory(currentPath, name, deviceId);
       setCreateOpen(false);
       setDirectoryName("");
       await navigateTo(createdPath);

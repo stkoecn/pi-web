@@ -2625,3 +2625,166 @@ select.mcp-add-input {
     }
   }
 }
+
+/* Settings › Devices (components/DevicesConfig.tsx). A plain form: one label
+   above each input, the host and port sharing a row on anything wider than a
+   phone. The panel is the only place the gateway's host list is edited, so the
+   fields take the full detail width instead of a column of narrow boxes. */
+.settings-device-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  max-width: 560px;
+}
+
+.settings-device-form .settings-device-input {
+  font-family: var(--font-mono);
+}
+
+.settings-device-row {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-device-row > .config-field:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-device-row > .config-field:last-child {
+  flex: 0 0 110px;
+}
+
+.config-detail-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-device-item-state {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+/* Which direction the connection opens. Both kinds of host sit in one list, so
+   the row has to say which one it is: a tunnel this gateway waits for, or a
+   machine ssh already knows how to dial. */
+.settings-device-kind {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 9px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+/* A stanza the pane cannot use: a question mark, since the reason lives in the
+   detail pane and the row only has to be findable in the list. */
+.settings-device-problem {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+  margin-right: 1px;
+  border: 1px solid #eab308;
+  border-radius: 50%;
+  color: #eab308;
+  font-size: 7px;
+  line-height: 1;
+}
+
+.settings-device-problem::before {
+  content: "?";
+}
+
+.settings-device-kind[data-device-kind="active_ssh"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.settings-device-kind[data-device-kind="problem"] {
+  border-color: color-mix(in srgb, #eab308 45%, var(--border));
+  color: #eab308;
+}
+
+/* Two mutually exclusive answers to "who opens the connection?", so they read
+   as one control rather than a field with an implicit default. */
+.settings-device-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-device-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt, transparent);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.settings-device-mode[data-selected="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.settings-device-mode input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* The command is the only thing a dialled-in host needs, so it is shown as
+   copyable text instead of being described in prose. */
+.settings-device-command {
+  display: block;
+  margin-top: 6px;
+  overflow-x: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.settings-device-command-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-dim);
+  font-family: var(--font-sans, inherit);
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  /* The two-field row would leave each box too narrow to read an address. */
+  .settings-device-row {
+    flex-direction: column;
+  }
+
+  .settings-device-row > .config-field:last-child {
+    flex: 1 1 auto;
+  }
+}
+
+/* What a discovered host's switch means, under the detail header it sits in. */
+.settings-device-switch-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}

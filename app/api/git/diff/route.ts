@@ -28,6 +28,23 @@ export async function GET(request: NextRequest) {
   try {
     const cwd = request.nextUrl.searchParams.get("cwd")?.trim() ?? "";
     const filePath = request.nextUrl.searchParams.get("path")?.trim() ?? "";
+    const deviceId = request.nextUrl.searchParams.get("deviceId") || request.headers.get("x-device-id");
+
+    if (deviceId && deviceId !== "localhost") {
+      try {
+        const { getGateway } = await import("@/lib/gateway/singleton");
+        const driver = await getGateway().getOrConnectDriver(deviceId);
+        const diffRes = await driver.exec(`git -C "${(cwd || '~').replace(/"/g, '\\"')}" diff -- "${filePath.replace(/"/g, '\\"')}" 2>/dev/null || echo ""`);
+        return NextResponse.json({
+          supported: true,
+          patch: diffRes.stdout || "",
+          path: filePath,
+        });
+      } catch (err: any) {
+        return NextResponse.json({ supported: false, patch: "", path: filePath });
+      }
+    }
+
     if (!cwd || (!cwd.startsWith("/") && !isWindowsAbsolutePath(cwd))) {
       return NextResponse.json({ error: "cwd must be an absolute path" }, { status: 400 });
     }

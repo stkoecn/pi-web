@@ -44,7 +44,12 @@ export function normalizeModelsConfigCosts(
   return normalized;
 }
 
-function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Drop model entries with a blank id, the one shape pi's loader rejects.
+ * Exported so the remote writer (lib/remote-models-config.ts) applies the same
+ * rule to a device's file instead of growing a second copy of it.
+ */
+export function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unknown> {
   if (!isRecord(data.providers)) return data;
 
   const providers = Object.fromEntries(Object.entries(data.providers).map(([providerId, provider]) => {

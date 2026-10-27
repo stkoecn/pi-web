@@ -1,0 +1,11 @@
+[
+  {
+    "id": "winsingair",
+    "name": "winsingair",
+    "host": "127.0.0.1",
+    "port": 0,
+    "username": "windsing",
+    "privateKeyPath": "~/.pi/gateway_ed25519",
+    "mode": "reverse_tunnel"
+  }
+]

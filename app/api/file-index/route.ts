@@ -11,6 +11,10 @@ import {
 } from "@/lib/file-access";
 import { buildEntriesFromFiles, filterFileEntries, type FileIndexEntry } from "@/lib/file-fuzzy";
 import { isHiddenOutsideGit } from "@/lib/file-tree-visibility";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { getGateway } from "@/lib/gateway/singleton";
+import type { IHostDriver } from "@/lib/gateway/types/host-driver";
+import { shellQuote } from "@/lib/shell-quote";
 
 const execFileAsync = promisify(execFile);
 
@@ -100,6 +104,55 @@ function listWithWalk(cwd: string): FileListing {
   return { files, hardTruncated: false };
 }
 
+/**
+ * Listing for a gateway device.
+ *
+ * The local path uses `git ls-files` then a synchronous readdir walk; both are
+ * meaningless for a remote cwd, so the device is asked to produce the same
+ * newline-separated relative list with its own tools. One round trip: git when
+ * the directory is a repository, otherwise `find` capped to the same limits.
+ */
+async function listRemoteWithGit(driver: IHostDriver, cwd: string): Promise<FileListing | null> {
+  const quoted = shellQuote(cwd);
+  try {
+    // Exit 3 means "not a repository", so the caller falls back to the walk. The
+    // repository test has to happen before the pipe: `git | head` reports
+    // `head`'s status, which is always 0, and an empty listing would then look
+    // like a repository with no files.
+    const result = await driver.exec(
+      `cd ${quoted} 2>/dev/null || exit 4; ` +
+      `git rev-parse --git-dir >/dev/null 2>&1 || exit 3; ` +
+      `git ls-files --cached --others --exclude-standard -z 2>/dev/null | head -c 67108864`,
+      [],
+      { timeoutMs: 15_000 },
+    );
+    if (result.exitCode !== 0) return null;
+    const all = result.stdout.split("\0").filter(Boolean);
+    if (all.length > GIT_HARD_CAP) return { files: all.slice(0, GIT_HARD_CAP), hardTruncated: true };
+    return { files: all, hardTruncated: false };
+  } catch {
+    return null;
+  }
+}
+
+async function listRemoteWithWalk(driver: IHostDriver, cwd: string): Promise<FileListing> {
+  const quoted = shellQuote(cwd);
+  // BFS-ish: `find -maxdepth` bounded, hidden names filtered the way the local
+  // walk filters them (dotfiles outside git are skipped).
+  const result = await driver.exec(
+    `cd ${quoted} 2>/dev/null && find . -maxdepth ${MAX_WALK_DEPTH} -type f 2>/dev/null | head -n ${WALK_HARD_CAP + 1}`,
+    [],
+    { timeoutMs: 20_000 },
+  );
+  if (result.exitCode !== 0) return { files: [], hardTruncated: false };
+  const files = result.stdout
+    .split("\n")
+    .map((line) => line.replace(/^\.\//, "").trim())
+    .filter((line) => line && line.split("/").every((part) => !isHiddenOutsideGit(part)));
+  const hardTruncated = files.length > WALK_HARD_CAP;
+  return { files: hardTruncated ? files.slice(0, WALK_HARD_CAP) : files, hardTruncated };
+}
+
 // GET /api/file-index?cwd=/abs/path[&q=query]
 // Without q: { files: string[] (relative to cwd, capped at MAX_FILES),
 // truncated: boolean } — the client-side index for local filtering.
@@ -114,6 +167,35 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "cwd must be an absolute path" }, { status: 400 });
     }
     const query = req.nextUrl.searchParams.get("q")?.slice(0, MAX_QUERY_LENGTH) ?? "";
+
+    const deviceId = getRequestDeviceId(req);
+    if (isRemoteDevice(deviceId)) {
+      // A remote cwd is not on this filesystem, so the allow-list below would
+      // always refuse it. The device's own paths are the whole namespace there.
+      const driver = await getGateway().getOrConnectDriver(deviceId);
+      const key = `${deviceId}\u0000${cwd}`;
+      const cache = getIndexCache();
+      const now = Date.now();
+      let cached = cache.get(key);
+      if (!cached || cached.expiresAt <= now) {
+        const listing = (await listRemoteWithGit(driver, cwd)) ?? await listRemoteWithWalk(driver, cwd);
+        for (const [cacheKey, entry] of cache) {
+          if (entry.expiresAt <= now) cache.delete(cacheKey);
+        }
+        if (cache.size >= CACHE_MAX_ENTRIES) cache.clear();
+        cached = { listing, expiresAt: now + CACHE_TTL_MS };
+        cache.set(key, cached);
+      }
+      if (query) {
+        cached.entries ??= buildEntriesFromFiles(cached.listing.files);
+        return NextResponse.json({ matches: filterFileEntries(cached.entries, query) });
+      }
+      const { files, hardTruncated } = cached.listing;
+      return NextResponse.json({
+        files: files.slice(0, MAX_FILES),
+        truncated: hardTruncated || files.length > MAX_FILES,
+      });
+    }
 
     const allowedRoots = await getAllowedFileRoots();
     if (!isFilePathAllowed(cwd, allowedRoots)) {

@@ -3,7 +3,7 @@ import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope } from "@/lib/api-types";
 
-interface SkillLockEntry {
+export interface SkillLockEntry {
   source?: unknown;
   sourceType?: unknown;
   skillPath?: unknown;
@@ -38,10 +38,20 @@ export function getGlobalSkillsLockPath({
     : join(homeDir, ".agents", ".skill-lock.json");
 }
 
+/** One lock file's `skills` map; unreadable or malformed contents read as empty. */
+export function parseSkillLock(text: string | null | undefined): Record<string, SkillLockEntry> {
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text) as SkillLockFile;
+    return parsed.skills && typeof parsed.skills === "object" ? parsed.skills : {};
+  } catch {
+    return {};
+  }
+}
+
 function readSkillLock(path: string): Record<string, SkillLockEntry> {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as SkillLockFile;
-    return parsed.skills && typeof parsed.skills === "object" ? parsed.skills : {};
+    return parseSkillLock(readFileSync(path, "utf8"));
   } catch {
     return {};
   }
@@ -129,8 +139,46 @@ export function annotateSkillsWithInstallInfo(
     projectLockPath = join(cwd, "skills-lock.json"),
   }: AnnotateSkillOptions,
 ): SkillInfo[] {
-  const globalEntries = readSkillLock(globalLockPath);
-  const projectEntries = readSkillLock(projectLockPath);
+  return annotateSkillsWithLockEntries(skills, {
+    cwd,
+    agentDir,
+    homeDir,
+    globalEntries: readSkillLock(globalLockPath),
+    projectEntries: readSkillLock(projectLockPath),
+  });
+}
+
+/**
+ * The same annotation from lock entries the caller already read.
+ *
+ * Split out because a remote device's lock files are read over the gateway
+ * (lib/remote-skill-writes.ts): the rules for which lock entry describes which
+ * skill must not exist twice, or a skill installed on the device would be
+ * reported as installed locally.
+ *
+ * `requireExistingFile: false` skips the per-skill `existsSync`, which a caller
+ * listing a device has already answered by reading the files: a device path is
+ * not on this machine's filesystem, so checking here would report every one as
+ * absent.
+ */
+export function annotateSkillsWithLockEntries(
+  skills: SkillInfo[],
+  {
+    cwd,
+    agentDir,
+    homeDir,
+    globalEntries,
+    projectEntries,
+    requireExistingFile = true,
+  }: {
+    cwd: string;
+    agentDir: string;
+    homeDir: string;
+    globalEntries: Record<string, SkillLockEntry>;
+    projectEntries: Record<string, SkillLockEntry>;
+    requireExistingFile?: boolean;
+  },
+): SkillInfo[] {
   // The skills CLI installs for pi into its own dirs up to 1.5.x and into the
   // Agent Skills dirs (.agents/skills) since 1.7; pi loads both.
   const globalSkillsRoots = [join(agentDir, "skills"), join(homeDir, ".agents", "skills")];
@@ -138,7 +186,7 @@ export function annotateSkillsWithInstallInfo(
   const isWithinAny = (path: string, roots: string[]) => roots.some((root) => isWithin(path, root));
 
   return skills.map((skill) => {
-    if (!existsSync(skill.filePath)) return skill;
+    if (requireExistingFile && !existsSync(skill.filePath)) return skill;
 
     const install = isWithinAny(skill.filePath, globalSkillsRoots)
       ? getInstallInfo(globalEntries, skill.name, "global")

@@ -418,26 +418,33 @@ export type McpEnabledOutcome<R extends string> =
  * outcome, so a server removed meanwhile, or one `refuse` names a reason for,
  * keeps the rest from failing. Nothing is written when nothing changes.
  */
+export function applyMcpServersEnabled<R extends string = never>(
+  { servers }: McpConfigDocument,
+  names: readonly string[],
+  enabled: boolean,
+  refuse?: (name: string, entry: Record<string, unknown>) => R | undefined,
+): { changed: boolean; value: McpEnabledOutcome<R>[] } {
+  let changed = false;
+  const outcomes = [...new Set(names)].map((name): McpEnabledOutcome<R> => {
+    if (!servers || !Object.hasOwn(servers, name)) return { name, outcome: "missing" };
+    const entry = servers[name];
+    if (!isRecord(entry)) return { name, outcome: "not-an-object" };
+    const reason = refuse?.(name, entry);
+    if (reason !== undefined) return { name, outcome: "refused", reason };
+    const entryChanged = patchMcpServerEntry(entry, { enabled });
+    changed ||= entryChanged;
+    return { name, outcome: entryChanged ? "changed" : "unchanged" };
+  });
+  return { changed, value: outcomes };
+}
+
 export async function setMcpServersEnabled<R extends string = never>(
   target: McpConfigFileTarget,
   names: readonly string[],
   enabled: boolean,
   refuse?: (name: string, entry: Record<string, unknown>) => R | undefined,
 ): Promise<McpConfigEditOutcome<McpEnabledOutcome<R>[]>> {
-  return editMcpConfigFile(target, ({ servers }) => {
-    let changed = false;
-    const outcomes = [...new Set(names)].map((name): McpEnabledOutcome<R> => {
-      if (!servers || !Object.hasOwn(servers, name)) return { name, outcome: "missing" };
-      const entry = servers[name];
-      if (!isRecord(entry)) return { name, outcome: "not-an-object" };
-      const reason = refuse?.(name, entry);
-      if (reason !== undefined) return { name, outcome: "refused", reason };
-      const entryChanged = patchMcpServerEntry(entry, { enabled });
-      changed ||= entryChanged;
-      return { name, outcome: entryChanged ? "changed" : "unchanged" };
-    });
-    return { changed, value: outcomes };
-  });
+  return editMcpConfigFile(target, (file) => applyMcpServersEnabled(file, names, enabled, refuse));
 }
 
 /**
@@ -446,18 +453,24 @@ export async function setMcpServersEnabled<R extends string = never>(
  * value is written. `toolExposure` and every other key are left alone. An
  * entry that already says it is left alone, and so is its file.
  */
+export function applyMcpServerExposure(
+  { servers }: McpConfigDocument,
+  name: string,
+  exposure: McpExposure,
+): { changed: boolean; value: McpEnabledOutcome<never> } {
+  if (!servers || !Object.hasOwn(servers, name)) return { changed: false, value: { name, outcome: "missing" } };
+  const entry = servers[name];
+  if (!isRecord(entry)) return { changed: false, value: { name, outcome: "not-an-object" } };
+  const changed = patchMcpServerEntry(entry, { exposure });
+  return { changed, value: { name, outcome: changed ? "changed" : "unchanged" } };
+}
+
 export async function setMcpServerExposure(
   target: McpConfigFileTarget,
   name: string,
   exposure: McpExposure,
 ): Promise<McpConfigEditOutcome<McpEnabledOutcome<never>>> {
-  return editMcpConfigFile<McpEnabledOutcome<never>>(target, ({ servers }) => {
-    if (!servers || !Object.hasOwn(servers, name)) return { changed: false, value: { name, outcome: "missing" } };
-    const entry = servers[name];
-    if (!isRecord(entry)) return { changed: false, value: { name, outcome: "not-an-object" } };
-    const changed = patchMcpServerEntry(entry, { exposure });
-    return { changed, value: { name, outcome: changed ? "changed" : "unchanged" } };
-  });
+  return editMcpConfigFile<McpEnabledOutcome<never>>(target, (file) => applyMcpServerExposure(file, name, exposure));
 }
 
 /**
@@ -468,26 +481,32 @@ export async function setMcpServerExposure(
  * and an override already there is patched. A full entry of that name is the
  * project's own server, which a switch of its own changes: `name-taken`.
  */
+export function applyMcpServerEnabledInProject(
+  { document, servers, path }: McpConfigDocument,
+  name: string,
+  enabled: boolean,
+): { changed: boolean; value: McpEnabledOutcome<never> } {
+  const existing = ownServerEntry(servers, name);
+  if (existing === undefined) {
+    const entry: Record<string, unknown> = {};
+    patchMcpServerEntry(entry, { enabled });
+    insertMcpServerEntry(document, name, entry);
+    return { changed: true, value: { name, outcome: "changed" } };
+  }
+  if (!isRecord(existing)) return { changed: false, value: { name, outcome: "not-an-object" } };
+  if (!isMcpOverrideEntry(existing)) {
+    throw new McpConfigWriteError("name-taken", path, `${path} already defines MCP server "${name}"`, name);
+  }
+  const changed = patchMcpServerEntry(existing, { enabled });
+  return { changed, value: { name, outcome: changed ? "changed" : "unchanged" } };
+}
+
 export async function setMcpServerEnabledInProject(
   target: Extract<McpConfigFileTarget, { scope: "project" }>,
   name: string,
   enabled: boolean,
 ): Promise<McpConfigEditOutcome<McpEnabledOutcome<never>>> {
-  return editMcpConfigFile<McpEnabledOutcome<never>>(target, ({ document, servers, path }) => {
-    const existing = ownServerEntry(servers, name);
-    if (existing === undefined) {
-      const entry: Record<string, unknown> = {};
-      patchMcpServerEntry(entry, { enabled });
-      insertMcpServerEntry(document, name, entry);
-      return { changed: true, value: { name, outcome: "changed" } };
-    }
-    if (!isRecord(existing)) return { changed: false, value: { name, outcome: "not-an-object" } };
-    if (!isMcpOverrideEntry(existing)) {
-      throw new McpConfigWriteError("name-taken", path, `${path} already defines MCP server "${name}"`, name);
-    }
-    const changed = patchMcpServerEntry(existing, { enabled });
-    return { changed, value: { name, outcome: changed ? "changed" : "unchanged" } };
-  });
+  return editMcpConfigFile<McpEnabledOutcome<never>>(target, (file) => applyMcpServerEnabledInProject(file, name, enabled));
 }
 
 /** An entry a removal took out of a file, with where it stood, for undo. */
@@ -499,16 +518,21 @@ export interface McpRemovedServer {
 }
 
 /** Removes a server, as the SDK's `removeMcpServerConfig()` does; one the file does not define is refused. */
+export function applyRemoveMcpServer(
+  { servers, path }: McpConfigDocument,
+  name: string,
+): { changed: boolean; value: McpRemovedServer } {
+  if (!servers || !Object.hasOwn(servers, name)) {
+    throw new McpConfigWriteError("server-missing", path, `${path} does not define MCP server "${name}"`, name);
+  }
+  const index = Object.keys(servers).indexOf(name);
+  const entry = servers[name];
+  delete servers[name];
+  return { changed: true, value: { entry, index } };
+}
+
 export async function removeMcpServer(target: McpConfigFileTarget, name: string): Promise<McpConfigEditOutcome<McpRemovedServer>> {
-  return editMcpConfigFile(target, ({ servers, path }) => {
-    if (!servers || !Object.hasOwn(servers, name)) {
-      throw new McpConfigWriteError("server-missing", path, `${path} does not define MCP server "${name}"`, name);
-    }
-    const index = Object.keys(servers).indexOf(name);
-    const entry = servers[name];
-    delete servers[name];
-    return { changed: true, value: { entry, index } };
-  });
+  return editMcpConfigFile(target, (file) => applyRemoveMcpServer(file, name));
 }
 
 /**
@@ -517,17 +541,24 @@ export async function removeMcpServer(target: McpConfigFileTarget, name: string)
  * where it stood; without, it is appended as the SDK appends it. Creates the
  * file when missing.
  */
+export function applyInsertMcpServer(
+  { document, servers, path }: McpConfigDocument,
+  name: string,
+  entry: unknown,
+  index?: number,
+): { changed: boolean; value: undefined } {
+  if (ownServerEntry(servers, name) !== undefined) {
+    throw new McpConfigWriteError("name-taken", path, `${path} already defines MCP server "${name}"`, name);
+  }
+  insertMcpServerEntry(document, name, entry, index);
+  return { changed: true, value: undefined };
+}
+
 export async function insertMcpServer(
   target: McpConfigFileTarget,
   name: string,
   entry: unknown,
   index?: number,
 ): Promise<McpConfigEditOutcome<void>> {
-  return editMcpConfigFile(target, ({ document, servers, path }) => {
-    if (ownServerEntry(servers, name) !== undefined) {
-      throw new McpConfigWriteError("name-taken", path, `${path} already defines MCP server "${name}"`, name);
-    }
-    insertMcpServerEntry(document, name, entry, index);
-    return { changed: true, value: undefined };
-  });
+  return editMcpConfigFile(target, (file) => applyInsertMcpServer(file, name, entry, index));
 }

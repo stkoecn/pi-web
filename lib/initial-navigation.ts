@@ -3,6 +3,7 @@ import type { TabOpen } from "./tab-session";
 export interface InitialNavigation {
   requestedCwd: string | null;
   sessionId: string | null;
+  deviceId?: string | null;
   /** `sessionId` is this tab's memory (`withTabOpen`), not the URL's `?session=`. */
   sessionFromTab?: boolean;
   sidebarCollapsed: boolean;
@@ -12,9 +13,14 @@ export function getInitialNavigation(
   searchParams: Pick<URLSearchParams, "get">,
 ): InitialNavigation {
   const requestedCwd = searchParams.get("cwd")?.trim() || null;
+  const deviceId = searchParams.get("deviceId")?.trim() || null;
 
   return {
     requestedCwd,
+    // Only present when the URL named a device: keeping the key absent otherwise
+    // leaves every localhost navigation snapshot byte-identical to before
+    // device support existed (and to what the tests assert).
+    ...(deviceId ? { deviceId } : {}),
     sessionId: requestedCwd ? null : (searchParams.get("session") || null),
     sidebarCollapsed: searchParams.get("sidebar") === "collapsed",
   };

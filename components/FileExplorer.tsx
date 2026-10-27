@@ -19,6 +19,8 @@ import type { FileTreeHiddenReason } from "@/lib/file-tree-visibility";
 import { createExpandedPathsMemory } from "@/lib/file-tree-expansion";
 import { droppedItems } from "@/hooks/useDragDrop";
 import { useI18n } from "@/hooks/useI18n";
+import { deviceHomeOrRoot } from "@/lib/device-home-client";
+import { withDeviceId } from "@/lib/device-context";
 type Translate = ReturnType<typeof useI18n>["t"];
 
 /** Why a listed entry is normally left out; only listings with `hidden=1` report it. */
@@ -50,6 +52,7 @@ interface FileNode {
 
 interface Props {
   cwd: string;
+  deviceId?: string;
   onOpenFile: (filePath: string, fileName: string, options?: OpenFileOptions) => void;
   refreshKey?: number;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -98,14 +101,22 @@ async function responseError(res: Response, fallback: string): Promise<Error> {
   return new Error(message);
 }
 
-async function fetchEntries(dirPath: string, showHidden = false): Promise<FileNode[]> {
-  const encoded = encodeFilePathForApi(dirPath);
-  const res = await fetch(`/api/files/${encoded}?type=list${showHidden ? "&hidden=1" : ""}`);
+async function fetchEntries(dirPath: string, showHidden = false, deviceId?: string): Promise<FileNode[]> {
+  const isRemote = deviceId && deviceId !== "localhost";
+  // `/` rather than `/root`: macOS devices have no `/root`, and asking for it
+  // made the panel open on a missing directory.
+  let targetPath = dirPath || (isRemote ? deviceHomeOrRoot(deviceId) : ".");
+  if (isRemote && (!targetPath || targetPath === "~" || targetPath === "." || targetPath === "/~" || /^[a-zA-Z]:/.test(targetPath) || targetPath.includes("\\"))) {
+    targetPath = deviceHomeOrRoot(deviceId);
+  }
+  const encoded = encodeFilePathForApi(targetPath);
+  const devParam = isRemote ? `&deviceId=${encodeURIComponent(deviceId)}` : "";
+  const res = await fetch(`/api/files/${encoded}?type=list${showHidden ? "&hidden=1" : ""}${devParam}`);
   if (!res.ok) throw await responseError(res, "Failed to load files");
   const data = await res.json() as { entries?: FileEntry[] };
   return (data.entries ?? []).map((e) => ({
     name: e.name,
-    fullPath: joinFilePath(dirPath, e.name),
+    fullPath: joinFilePath(targetPath, e.name),
     isDir: e.isDir,
     size: e.size,
     children: e.isDir ? [] : undefined,
@@ -118,8 +129,8 @@ async function fetchEntries(dirPath: string, showHidden = false): Promise<FileNo
 
 // Sends the target the operator was shown, so a link pointed elsewhere since
 // the listing is refused instead of granting a directory nobody looked at.
-async function allowOutsideLink(linkPath: string, target: string): Promise<void> {
-  const res = await fetch(`/api/files/${encodeFilePathForApi(linkPath)}?type=allow-link`, {
+async function allowOutsideLink(linkPath: string, target: string, deviceId?: string): Promise<void> {
+  const res = await fetch(withDeviceId(`/api/files/${encodeFilePathForApi(linkPath)}?type=allow-link`, deviceId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target }),
@@ -127,8 +138,9 @@ async function allowOutsideLink(linkPath: string, target: string): Promise<void>
   if (!res.ok) throw await responseError(res, "Failed to allow the linked folder");
 }
 
-async function fetchGitStatus(cwd: string): Promise<GitStatusResponse> {
+async function fetchGitStatus(cwd: string, deviceId?: string): Promise<GitStatusResponse> {
   const params = new URLSearchParams({ cwd });
+  if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
   const res = await fetch(`/api/git/status?${params.toString()}`);
   if (!res.ok) throw new Error(`Failed to load Git status (HTTP ${res.status})`);
   return res.json() as Promise<GitStatusResponse>;
@@ -220,6 +232,7 @@ export function TreeNode({
   onDropFiles,
   onDropTargetChange,
   t,
+  deviceId,
 }: {
   node: FileNode;
   depth: number;
@@ -239,6 +252,7 @@ export function TreeNode({
   onDropFiles?: (directory: string, items: DroppedItem[]) => void;
   onDropTargetChange?: (path: string | null) => void;
   t: Translate;
+  deviceId?: string;
 }) {
   const open = expandedPaths.has(node.fullPath);
   const hidden = node.hidden ?? parentHidden;
@@ -275,7 +289,7 @@ export function TreeNode({
     setLoading(true);
     setLoadError(null);
     try {
-      const entries = await fetchEntries(node.fullPath, showHidden);
+      const entries = await fetchEntries(node.fullPath, showHidden, deviceId);
       setChildren(entries);
       setLoaded(true);
     } catch (error) {
@@ -334,7 +348,7 @@ export function TreeNode({
     setAllowingLink(true);
     setAllowLinkError(null);
     try {
-      await allowOutsideLink(node.fullPath, pendingLinkTarget);
+      await allowOutsideLink(node.fullPath, pendingLinkTarget, deviceId);
       setAllowedLinkTarget(pendingLinkTarget);
       await loadChildren(true);
     } catch (error) {
@@ -488,7 +502,10 @@ export function TreeNode({
         )}
         {hovered && !node.isDir && (
           <a
-            href={`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
+            href={withDeviceId(
+              `/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`,
+              deviceId,
+            )}
             download
             onClick={(e) => e.stopPropagation()}
             title={t("files.download")}
@@ -589,6 +606,7 @@ export function TreeNode({
               onDropFiles={onDropFiles}
               onDropTargetChange={onDropTargetChange}
               t={t}
+              deviceId={deviceId}
             />
           ))}
           {children.length === 0 && loaded && !loadError && (
@@ -730,6 +748,7 @@ function ChangeRow({
 
 export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileExplorer({
   cwd,
+  deviceId,
   onOpenFile,
   refreshKey,
   onAtMention,
@@ -743,6 +762,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 }, ref) {
   const { t } = useI18n();
   const [roots, setRoots] = useState<FileNode[]>([]);
+  // Which directory `roots` holds. A refresh (a tool finished, the window came
+  // back) re-lists the same directory, so the rows stay on screen while it
+  // loads; only a different directory has nothing to show yet.
+  const [rootsKey, setRootsKey] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -765,6 +788,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const fileDragDepthRef = useRef(0);
   const prevCwdRef = useRef<string | null>(null);
+  const prevDevRef = useRef<string | undefined>(deviceId);
+  // The upload callbacks are memoized without a device dependency, so they read
+  // the current device from a ref rather than closing over a stale prop.
+  const deviceIdRef = useRef(deviceId);
+  deviceIdRef.current = deviceId;
   const expandedPathsRef = useRef(expandedPaths);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
@@ -785,7 +813,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setSearchLoading(true);
     setSearchError(false);
     const timer = setTimeout(() => {
-      fetch(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`, { signal: controller.signal })
+      fetch(withDeviceId(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`, deviceId), { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<{ matches?: FileIndexEntry[] }> : Promise.reject(new Error("Search failed")))
         .then((data) => setSearchPaths((data.matches ?? []).filter((entry) => !entry.isDir).map((entry) => entry.path)))
         .catch(() => {
@@ -797,7 +825,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         .finally(() => { if (!controller.signal.aborted) setSearchLoading(false); });
     }, 150);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [cwd, fileSearchOpen, searchQuery]);
+  }, [cwd, deviceId, fileSearchOpen, searchQuery]);
 
   // Focus the search input whenever the search panel opens.
   useEffect(() => {
@@ -890,7 +918,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadPhase("uploading");
 
     try {
-      const { status, data } = await uploadFiles(directory, files, strategy, setUploadProgress);
+      const { status, data } = await uploadFiles(directory, files, strategy, setUploadProgress, deviceIdRef.current);
       if (status === 409 && data.conflicts?.length) {
         setPendingConflict({
           directory,
@@ -923,7 +951,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
     try {
       const res = await fetch(
-        `/api/files/${encodeFilePathForApi(directory)}?type=upload-check`,
+        withDeviceId(
+          `/api/files/${encodeFilePathForApi(directory)}?type=upload-check`,
+          deviceIdRef.current,
+        ),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1038,15 +1069,18 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
   useEffect(() => {
     const previousCwd = prevCwdRef.current;
+    const previousDev = prevDevRef.current;
     const cwdChanged = previousCwd !== cwd;
+    const devChanged = previousDev !== deviceId;
     prevCwdRef.current = cwd;
+    prevDevRef.current = deviceId;
 
     // Swap the open directories only when cwd changes, not on refreshKey bumps.
     // The roots unmount while the new cwd loads, so each restored directory
     // mounts open and lists itself; one that is gone is never listed to look.
-    if (cwdChanged) {
+    if (cwdChanged || devChanged) {
       if (previousCwd !== null) expandedPathsByCwd.save(previousCwd, expandedPathsRef.current);
-      const restored = expandedPathsByCwd.restore(cwd);
+      const restored = devChanged ? new Set<string>() : expandedPathsByCwd.restore(cwd);
       expandedPathsRef.current = restored;
       setExpandedPaths(restored);
       setHighlightedPaths(new Set());
@@ -1055,15 +1089,21 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setUploadError(null);
     }
 
-    setLoading(cwdChanged);
+    const nextKey = `${deviceId ?? "localhost"}\u0000${cwd}`;
+    if (cwdChanged || devChanged) {
+      // The old directory's rows describe somewhere else now.
+      setRoots([]);
+      setRootsKey("");
+    }
+    setLoading(true);
     setError(null);
     let cancelled = false;
-    fetchEntries(cwd, showHidden)
-      .then((entries) => { if (!cancelled) setRoots(entries); })
+    fetchEntries(cwd, showHidden, deviceId)
+      .then((entries) => { if (!cancelled) { setRoots(entries); setRootsKey(nextKey); } })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey, showHidden]);
+  }, [cwd, deviceId, refreshKey, treeRefreshKey, showHidden]);
 
   // Files changed outside pi-web (an editor, a terminal) show up once the
   // window is back in front (#1144).
@@ -1075,7 +1115,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
   useEffect(() => {
     let cancelled = false;
-    fetchGitStatus(cwd)
+    fetchGitStatus(cwd, deviceId)
       .then((status) => {
         if (!cancelled) {
           setGitFiles(status.isGitRepository ? status.files : []);
@@ -1091,7 +1131,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         }
       });
     return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey]);
+  }, [cwd, deviceId, refreshKey, treeRefreshKey]);
 
   useEffect(() => {
     onChangesCountChange?.(gitFiles.length);
@@ -1295,6 +1335,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                     onDropFiles={handleDropFiles}
                     onDropTargetChange={handleDropTargetChange}
                     t={t}
+                    deviceId={deviceId}
                   />
                 ))}
               </div>
@@ -1335,7 +1376,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
       {(changesCollapsed || gitFiles.length === 0) && (!fileSearchOpen || !hasSearchQuery) && (
         <div style={{ padding: "2px 4px" }}>
-          {loading ? (
+          {loading && rootsKey !== `${deviceId ?? "localhost"}\u0000${cwd}` ? (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-dim)" }}>Loading files...</div>
           ) : error ? (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>
@@ -1359,6 +1400,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                 onDropFiles={handleDropFiles}
                 onDropTargetChange={handleDropTargetChange}
                 t={t}
+                deviceId={deviceId}
               />
             ))
           )}

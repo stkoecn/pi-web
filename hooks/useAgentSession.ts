@@ -15,6 +15,7 @@ import type {
 import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { agentStatusUrl, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
+import { LOCAL_DEVICE_ID, isRemoteDevice, withDeviceId } from "@/lib/device-context";
 import {
   deleteSessionViewSnapshot,
   getSessionViewSnapshot,
@@ -185,6 +186,11 @@ export interface AgentEndInfo {
 export interface UseAgentSessionOptions {
   session: SessionInfo | null;
   sessionRunning?: boolean;
+  /**
+   * Gateway device the session lives on. Every server call is scoped to it;
+   * `localhost` (the default) keeps the pre-gateway URLs byte-identical.
+   */
+  deviceId?: string;
   newSessionCwd: string | null;
   newSessionDraftKey: string | null;
   /** A run ended; `aborted` when it was stopped rather than finished (pi's `agent_settled.aborted`). */
@@ -249,9 +255,9 @@ const EVENT_STREAM_STALE_MS = AGENT_EVENT_HEARTBEAT_MS * 2.5;
 // This page's id for the lease that keeps its selected session alive (holdSessionLivenessLease()).
 let pageLeaseHolder: string | null = null;
 type SessionLeaseOutcome = SessionLeaseReply | "unanswered" | null;
-function sessionLeaseUrl(sid: string): string {
+function sessionLeaseUrl(sid: string, deviceId: string): string {
   pageLeaseHolder ??= `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  return `/api/agent/${encodeURIComponent(sid)}/lease?holder=${pageLeaseHolder}`;
+  return withDeviceId(`/api/agent/${encodeURIComponent(sid)}/lease?holder=${pageLeaseHolder}`, deviceId);
 }
 // Retry temporary model-list failures without requiring a page refresh.
 const MODELS_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
@@ -370,6 +376,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [data, setData] = useState<SessionData | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string | null>(null);
+  // The device went away mid-read (503 device-offline). Kept apart from `error`
+  // because it is a state the user can fix, not a failure of this app.
+  const [offline, setOffline] = useState(false);
   const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [activeToolResults, setActiveToolResults] = useState<Map<string, ToolResultMessage>>(new Map());
@@ -433,6 +442,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
 
   const eventConnectionRef = useRef<AgentEventConnection | null>(null);
+  // The device every server call is scoped to. Held in a ref as well as read
+  // per render: the SSE stream, the settle/reconcile polls and the lease
+  // renewal are long-lived closures that must see a switch immediately.
+  const deviceId = opts.deviceId ?? LOCAL_DEVICE_ID;
+  const deviceIdRef = useRef(deviceId);
+  deviceIdRef.current = deviceId;
+  // Device the current EventSource was opened for. `shouldMaintain` compares it
+  // with the live one, so a device switch closes the old host's stream instead
+  // of silently keeping it.
+  const eventConnectionDeviceIdRef = useRef(deviceId);
   const eventStreamGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventStreamGraceGenerationRef = useRef(0);
   const eventStreamGraceActiveRef = useRef(false);
@@ -509,10 +528,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   if (!eventConnectionRef.current) {
     eventConnectionRef.current = new AgentEventConnection({
-      createSource: (sid) => new EventSource(`/api/agent/${encodeURIComponent(sid)}/events`),
+      createSource: (sid) => {
+        eventConnectionDeviceIdRef.current = deviceIdRef.current;
+        return new EventSource(withDeviceId(`/api/agent/${encodeURIComponent(sid)}/events`, deviceIdRef.current));
+      },
       onEvent: (event) => handleAgentEventRef.current?.(event as AgentEvent),
       shouldMaintain: (sid) => (
         sessionHookMountedRef.current
+        // A stream opened for another device is stale: switching devices must
+        // tear it down instead of leaving the old host attached.
+        && eventConnectionDeviceIdRef.current === deviceIdRef.current
         && sessionIdRef.current === sid
         && (
           agentRunningRef.current
@@ -675,7 +700,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const runId = promptRunIdRef.current;
     const requestId = ++contextUsageRequestIdRef.current;
     try {
-      const res = await fetch(agentStatusUrl(sid));
+      const res = await fetch(agentStatusUrl(sid, deviceIdRef.current));
       if (!res.ok) return;
       const data = await res.json() as { state?: AgentStateResponse };
       applyLiveUsage(data.state, sid, runId, requestId);
@@ -696,7 +721,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (showLoading) setLoading(true);
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1", tree: "summary" });
       if (options?.force) params.set("force", "1");
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
+      const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(sid)}?${params}`, deviceIdRef.current));
       if (res.status === 404) {
         if (showLoading) {
           setData(null);
@@ -711,8 +736,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         deleteSessionViewSnapshot(sid);
         return null;
       }
+      if (res.status === 503) {
+        // The device is offline: say so and keep what is on screen, rather than
+        // showing a bare "HTTP 503" and dropping the transcript.
+        setOffline(true);
+        return null;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
+      setOffline(false);
       if (sessionIdRef.current !== sid) return null;
       // Freshness check: when the disk snapshot is unchanged (same opaque
       // revision), keep any history the user already paged in instead of
@@ -808,7 +840,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       try {
         const runId = promptRunIdRef.current;
         const usageRequestId = ++contextUsageRequestIdRef.current;
-        const stateRes = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
+        const stateRes = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(sid)}/state`, deviceIdRef.current));
         if (!stateRes.ok) throw new Error(`HTTP ${stateRes.status}`);
         const agentState = await stateRes.json() as { running: boolean; state?: AgentStateResponse };
         if (sessionIdRef.current !== sid) return null;
@@ -852,7 +884,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // then prepend them. Omitting `before` fetches the most-recent `tail`.
       if (before) params.set("before", before);
       if (options?.tail) params.set("tail", String(options.tail));
-      const url = `/api/sessions/${encodeURIComponent(sid)}/context?${params}`;
+      const url = withDeviceId(`/api/sessions/${encodeURIComponent(sid)}/context?${params}`, deviceIdRef.current);
       const res = await fetch(url, { signal: options?.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as { context: SessionData["context"] };
@@ -888,7 +920,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const loadTools = useCallback(async (sid: string) => {
     try {
-      const tools = await sendAgentCommand<ToolEntry[]>(sid, { type: "get_tools" });
+      const tools = await sendAgentCommand<ToolEntry[]>(sid, { type: "get_tools" }, deviceIdRef.current);
       if (!tools || !sessionHookMountedRef.current || sessionIdRef.current !== sid) return null;
       const { getPresetFromTools } = await import("@/lib/tool-presets");
       setToolPresetState(sessionToolsPinnedRef.current ? getPresetFromTools(tools) : CONFIGURED_TOOL_PRESET);
@@ -942,10 +974,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       sessionToolsPinnedRef.current = toolNames !== undefined;
       const res = await fetch("/api/agent/new", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The device travels in both places: the body for the JSON route
+          // handler, the header for the shared getRequestDeviceId reader.
+          ...(isRemoteDevice(deviceIdRef.current) ? { "x-device-id": deviceIdRef.current } : {}),
+        },
         body: JSON.stringify({
           cwd: newSessionCwd,
           type: "ensure_session",
+          ...(isRemoteDevice(deviceIdRef.current) ? { deviceId: deviceIdRef.current } : {}),
           ...(toolNames !== undefined ? { toolNames } : {}),
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
           ...(selectedThinkingLevel
@@ -998,7 +1036,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (!sid) return;
 
     const [state] = await Promise.all([
-      sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" }),
+      sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" }, deviceIdRef.current),
       loadTools(sid),
     ]);
     if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
@@ -1031,7 +1069,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       setSlashCommandsLoading(true);
       try {
-        const data = await sendAgentCommand<SlashCommandsResponse>(sid, { type: "get_commands" });
+        const data = await sendAgentCommand<SlashCommandsResponse>(sid, { type: "get_commands" }, deviceIdRef.current);
         const commands = data?.commands ?? [];
         if (current()) replaceSlashCommands(commands);
         return commands;
@@ -1079,17 +1117,29 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current?.close();
   }, []);
 
-  const ensureEventsConnected = useCallback((sid: string) => (
-    eventConnectionRef.current!.ensureConnected(sid)
-  ), []);
+  // A stream opened for another device is stale. Close it and re-stamp the
+  // connection, so the next maintain/ensure talks to the host the user picked
+  // instead of reusing the one we just left.
+  const retargetEventConnection = useCallback(() => {
+    if (eventConnectionDeviceIdRef.current === deviceIdRef.current) return;
+    eventConnectionRef.current?.close();
+    eventConnectionDeviceIdRef.current = deviceIdRef.current;
+  }, []);
+
+  const ensureEventsConnected = useCallback((sid: string) => {
+    retargetEventConnection();
+    return eventConnectionRef.current!.ensureConnected(sid);
+  }, [retargetEventConnection]);
 
   const maintainEventsConnected = useCallback((sid: string) => {
+    retargetEventConnection();
     eventConnectionRef.current!.maintain(sid);
-  }, []);
+  }, [retargetEventConnection]);
 
   // Keep the selected session's stream open even while its agent is idle. The
   // session itself stays alive on the page's lease (below), which expires if
-  // the browser disappears.
+  // the browser disappears. `deviceId` is a dependency: switching devices tears
+  // down the stream of the host we just left and opens the new one's.
   useEffect(() => {
     const sid = session?.id;
     if (!sid) return;
@@ -1104,7 +1154,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return () => {
       if (sessionIdRef.current === sid) eventConnectionRef.current?.close();
     };
-  }, [maintainEventsConnected, session?.id]);
+  }, [maintainEventsConnected, session?.id, deviceId]);
 
   // One lease request (holdSessionLivenessLease()): it keeps the session alive
   // and reports what is under way there (SessionLeaseReply). A reply that does
@@ -1118,7 +1168,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const request: { sid: string; promise: Promise<SessionLeaseOutcome> } = { sid, promise: Promise.resolve(null) };
     request.promise = (async (): Promise<SessionLeaseOutcome> => {
       try {
-        const response = await fetch(sessionLeaseUrl(sid), { method: "POST", cache: "no-store", signal: controller.signal });
+        const response = await fetch(sessionLeaseUrl(sid, deviceIdRef.current), { method: "POST", cache: "no-store", signal: controller.signal });
         return response.ok ? await response.json() as SessionLeaseReply : null;
       } catch (error) {
         // Timed out (queued behind open streams) or no network. A body that is no
@@ -1190,7 +1240,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [closeEvents, eventStreamIdle, eventStreamReattachCount, requestLease, session?.id]);
+  }, [closeEvents, eventStreamIdle, eventStreamReattachCount, requestLease, session?.id, deviceId]);
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
@@ -1204,7 +1254,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         type: "extension_ui_response",
         id: request.id,
         ...response,
-      });
+      }, deviceIdRef.current);
     } catch (e) {
       console.error("Failed to send extension UI response:", e);
     }
@@ -1218,7 +1268,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         type: "extension_ui_input",
         id: request.id,
         data,
-      });
+      }, deviceIdRef.current);
     } catch (e) {
       console.error("Failed to send extension custom UI input:", e);
     }
@@ -1320,7 +1370,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       ) return;
 
       try {
-        const res = await fetch(agentStatusUrl(sid));
+        const res = await fetch(agentStatusUrl(sid, deviceIdRef.current));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
         if (
@@ -1396,7 +1446,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     while (agentRunningRef.current && Date.now() - startedAt < PROMPT_SETTLE_MAX_MS) {
       if (runId !== undefined && promptRunIdRef.current !== runId) return;
       try {
-        const res = await fetch(agentStatusUrl(sid));
+        const res = await fetch(agentStatusUrl(sid, deviceIdRef.current));
         if (res.ok) {
           const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
           const state = data.state;
@@ -1424,7 +1474,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     ) {
       await delay(BASH_STATE_RECONCILE_MS);
       try {
-        const res = await fetch(agentStatusUrl(sid));
+        const res = await fetch(agentStatusUrl(sid, deviceIdRef.current));
         if (!res.ok) continue;
         const data = await res.json() as { state?: AgentStateResponse };
         syncLiveModel(data.state);
@@ -1452,7 +1502,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const runId = promptRunIdRef.current;
     const usageRequestId = ++contextUsageRequestIdRef.current;
     try {
-      const res = await fetch(agentStatusUrl(sid));
+      const res = await fetch(agentStatusUrl(sid, deviceIdRef.current));
       if (!res.ok) return;
       const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
       // A slow response can straddle a run boundary (previous run finished
@@ -1480,7 +1530,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (state.extensionStatuses !== undefined) setExtensionStatuses(state.extensionStatuses ?? []);
         if (state.extensionWidgets !== undefined) setExtensionWidgets(state.extensionWidgets ?? []);
         // The poll leaves the prompt out: read the one the run ended with once, as agent_end does.
-        fetch(`/api/agent/${encodeURIComponent(sid)}`)
+        fetch(withDeviceId(`/api/agent/${encodeURIComponent(sid)}`, deviceIdRef.current))
           .then((r) => r.ok ? r.json() : null)
           .then((d: { state?: AgentStateResponse } | null) => {
             if (!d || !sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
@@ -1569,7 +1619,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const runId = promptRunIdRef.current;
           const usageRequestId = ++contextUsageRequestIdRef.current;
           loadSession(sid);
-          fetch(`/api/agent/${encodeURIComponent(sid)}`)
+          fetch(withDeviceId(`/api/agent/${encodeURIComponent(sid)}`, deviceIdRef.current))
             .then((r) => r.ok ? r.json() : null)
             .then((d: { state?: AgentStateResponse } | null) => {
               if (!d || !sessionHookMountedRef.current || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
@@ -1885,7 +1935,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (selectedModel) {
           setPendingModel(selectedModel);
           if (existingSid) {
-            await sendAgentCommand(sid, { type: "set_model", provider: selectedModel.provider, modelId: selectedModel.modelId });
+            await sendAgentCommand(sid, { type: "set_model", provider: selectedModel.provider, modelId: selectedModel.modelId }, deviceIdRef.current);
           }
         }
         // Switching sessions unmounts this composer and closes its stream. The
@@ -1901,7 +1951,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           type: "prompt",
           message,
           ...(piImages?.length ? { images: piImages } : {}),
-        });
+        }, deviceIdRef.current)
         promoteNewSession(1, message);
       } else if (session) {
         sentSessionId = session.id;
@@ -1911,7 +1961,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           type: "prompt",
           message,
           ...(piImages?.length ? { images: piImages } : {}),
-        });
+        }, deviceIdRef.current);
       } else {
         throw new Error("No active session for the prompt");
       }
@@ -1966,7 +2016,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         type: "bash",
         command,
         excludeFromContext,
-      });
+      }, deviceIdRef.current);
       await loadSession(sid);
       promoteNewSession(1, inputText);
     } catch (e) {
@@ -1986,14 +2036,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (!sid) return;
     if (bashRunningRef.current) {
       try {
-        await sendAgentCommand(sid, { type: "abort_bash" });
+        await sendAgentCommand(sid, { type: "abort_bash" }, deviceIdRef.current);
       } catch (e) {
         console.error("Failed to abort bash:", e);
       }
       return;
     }
     try {
-      await sendAgentCommand(sid, { type: "abort" });
+      await sendAgentCommand(sid, { type: "abort" }, deviceIdRef.current);
     } catch (e) {
       console.error("Failed to abort:", e);
     }
@@ -2008,7 +2058,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ cancelled?: boolean; newSessionId?: string }>(sid, {
         type: "fork",
         entryId,
-      });
+      }, deviceIdRef.current);
       const { cancelled, newSessionId } = result ?? {};
       if (!cancelled && newSessionId) {
         onSessionForked?.(newSessionId);
@@ -2029,7 +2079,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ cancelled?: boolean }>(sid, {
         type: "navigate_tree",
         targetId: entryId,
-      });
+      }, deviceIdRef.current);
       if (result?.cancelled || sessionIdRef.current !== sid) return false;
       await loadSession(sid);
       return sessionIdRef.current === sid;
@@ -2050,7 +2100,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (!sid) return;
     await loadContext(sid, leafId);
     if (leafId) {
-      sendAgentCommand(sid, { type: "navigate_tree", targetId: leafId }).catch(() => {});
+      sendAgentCommand(sid, { type: "navigate_tree", targetId: leafId }, deviceIdRef.current).catch(() => {})
     }
   }, [isCompacting, loadContext]);
 
@@ -2069,7 +2119,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
       if (!sid) return;
       try {
-        await sendAgentCommand(sid, { type: "set_model", provider, modelId });
+        await sendAgentCommand(sid, { type: "set_model", provider, modelId }, deviceIdRef.current);
       } catch (e) {
         console.error("Failed to set model:", e);
       }
@@ -2083,7 +2133,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setCurrentModelOverride(target);
     setModelSwitching(true);
     try {
-      const selected = await sendAgentCommand<{ provider: string; id: string }>(sid, { type: "set_model", provider, modelId });
+      const selected = await sendAgentCommand<{ provider: string; id: string }>(sid, { type: "set_model", provider, modelId }, deviceIdRef.current)
       setLiveModel({ provider: selected.provider, modelId: selected.id });
       // Pi persists model_change synchronously. Reload the canonical session so
       // the model, thinking level, and active leaf all advance together.
@@ -2113,7 +2163,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setCompactError(null);
     setCompactResult(null);
     try {
-      const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" });
+      const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" }, deviceIdRef.current)
       setCompactResult(readCompactResult(result, "manual"));
       await loadSession(sid, true);
     } catch (e) {
@@ -2132,7 +2182,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
     let d: ModelsResponse;
     try {
-      const res = await fetch(modelsUrl, signal ? { signal } : undefined);
+      const res = await fetch(withDeviceId(modelsUrl, deviceIdRef.current), signal ? { signal } : undefined);
       if (!res.ok) {
         let detail = "";
         try {
@@ -2202,7 +2252,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     edit: { provider: string; modelId: string } | { thinkingLevel: ConcreteThinkingLevel },
   ) => {
     const cwd = newSessionCwd ?? session?.cwd;
-    const res = await fetch("/api/models/default", {
+    const res = await fetch(withDeviceId("/api/models/default", deviceIdRef.current), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...(cwd ? { cwd } : {}), ...edit }),
@@ -2267,7 +2317,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const result = await sendAgentCommand<CompactCommandResult>(sid, {
             type: "compact",
             ...(args ? { customInstructions: args } : {}),
-          });
+          }, deviceIdRef.current)
           setCompactResult(readCompactResult(result, "manual"));
           if (await loadSession(sid, true)) promoteNewSession();
           return complete({ handled: true, message: "Compacted context" });
@@ -2277,12 +2327,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (!sid) return complete({ handled: true, error: "No active session" });
           // Read the live wrapper (this POST starts it if idle) so the toggle
           // follows settings.json, not the React default of `true`.
-          const liveState = await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" });
+          const liveState = await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" }, deviceIdRef.current);
           const nextEnabled = !(liveState?.autoCompactionEnabled ?? true);
           await sendAgentCommand(sid, {
             type: "set_auto_compaction",
             enabled: nextEnabled,
-          });
+          }, deviceIdRef.current)
           setAutoCompactionEnabled(nextEnabled);
           return complete({
             handled: true,
@@ -2294,7 +2344,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         case "reload": {
           if (!sid) return complete({ handled: true, error: "No active session to reload" });
-          await sendAgentCommand(sid, { type: "reload" });
+          await sendAgentCommand(sid, { type: "reload" }, deviceIdRef.current);
           await Promise.all([
             loadSession(sid, false, true),
             loadTools(sid),
@@ -2307,14 +2357,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         case "name": {
           if (!sid) return complete({ handled: true, error: "No active session to name" });
           if (!args) return complete({ handled: true, error: "Usage: /name <name>" });
-          await sendAgentCommand(sid, { type: "set_session_name", name: args });
+          await sendAgentCommand(sid, { type: "set_session_name", name: args }, deviceIdRef.current);
           if (await loadSession(sid)) promoteNewSession();
           return complete({ handled: true, message: `Session renamed to ${args}` });
         }
 
         case "session": {
           if (!sid) return complete({ handled: true, error: "No active session" });
-          const stats = await sendAgentCommand<SessionStatsInfo>(sid, { type: "get_session_stats" });
+          const stats = await sendAgentCommand<SessionStatsInfo>(sid, { type: "get_session_stats" }, deviceIdRef.current);
           if (stats) {
             setSessionStatsOverride(stats);
           }
@@ -2338,7 +2388,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         case "copy": {
           if (!sid) return complete({ handled: true, error: "No active session" });
-          const data = await sendAgentCommand<LastAssistantTextResponse>(sid, { type: "get_last_assistant_text" });
+          const data = await sendAgentCommand<LastAssistantTextResponse>(sid, { type: "get_last_assistant_text" }, deviceIdRef.current);
           const textToCopy = data?.text ?? "";
           if (!textToCopy) return complete({ handled: true, error: "No assistant message to copy" });
           await navigator.clipboard.writeText(textToCopy);
@@ -2353,7 +2403,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const result = await sendAgentCommand<{ cancelled?: boolean; newSessionId?: string }>(sid, {
             type: "clone",
             leafId: activeLeafId,
-          });
+          }, deviceIdRef.current);
           if (result?.cancelled || !result?.newSessionId) {
             return complete({ handled: true, error: "Cannot clone an empty or unsaved session" });
           }
@@ -2399,7 +2449,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         message,
         streamingBehavior: behavior,
         ...(piImages?.length ? { images: piImages } : {}),
-      });
+      }, deviceIdRef.current);
     } catch (e) {
       console.error("Failed to submit streaming prompt:", e);
       // A transport failure after dispatch is ambiguous: the server may have
@@ -2433,7 +2483,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!sid) return;
     try {
-      await sendAgentCommand(sid, { type: "abort_compaction" });
+      await sendAgentCommand(sid, { type: "abort_compaction" }, deviceIdRef.current);
     } catch (e) {
       console.error("Failed to abort compaction:", e);
     }
@@ -2443,7 +2493,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!sid) return;
     try {
-      const result = await sendAgentCommand<{ steering?: string[]; followUp?: string[] }>(sid, { type: "clear_queue" });
+      const result = await sendAgentCommand<{ steering?: string[]; followUp?: string[] }>(sid, { type: "clear_queue" }, deviceIdRef.current);
       // clearQueue also emits an empty queue_update, but that only reaches us
       // while SSE is connected — clear locally so idle recalls update the UI.
       setQueuedMessages({ steering: [], followUp: [] });
@@ -2473,7 +2523,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
     if (!sid) return;
     try {
-      await sendAgentCommand(sid, { type: "set_thinking_level", level });
+      await sendAgentCommand(sid, { type: "set_thinking_level", level }, deviceIdRef.current);
       if (sessionHookMountedRef.current && sessionIdRef.current === sid) {
         setLiveThinkingLevel(level);
         setCurrentThinkingOverride(null);
@@ -2512,7 +2562,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ sessionId?: string; recreated?: boolean }>(sid, {
         type: "set_tools",
         ...(toolNames !== undefined ? { toolNames } : {}),
-      });
+      }, deviceIdRef.current)
       sessionToolsPinnedRef.current = toolNames !== undefined;
       const activeSessionId = result?.sessionId ?? sid;
       if (activeSessionId !== sid || result?.recreated) {
@@ -2532,7 +2582,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setExtensionStatuses([]);
       setExtensionWidgets([]);
       const [state] = await Promise.all([
-        sendAgentCommand<AgentStateResponse>(activeSessionId, { type: "get_state" }),
+        sendAgentCommand<AgentStateResponse>(activeSessionId, { type: "get_state" }, deviceIdRef.current),
         loadTools(activeSessionId),
       ]);
       if (sessionHookMountedRef.current && sessionIdRef.current === activeSessionId) {
@@ -2918,7 +2968,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   return {
     // State
-    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
+    data, loading, error, offline, activeLeafId, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats, autoCompactionEnabled,

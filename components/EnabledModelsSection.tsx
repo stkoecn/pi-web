@@ -74,7 +74,7 @@ const FAILURE_KEYS: Record<string, string> = {
   "project-scope": "models.enabledProjectScope",
 };
 
-export function useEnabledModels(cwd?: string | null): EnabledModelsController {
+export function useEnabledModels(cwd?: string | null, deviceId: string = "localhost"): EnabledModelsController {
   const [view, setView] = useState<EnabledModelsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<string | null>(null);
@@ -88,7 +88,10 @@ export function useEnabledModels(cwd?: string | null): EnabledModelsController {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
+    const params = new URLSearchParams();
+    if (cwd) params.set("cwd", cwd);
+    if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
+    const query = params.toString() ? `?${params.toString()}` : "";
     fetch(`/api/models/enabled${query}`, { signal: controller.signal })
       .then(async (res) => {
         const data = await res.json() as EnabledModelsView & { error?: string };
@@ -104,7 +107,7 @@ export function useEnabledModels(cwd?: string | null): EnabledModelsController {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [cwd, reloadKey]);
+  }, [cwd, deviceId, reloadKey]);
 
   const mutate = useCallback((key: string, body: MutationBody) => {
     // A save can land while a switch is still in flight; queue it rather than
@@ -121,7 +124,11 @@ export function useEnabledModels(cwd?: string | null): EnabledModelsController {
         const res = await fetch("/api/models/enabled", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...body, ...(cwd ? { cwd } : {}) }),
+          body: JSON.stringify({
+            ...body,
+            ...(cwd ? { cwd } : {}),
+            ...(deviceId && deviceId !== "localhost" ? { deviceId } : {}),
+          }),
         });
         const data = await res.json() as EnabledModelsView & { error?: string; reason?: string };
         if (!res.ok || data.error) {
@@ -140,7 +147,7 @@ export function useEnabledModels(cwd?: string | null): EnabledModelsController {
         if (queued) mutateRef.current?.(queued.key, queued.body);
       }
     })();
-  }, [cwd]);
+  }, [cwd, deviceId]);
 
   mutateRef.current = mutate;
 

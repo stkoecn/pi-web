@@ -10,9 +10,16 @@ export type TerminalEvent =
 
 type TerminalListener = (event: TerminalEvent) => void;
 
+export interface TerminalPtyLike {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal?: string): void;
+}
+
 interface TerminalRecord {
-  pty: IPty;
+  pty: TerminalPtyLike;
   cwd: string;
+  deviceId?: string;
   listeners: Set<TerminalListener>;
   backlog: string;
   offset: number;
@@ -71,12 +78,68 @@ function dimension(value: number, fallback: number): number {
   return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
 }
 
-export function createTerminal(cwd: string, cols: number, rows: number, id: string = randomUUID()): string {
+export async function createTerminal(
+  cwd: string,
+  cols: number,
+  rows: number,
+  id: string = randomUUID(),
+  deviceId?: string,
+): Promise<string> {
   const existing = registry().get(id);
   if (existing) {
-    if (!samePath(existing.cwd, cwd)) throw new Error("Terminal belongs to a different workspace");
+    if (existing.deviceId === deviceId && !samePath(existing.cwd, cwd)) {
+      throw new Error("Terminal belongs to a different workspace");
+    }
     return id;
   }
+
+  // Handle remote device through Gateway driver
+  if (deviceId && deviceId !== "localhost") {
+    const { getGateway } = await import("./gateway/singleton");
+    const driver = await getGateway().getOrConnectDriver(deviceId);
+    const session = await driver.createTerminal({
+      cwd,
+      cols: dimension(cols, 80),
+      rows: dimension(rows, 24),
+    });
+
+    const record: TerminalRecord = {
+      pty: {
+        write: (d: string) => session.write(d),
+        resize: (c: number, r: number) => session.resize(c, r),
+        kill: () => session.close(),
+      },
+      cwd,
+      deviceId,
+      listeners: new Set(),
+      backlog: "",
+      offset: 0,
+      exited: false,
+      exitCode: null,
+      cleanupTimer: null,
+    };
+    registry().set(id, record);
+    scheduleCleanup(id, record);
+
+    session.onData((buf: Buffer) => {
+      const data = buf.toString("utf-8");
+      record.backlog = (record.backlog + data).slice(-MAX_BACKLOG);
+      record.offset += data.length;
+      emit(record, { type: "output", data, offset: record.offset });
+    });
+
+    session.onExit((exitCode: number) => {
+      if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
+      record.cleanupTimer = null;
+      record.exited = true;
+      record.exitCode = exitCode;
+      emit(record, { type: "exit", exitCode });
+      scheduleCleanup(id, record);
+    });
+
+    return id;
+  }
+
   let spawn: typeof import("node-pty").spawn;
   try {
     // Load inside creation so native module failures reach the API's JSON error handler.

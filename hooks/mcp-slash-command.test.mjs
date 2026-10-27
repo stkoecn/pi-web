@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { bareMcpOpensSettings } from "../lib/mcp-command.ts";
+import { withDeviceId } from "../lib/device-context.ts";
 
 // A bare /mcp opens Settings › MCP when pi's built-in MCP extension owns it, or
 // when the session has no /mcp at all (ADR 0006, lib/mcp-command.ts). These tests
@@ -57,6 +58,9 @@ function hook({ commands = [], pending = null, getCommands = async () => ({ comm
   const calls = { notices: [], opened: [], requests: [], lists: [], errors: [], loading: [] };
   const scope = {
     sessionIdRef: { current: "session-1" },
+    // The hook reads the device it talks to from a ref; these runs are local.
+    deviceIdRef: { current: "localhost" },
+    withDeviceId,
     ensureNewSession: async () => "session-1",
     addNotice: (notice) => calls.notices.push(notice),
     onOpenSettings: openSettings ? (section) => calls.opened.push(section) : undefined,

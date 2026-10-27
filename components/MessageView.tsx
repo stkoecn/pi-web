@@ -12,6 +12,8 @@ import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, getThinkingPreview, hasAssistantAnswer, isAssistantTruncated, isEmptyThinkingBlock, splitThinkingPieces } from "@/lib/message-display";
 import { formatTurnDuration } from "@/lib/turn-duration";
 import { diffGapLabel, parseUnifiedPatch, unifiedDiffLines, type SplitDiffCell, type SplitDiffFile, type SplitDiffGap, type UnifiedDiffLine } from "@/lib/patch";
+import { withDeviceId } from "@/lib/device-context";
+import { useClientDeviceId } from "./DeviceIdContext";
 import { applyPatchPreviewToFiles, applyPatchResultHasFailures, extractApplyPatchPaths, getApplyPatchInputText, parseApplyPatchInput } from "@/lib/apply-patch";
 import { isApplyPatchToolName, isEditToolName, isWriteToolName } from "@/lib/tool-names";
 import { isToolCallExpanded, setToolCallExpanded } from "@/lib/tool-call-expansion";
@@ -161,8 +163,15 @@ function SafeMarkdownBody({ children, className, ...props }: React.ComponentProp
 // push the conversation off screen; overflow scrolls inside the bubble.
 const USER_BUBBLE_MAX_HEIGHT = 300;
 
-function loadThinkingContent(sessionId: string, entryId: string, blockIndex: number): Promise<string> {
-  const key = `${sessionId}:${entryId}:${blockIndex}`;
+function loadThinkingContent(
+  sessionId: string,
+  entryId: string,
+  blockIndex: number,
+  deviceId: string,
+): Promise<string> {
+  // The device is part of the key: two devices may hold a session with the same
+  // id, and a deferred thinking block is read from whichever one is showing.
+  const key = `${deviceId}:${sessionId}:${entryId}:${blockIndex}`;
   const cached = thinkingContentCache.get(key);
   if (cached) {
     thinkingContentCache.delete(key);
@@ -171,7 +180,10 @@ function loadThinkingContent(sessionId: string, entryId: string, blockIndex: num
   }
 
   const request = fetch(
-    `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/thinking?blockIndex=${blockIndex}`,
+    withDeviceId(
+      `/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entryId)}/thinking?blockIndex=${blockIndex}`,
+      deviceId,
+    ),
   ).then(async (response) => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json() as { thinking?: unknown };
@@ -1033,6 +1045,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
   blockIndex: number;
 }) {
   const { t } = useI18n();
+  const deviceId = useClientDeviceId();
   const [expanded, setExpanded] = useState(isThinkingExpandedByDefault);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1071,7 +1084,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
     let cancelled = false;
     setLoading(true);
     setError(null);
-    loadThinkingContent(sessionId, entryId, blockIndex)
+    loadThinkingContent(sessionId, entryId, blockIndex, deviceId)
       .then((value) => {
         if (!cancelled) {
           setContent(value);
@@ -1087,7 +1100,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
     return () => {
       cancelled = true;
     };
-  }, [expanded, block.deferred, content, sessionId, entryId, blockIndex]);
+  }, [expanded, block.deferred, content, sessionId, entryId, blockIndex, deviceId]);
 
   return (
     <div style={{

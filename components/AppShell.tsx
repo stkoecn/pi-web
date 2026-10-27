@@ -2,6 +2,8 @@
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { deviceAwareHref, withDeviceId } from "@/lib/device-context";
+import { DeviceIdProvider } from "./DeviceIdContext";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar, type SelectSessionOptions, type SessionSidebarControl } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
@@ -18,6 +20,7 @@ import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
 import { AgentSessionPanel } from "./AgentSessionPanel";
 import { SubagentViewer } from "./SubagentViewer";
 import { TerminalPanel } from "./TerminalPanel";
+import { DeviceSelector } from "./DeviceSelector";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
 import { useTheme } from "@/hooks/useTheme";
 import { useFontPreferences } from "@/hooks/useFontPreferences";
@@ -75,6 +78,7 @@ import type { FileViewerState } from "@/lib/file-viewer-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { getAgentsBadge, getSessionFamily } from "@/lib/session-family";
 import { getLastSettingsSection, settingsSectionRequiresProject, type SettingsSection } from "@/lib/settings-navigation";
+import { deviceHomeOrRoot, loadHome } from "@/lib/device-home-client";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -532,6 +536,81 @@ export function AppShell() {
   // tab just parked goes to its workspace, not to a same-path tab restored.
   const [fileWorkspaceGeneration, setFileWorkspaceGeneration] = useState(0);
   const fileWorkspaceGenerationRef = useRef(0);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(() => initialNavigation.deviceId || "localhost");
+  // Navigation URLs must keep the selected device: `router.replace("?session=…")`
+  // drops every other query param, which used to bounce a remote session back to
+  // localhost. A ref (not the state value) keeps the many callbacks below from
+  // needing `selectedDeviceId` in their dependency lists.
+  const selectedDeviceIdRef = useRef(selectedDeviceId);
+  selectedDeviceIdRef.current = selectedDeviceId;
+  // Settings › Devices writes devices.json, which the switcher caches for 15 s.
+  // This counter lets an edit or a reload reach the switcher without waiting.
+  const [devicesRefreshKey, setDevicesRefreshKey] = useState(0);
+  const [missingPiDevice, setMissingPiDevice] = useState<string | null>(null);
+  const [installingPiDevice, setInstallingPiDevice] = useState<string | null>(null);
+  /** The host a click is dialling, so the switcher can say it is working. */
+  const [connectingDeviceId, setConnectingDeviceId] = useState<string | null>(null);
+  /** A refused switch: the old view is still there, and this says why. */
+  const [deviceToast, setDeviceToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedDeviceId || selectedDeviceId === "localhost") {
+      setMissingPiDevice(null);
+      return;
+    }
+    const devId = selectedDeviceId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/devices/env?id=${encodeURIComponent(devId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.online && data.hasPi === false) {
+          setMissingPiDevice(devId);
+        } else if (!cancelled && data.hasPi) {
+          setMissingPiDevice(null);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDeviceId]);
+
+  // A refused switch says why, then gets out of the way: the old view is still
+  // usable, so the notice must not need dismissing.
+  useEffect(() => {
+    if (!deviceToast) return;
+    const timer = setTimeout(() => setDeviceToast(null), 8000);
+    return () => clearTimeout(timer);
+  }, [deviceToast]);
+
+  const handleInstallPiOnDevice = useCallback(async (devId: string) => {
+    setInstallingPiDevice(devId);
+    try {
+      const res = await fetch("/api/devices/env", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: devId, action: "install_pi" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMissingPiDevice(null);
+        setModelsRefreshKey((k) => k + 1);
+      } else {
+        alert(`安装失败: ${data.stderr || data.error || "未知错误"}`);
+      }
+    } catch (err: any) {
+      alert(`安装请求失败: ${err?.message || String(err)}`);
+    } finally {
+      setInstallingPiDevice(null);
+    }
+  }, []);
+  const deviceHref = useCallback(
+    (params: Record<string, string | number | null | undefined> | null, pathname?: string) =>
+      deviceAwareHref(params, selectedDeviceIdRef.current, pathname),
+    [],
+  );
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
   // Subagent work tabs are session-scoped and transient: no persistence, and
@@ -541,7 +620,9 @@ export function AppShell() {
     ...fileTabs,
     ...terminalTabs.map((tab) => ({
       id: tab.id,
-      label: getFileName(tab.cwd) || tab.cwd,
+      label: tab.deviceId && tab.deviceId !== "localhost"
+        ? `[${tab.deviceId}] ${getFileName(tab.cwd) || tab.cwd}`
+        : getFileName(tab.cwd) || tab.cwd,
       filePath: tab.cwd,
       kind: "terminal" as const,
       closing: Boolean(tab.closing),
@@ -686,7 +767,7 @@ export function AppShell() {
     void fetch("/api/cwd/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cwd: requestedCwd }),
+      body: JSON.stringify({ cwd: requestedCwd, deviceId: initialNavigation.deviceId || selectedDeviceId }),
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -704,7 +785,7 @@ export function AppShell() {
         setNewSessionCwd(data.cwd);
         setInitialCwdStatus("ready");
         if (!new URLSearchParams(window.location.search).get("cwd")) {
-          router.replace(`?cwd=${encodeURIComponent(data.cwd)}`, { scroll: false });
+          router.replace(deviceHref({ cwd: data.cwd }), { scroll: false });
         }
       })
       .catch((error: unknown) => {
@@ -753,7 +834,7 @@ export function AppShell() {
       setSelectedSession(s);
       setSessionKey((k) => k + 1);
       if (new URLSearchParams(window.location.search).get("session") !== s.id) {
-        router.replace(`?session=${encodeURIComponent(s.id)}`, { scroll: false });
+        router.replace(deviceHref({ session: s.id }), { scroll: false });
       }
     };
     // Fast path: the sidebar already delivered the catalogue — restore
@@ -762,7 +843,7 @@ export function AppShell() {
       adopt({ sessions: sessionCatalog });
       return;
     }
-    void fetch("/api/sessions")
+    void fetch(withDeviceId("/api/sessions", selectedDeviceIdRef.current))
       .then((r) => (r.ok ? (r.json() as Promise<{ sessions: SessionInfo[] }>) : null))
       .then(adopt)
       .catch(() => {
@@ -839,7 +920,7 @@ export function AppShell() {
       // the default welcome page when none is remembered.
       if (!skipWorkspaceRestore) restoreWorkspaceContext(newProject, cwd);
     }
-    router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
+    router.replace(deviceHref(null), { scroll: false });
   }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false, entryId?: string, blockIndex?: number, options?: SelectSessionOptions) => {
@@ -894,7 +975,7 @@ export function AppShell() {
     // Tab-memory restore lands on `/` and must write `?session=` so reload
     // and copy-link keep this session.
     if (!isRestore || new URLSearchParams(window.location.search).get("session") !== session.id) {
-      router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
+      router.replace(deviceHref({ session: session.id }), { scroll: false });
     }
   }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession]);
 
@@ -939,7 +1020,7 @@ export function AppShell() {
     setSystemInfoLoading(false);
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
-    router.replace(`?cwd=${encodeURIComponent(cwd)}`, { scroll: false });
+    router.replace(deviceHref({ cwd }), { scroll: false });
     // The fresh composer takes the caret once it renders (#1313), unless the
     // move came from the new-session bar, whose control keeps focus instead
     // (newSessionBarFocusRef), or a phone would raise the keyboard for it.
@@ -950,7 +1031,7 @@ export function AppShell() {
         chatInputRef.current?.focus();
       });
     }
-  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, isMobile, newSessionCwd, router, selectedSession]);
+  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, isMobile, newSessionCwd, router, deviceHref, selectedSession]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
   useGlobalKeyboardShortcuts({
@@ -963,7 +1044,7 @@ export function AppShell() {
   // handleCwdChange relies on. Hydrate it from the session list so switching
   // worktrees right after creating a session doesn't close the chat.
   const hydrateSelectedSession = useCallback((sessionId: string) => {
-    void fetch("/api/sessions", { cache: "no-store" })
+    void fetch(withDeviceId("/api/sessions", selectedDeviceIdRef.current), { cache: "no-store" })
       .then((r) => (r.ok ? (r.json() as Promise<{ sessions: SessionInfo[] }>) : null))
       .then((d) => {
         const full = d?.sessions.find((s) => s.id === sessionId);
@@ -986,8 +1067,8 @@ export function AppShell() {
     setNewSessionCwd(null);
     setSelectedSession(session);
     hydrateSelectedSession(session.id);
-    router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+    router.replace(deviceHref({ session: session.id }), { scroll: false });
+  }, [invalidateWorkspaceRestore, router, deviceHref, hydrateSelectedSession]);
 
   const deliverSessionNotification = useCallback(({
     targetSession,
@@ -1127,8 +1208,8 @@ export function AppShell() {
       transient: false,
     }));
     hydrateSelectedSession(newSessionId);
-    router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+    router.replace(deviceHref({ session: newSessionId }), { scroll: false });
+  }, [invalidateWorkspaceRestore, router, deviceHref, hydrateSelectedSession]);
 
   const handleAskInNewChat = useCallback(async (
     prompt: string,
@@ -1176,9 +1257,9 @@ export function AppShell() {
       setSystemTools(null);
       setSystemInfoLoading(false);
       setActiveTopPanel(null);
-      router.replace(cwd ? `?cwd=${encodeURIComponent(cwd)}` : (typeof window !== "undefined" ? window.location.pathname : "/"), { scroll: false });
+      router.replace(deviceHref(cwd ? { cwd } : null), { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, router]);
+  }, [invalidateWorkspaceRestore, router, deviceHref]);
 
   const handleOpenFile = useCallback((
     filePath: string,
@@ -1207,14 +1288,75 @@ export function AppShell() {
     handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
   }, [handleOpenFile, selectedSession?.id]);
 
-  const handleOpenTerminal = useCallback((cwd: string) => {
-    const existing = terminalTabs.find((tab) => tab.cwd === cwd);
-    const tab = existing ?? newTerminalTab(cwd);
+  /**
+   * Switch hosts only after the new one answers.
+   *
+   * Picking a host used to move the whole view first and discover afterwards,
+   * which turned a typo, a sleeping machine or a rotated key into an error page
+   * where a working chat had been. The dial happens first now: a host that does
+   * not come up leaves everything as it was and says why in a toast. A host
+   * that is already online answers without a handshake, so the common case does
+   * not pay for this.
+   */
+  const handleSelectDevice = useCallback(async (id: string) => {
+    if (id !== "localhost" && id !== selectedDeviceIdRef.current) {
+      setConnectingDeviceId(id);
+      try {
+        const res = await fetch("/api/devices/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, action: "connect" }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+        if (!res.ok || body.success !== true) {
+          setDeviceToast(`${id}: ${body.error ?? `HTTP ${res.status}`}`);
+          return;
+        }
+      } catch (cause) {
+        setDeviceToast(`${id}: ${cause instanceof Error ? cause.message : String(cause)}`);
+        return;
+      } finally {
+        setConnectingDeviceId(null);
+      }
+    }
+    setSelectedDeviceId(id);
+    const isRemote = id !== "localhost";
+    // Not `/root`: a macOS device answers `/Users/<name>`. Start at
+    // its home (already cached when the sidebar listed it, `/` until
+    // the lookup lands) and correct the workspace once it resolves.
+    const nextCwd = isRemote ? deviceHomeOrRoot(id) : null;
+    setActiveCwd(nextCwd);
+    setSelectedSession(null);
+    setNewSessionCwd(nextCwd);
+    setSessionKey((k) => k + 1);
+    setModelsRefreshKey((k) => k + 1);
+    setExplorerRefreshKey((k) => k + 1);
+    clearTabOpenSession();
+    // On a phone the drawer covers the chat, and picking a host is a request to
+    // look at what it has, so the drawer closes on the answer.
+    if (isMobile) setSidebarOpen(false);
+    if (isRemote) {
+      router.replace(deviceHref({ deviceId: id, cwd: nextCwd ?? "/" }, "/"), { scroll: false });
+      void loadHome(id).then((home) => {
+        if (!home || home === nextCwd) return;
+        setActiveCwd((current) => (current === nextCwd ? home : current));
+        setNewSessionCwd((current) => (current === nextCwd ? home : current));
+        router.replace(deviceHref({ deviceId: id, cwd: home }, "/"), { scroll: false });
+      });
+    } else {
+      router.replace(deviceHref(null, "/"), { scroll: false });
+    }
+  }, [deviceHref, isMobile, router]);
+
+  const handleOpenTerminal = useCallback((cwd: string, targetDeviceId?: string) => {
+    const devId = targetDeviceId ?? selectedDeviceId;
+    const existing = terminalTabs.find((tab) => tab.cwd === cwd && (tab.deviceId ?? "localhost") === devId);
+    const tab = existing ?? newTerminalTab(cwd, devId);
     if (!existing) setTerminalTabs((tabs) => [...tabs, tab]);
     setActiveFileTabId(tab.id);
     setRightPanelOpen(true);
     if (isMobile) setSidebarOpen(false);
-  }, [terminalTabs, isMobile]);
+  }, [terminalTabs, isMobile, selectedDeviceId]);
 
   // Subagent work opens in a right-panel tab instead of hijacking the main chat.
   const handleOpenSubagentTab = useCallback((sessionId: string, label: string) => {
@@ -1242,7 +1384,7 @@ export function AppShell() {
   };
 
   const handleTerminalClosed = (tab: TerminalTab) => {
-    const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd) : null;
+    const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd, tab.deviceId) : null;
     const remaining = terminalTabs.filter((item) => item.id !== tab.id);
     setTerminalTabs((tabs) => tabs.flatMap((item) => item.id !== tab.id ? [item] : replacement ? [replacement] : []));
     setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? lastAgentTabId(agentTabs));
@@ -1340,6 +1482,7 @@ export function AppShell() {
       onOpenFolder={handleOpenFolderForNewSession}
       onRefreshWorktrees={handleRefreshNewSessionWorktrees}
       onCreateWorktree={handleCreateNewSessionWorktree}
+      deviceId={selectedDeviceId}
     />
   ) : null;
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
@@ -1356,7 +1499,7 @@ export function AppShell() {
     const controller = new AbortController();
     // The answer also lists the project's MCP servers (`mcpFile`, `mcpServers`), unused here: the
     // trust dialog fetches the listing again when it opens, since the file can change in between.
-    fetch(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, {
+    fetch(withDeviceId(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, selectedDeviceIdRef.current), {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -1379,7 +1522,7 @@ export function AppShell() {
       const response = await fetch("/api/project-trust", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: projectTrustCwd }),
+        body: JSON.stringify({ cwd: projectTrustCwd, deviceId: selectedDeviceIdRef.current }),
       });
       const data = await response.json() as ProjectTrustStatus & Partial<McpErrorResponse>;
       if (!response.ok || data.error) {
@@ -1442,10 +1585,11 @@ export function AppShell() {
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
-        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
+        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? activeCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
         onOpenTerminal={handleOpenTerminal}
+        deviceId={selectedDeviceId}
         explorerRefreshKey={explorerRefreshKey}
         onExplorerRefresh={handleExplorerRefresh}
         onAtMention={handleAtMention}
@@ -1503,6 +1647,60 @@ export function AppShell() {
       </div>
     </>
   );
+
+  const renderPiMissingWarning = (mobileBanner: boolean) => {
+    if (!missingPiDevice) return null;
+    return (
+      <button
+        type="button"
+        onClick={() => void handleInstallPiOnDevice(missingPiDevice)}
+        disabled={Boolean(installingPiDevice)}
+        title={`远程设备 [${missingPiDevice}] 尚未安装 pi 环境，点击一键安装`}
+        aria-label="一键安装远程 pi 环境"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: mobileBanner ? "flex-start" : "center",
+          gap: 6,
+          width: mobileBanner ? "100%" : undefined,
+          minHeight: mobileBanner ? 28 : undefined,
+          height: mobileBanner ? undefined : "100%",
+          padding: mobileBanner ? "4px 12px" : "0 10px",
+          background: mobileBanner ? "var(--bg-panel)" : "none",
+          border: "none",
+          borderRight: mobileBanner ? "none" : "1px solid var(--border)",
+          borderBottom: mobileBanner ? "1px solid var(--border)" : "none",
+          color: "var(--accent)",
+          cursor: installingPiDevice ? "wait" : "pointer",
+          flexShrink: 0,
+          fontSize: 11,
+          lineHeight: 1.35,
+          fontFamily: "inherit",
+          textAlign: "left",
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <span>
+          {installingPiDevice
+            ? "正在安装远程环境..."
+            : `安装 pi 环境 (${missingPiDevice})`}
+        </span>
+      </button>
+    );
+  };
 
   const renderProjectTrustWarning = (mobileBanner: boolean) => {
     if (!showChat || !projectTrust?.requiresTrust || projectTrust.trusted) return null;
@@ -2062,7 +2260,36 @@ export function AppShell() {
   };
 
   return (
+    <DeviceIdProvider deviceId={selectedDeviceId}>
     <>
+    {/* A refused host switch: the previous host is still on screen, so the
+        reason has to be visible somewhere other than the view that did not
+        change. Dismisses itself; clicking it goes away too. */}
+    {deviceToast && (
+      <div
+        role="status"
+        data-device-toast="true"
+        onClick={() => setDeviceToast(null)}
+        style={{
+          position: "fixed",
+          left: "50%",
+          transform: "translateX(-50%)",
+          top: "calc(44px + env(safe-area-inset-top))",
+          zIndex: 3000,
+          maxWidth: "min(92vw, 520px)",
+          padding: "8px 14px",
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+          background: "var(--bg-panel)",
+          color: "var(--text)",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+          fontSize: 12,
+          cursor: "pointer",
+        }}
+      >
+        {deviceToast}
+      </div>
+    )}
     <style>{`
       @keyframes session-info-pop {
         0% {
@@ -2243,11 +2470,23 @@ export function AppShell() {
                 height: "100%",
               }}
             >
+              {/* The host switcher stays in the phone top bar: it is the only
+                  way to change device, and hiding it behind the More overlay
+                  left phones unable to leave localhost at all. Icon-only, with
+                  the status dot on the glyph's corner. */}
+              <DeviceSelector
+                selectedDeviceId={selectedDeviceId}
+                onSelectDevice={handleSelectDevice}
+                onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                onOpenSettings={(sec) => setSettingsSection((sec as any) || "devices")}
+                refreshKey={devicesRefreshKey}
+                connectingDeviceId={connectingDeviceId}
+                compact
+              />
               {isNarrowMobile && (
                 <button
                   type="button"
-                  onClick={handleMobileToolbarMoreToggle}
-                  title={mobileToolbarMoreOpen ? translate("chat.close") : translate("chat.moreControls")}
+                  onClick={handleMobileToolbarMoreToggle}                  title={mobileToolbarMoreOpen ? translate("chat.close") : translate("chat.moreControls")}
                   aria-label={mobileToolbarMoreOpen ? translate("chat.close") : translate("chat.moreControls")}
                   aria-controls="mobile-toolbar-actions"
                   aria-expanded={mobileToolbarMoreOpen}
@@ -2304,7 +2543,16 @@ export function AppShell() {
           )}
           {!isMobile && (
             <>
+              <DeviceSelector
+                selectedDeviceId={selectedDeviceId}
+                onSelectDevice={handleSelectDevice}
+                onOpenTerminalOnDevice={(id) => handleOpenTerminal(id === "localhost" ? (activeCwd || "~") : "~", id)}
+                onOpenSettings={(sec) => setSettingsSection((sec as any) || "devices")}
+                refreshKey={devicesRefreshKey}
+                connectingDeviceId={connectingDeviceId}
+              />
               {renderProjectTrustWarning(false)}
+              {renderPiMissingWarning(false)}
               {renderChatToolbarActions(false)}
               {renderSessionStatsButton(false)}
             </>
@@ -2561,6 +2809,7 @@ export function AppShell() {
 
         </div>
         {isMobile && renderProjectTrustWarning(true)}
+        {isMobile && renderPiMissingWarning(true)}
         </div>
 
         {/* Chat content */}
@@ -2569,6 +2818,7 @@ export function AppShell() {
             <ChatWindow
               key={sessionKey}
               session={selectedSession}
+              deviceId={selectedDeviceId}
               searchTarget={searchTarget?.sessionId === selectedSession?.id ? searchTarget : null}
               onSearchTargetHandled={handleSearchTargetHandled}
               initialScrollPosition={selectedSession ? sessionScrollPositionsRef.current.get(selectedSession.id) ?? null : null}
@@ -2743,6 +2993,7 @@ export function AppShell() {
               filePath={activeFileTab.filePath}
               cwd={activeCwd ?? undefined}
               sourceSessionId={activeFileTab.sourceSessionId}
+              deviceId={selectedDeviceId}
               gitRefreshKey={explorerRefreshKey}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialPage={activeFileTab.page}
@@ -2792,6 +3043,7 @@ export function AppShell() {
     </div>
     {settingsSection && (
       <SettingsPanel
+        deviceId={selectedDeviceId}
         cwd={projectTrustCwd}
         sessionId={selectedSession?.id ?? null}
         initialSection={settingsSection}
@@ -2802,6 +3054,7 @@ export function AppShell() {
           setModelsRefreshKey((key) => key + 1);
         }}
         onSessionReloaded={() => setSessionKey((key) => key + 1)}
+        onDevicesChanged={() => setDevicesRefreshKey((key) => key + 1)}
         projectTrust={projectTrust}
         onOpenTrustDialog={openProjectTrustDialog}
         onProjectTrustChanged={handleProjectTrustChanged}
@@ -2818,8 +3071,10 @@ export function AppShell() {
         }}
         onConfirm={() => void handleTrustProject()}
         onStatus={setProjectTrust}
+        deviceId={selectedDeviceId}
       />
     )}
     </>
+    </DeviceIdProvider>
   );
 }

@@ -31,6 +31,24 @@ type CheckOptions = {
   packages?: ConfiguredPackage[];
   npmCommand?: string[];
   runCommand?: CommandRunner;
+  /**
+   * Read a file on the machine the packages live on, and say whether a path
+   * exists there. Defaults to this host. A remote device supplies its own, so
+   * the version comparison below stays one implementation for both.
+   */
+  readFile?: (path: string) => Promise<string>;
+  exists?: (path: string) => Promise<boolean>;
+};
+
+/** Where the installed packages are: this host, unless a device says otherwise. */
+type CheckIo = {
+  readFile: (path: string) => Promise<string>;
+  exists: (path: string) => Promise<boolean>;
+};
+
+const LOCAL_IO: CheckIo = {
+  readFile: async (path) => readFileSync(path, "utf8"),
+  exists: async (path) => existsSync(path),
 };
 
 function toPluginScope(scope: ConfiguredPackage["scope"]): PluginScope {
@@ -94,8 +112,8 @@ async function runCommand(
   return stdout;
 }
 
-function readInstalledVersion(installedPath: string): string {
-  const parsed = JSON.parse(readFileSync(join(installedPath, "package.json"), "utf8")) as {
+async function readInstalledVersion(installedPath: string, io: CheckIo): Promise<string> {
+  const parsed = JSON.parse(await io.readFile(join(installedPath, "package.json"))) as {
     version?: unknown;
   };
   if (typeof parsed.version !== "string" || !valid(parsed.version)) {
@@ -120,15 +138,16 @@ async function checkNpmPackage(
   cwd: string,
   npmCommand: string[] | undefined,
   runner: CommandRunner,
+  io: CheckIo,
 ): Promise<PluginUpdateResult> {
-  if (!pkg.installedPath || !existsSync(pkg.installedPath)) {
+  if (!pkg.installedPath || !(await io.exists(pkg.installedPath))) {
     return result(pkg, "error", "Package is not installed.");
   }
   const npm = parseNpmSource(pkg.source);
   if (!npm) return result(pkg, "unsupported");
   const [command = "npm", ...commandArgs] = npmCommand ?? [];
   if (!command) return result(pkg, "error", "Invalid npmCommand.");
-  const current = readInstalledVersion(pkg.installedPath);
+  const current = await readInstalledVersion(pkg.installedPath, io);
   const stdout = await runner(
     command,
     [...commandArgs, "view", npm.spec, "version", "--json"],
@@ -142,8 +161,9 @@ async function checkNpmPackage(
 async function checkGitPackage(
   pkg: ConfiguredPackage,
   runner: CommandRunner,
+  io: CheckIo,
 ): Promise<PluginUpdateResult> {
-  if (!pkg.installedPath || !existsSync(pkg.installedPath)) {
+  if (!pkg.installedPath || !(await io.exists(pkg.installedPath))) {
     return result(pkg, "error", "Package is not installed.");
   }
   const options = {
@@ -189,6 +209,10 @@ export async function checkPluginUpdates(
     return pkg.source === filter.source && toPluginScope(pkg.scope) === filter.scope;
   });
   const runner = options.runCommand ?? runCommand;
+  const io: CheckIo = {
+    readFile: options.readFile ?? LOCAL_IO.readFile,
+    exists: options.exists ?? LOCAL_IO.exists,
+  };
 
   return Promise.all(selected.map(async (pkg) => {
     if (!isPluginSourceCheckable(pkg.source)) {
@@ -199,8 +223,8 @@ export async function checkPluginUpdates(
     }
     try {
       return parseNpmSource(pkg.source)
-        ? await checkNpmPackage(pkg, cwd, npmCommand, runner)
-        : await checkGitPackage(pkg, runner);
+        ? await checkNpmPackage(pkg, cwd, npmCommand, runner, io)
+        : await checkGitPackage(pkg, runner, io);
     } catch (error) {
       return result(pkg, "error", error instanceof Error ? error.message : String(error));
     }

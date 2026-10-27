@@ -1,13 +1,37 @@
 import { NextResponse } from "next/server";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { resolveSessionPath } from "@/lib/session-reader";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { DeviceOfflineError } from "@/lib/gateway/singleton";
+import { getRemoteRpcSession } from "@/lib/remote-agent-manager";
+import { findRemoteSessionFile } from "@/lib/remote-session-store";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   try {
+    const deviceId = getRequestDeviceId(req);
+    if (isRemoteDevice(deviceId)) {
+      const live = getRemoteRpcSession(id);
+      if (live) {
+        // `RPCChannel.send` is fire-and-forget (returns void), so a fresh
+        // `get_state` cannot be awaited here. The cached state captured by
+        // `createRemoteRpcSession` is the best snapshot available.
+        return NextResponse.json({ running: true, state: live.state });
+      }
+      // Not running: only report idle when the transcript actually exists on
+      // the device, so a stale sidebar row 404s instead of looking idle. The
+      // catalogue answer is enough — reading the transcript just to say
+      // "idle" cost a second round trip for a boolean.
+      const remote = await findRemoteSessionFile(deviceId, id);
+      if (!remote) {
+        return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      }
+      return NextResponse.json({ running: false });
+    }
+
     const rpc = getRpcSession(id);
     if (rpc?.isAlive()) {
       const state = await rpc.send({ type: "get_state" });
@@ -19,6 +43,14 @@ export async function GET(
     }
     return NextResponse.json({ running: false });
   } catch (error) {
+    // A device mid-reconnect answers at once with a state the client can act on
+    // instead of a 500 after the pool's ten-second connect wait.
+    if (error instanceof DeviceOfflineError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code, deviceId: error.deviceId },
+        { status: 503 },
+      );
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

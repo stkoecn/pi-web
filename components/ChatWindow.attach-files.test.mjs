@@ -34,6 +34,9 @@ async function attach(files, { cwd = "/project", response } = {}) {
   const scope = {
     session: null,
     newSessionCwd: cwd,
+    // ChatWindow threads the gateway device into the upload so a drop lands on
+    // the device the chat runs on; this suite extracts the callback body alone.
+    deviceId: "localhost",
     chatInputRef: {
       current: {
         addImages: (images) => calls.images.push(...images),

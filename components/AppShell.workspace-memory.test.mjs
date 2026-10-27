@@ -33,9 +33,23 @@ test("a linked session that is gone gets no other session in its place (#1168)",
       const context = vm.createContext({
         ...draftStore,
         crypto: globalThis.crypto,
+        // AppShell routes navigation and fetches through these two helpers so the
+        // selected device survives. These suites extract callback bodies into a vm
+        // sandbox, so both are stubbed for a localhost session.
+        deviceHref: (params) => {
+          const search = new URLSearchParams();
+          for (const [key, value] of Object.entries(params ?? {})) {
+            if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+          }
+          const query = search.toString();
+          return query ? `?${query}` : "/";
+        },
+        withDeviceId: (url) => url,
+        selectedDeviceIdRef: { current: "localhost" },
         URLSearchParams,
         window: { location: { pathname: "/", search: linkedId ? `?session=${linkedId}` : "" } },
         router: { replace: (url) => urls.push(url) },
+
         getLastOpenSession: (key) => ({ "/p1": lastOpen.id, "/p2": otherLastOpen.id })[key] ?? null,
         clearLastOpen() {},
         workspaceKeyOf: (value) => value.projectKey ?? value.cwd,
@@ -108,6 +122,19 @@ test("New restores the draft after session navigation and workspace auto-restore
       const context = vm.createContext({
         ...draftStore,
         crypto: globalThis.crypto,
+        // AppShell routes navigation and fetches through these two helpers so the
+        // selected device survives. These suites extract callback bodies into a vm
+        // sandbox, so both are stubbed for a localhost session.
+        deviceHref: (params) => {
+          const search = new URLSearchParams();
+          for (const [key, value] of Object.entries(params ?? {})) {
+            if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+          }
+          const query = search.toString();
+          return query ? `?${query}` : "/";
+        },
+        withDeviceId: (url) => url,
+        selectedDeviceIdRef: { current: "localhost" },
         queueMicrotask,
         requestAnimationFrame: () => {},
         URLSearchParams,
@@ -219,6 +246,19 @@ test("New in another project adopts it up front and parks the composer's draft",
   const context = vm.createContext({
     ...draftStore,
     crypto: globalThis.crypto,
+        // AppShell routes navigation and fetches through these two helpers so the
+        // selected device survives. These suites extract callback bodies into a vm
+        // sandbox, so both are stubbed for a localhost session.
+        deviceHref: (params) => {
+          const search = new URLSearchParams();
+          for (const [key, value] of Object.entries(params ?? {})) {
+            if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+          }
+          const query = search.toString();
+          return query ? `?${query}` : "/";
+        },
+        withDeviceId: (url) => url,
+        selectedDeviceIdRef: { current: "localhost" },
     URLSearchParams,
     window: { location: { pathname: "/", search: "" } },
     router: { replace() {} },
@@ -306,6 +346,19 @@ test("the composer's bar moves the fresh composer's draft and model picks instea
   const context = vm.createContext({
     ...draftStore,
     crypto: globalThis.crypto,
+        // AppShell routes navigation and fetches through these two helpers so the
+        // selected device survives. These suites extract callback bodies into a vm
+        // sandbox, so both are stubbed for a localhost session.
+        deviceHref: (params) => {
+          const search = new URLSearchParams();
+          for (const [key, value] of Object.entries(params ?? {})) {
+            if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+          }
+          const query = search.toString();
+          return query ? `?${query}` : "/";
+        },
+        withDeviceId: (url) => url,
+        selectedDeviceIdRef: { current: "localhost" },
     URLSearchParams,
     window: { location: { pathname: "/", search: "" } },
     router: { replace() {} },
@@ -495,6 +548,18 @@ test("a new session puts the caret in the fresh composer on desktop only (#1313)
     skipWorkspaceRestoreRef: { current: false },
     branchLeafChangeFnRef: { current: null },
     chatInputRef: { current: { focus: () => focused.push("composer"), rekeyDraft: () => {} } },
+    // The fork routes navigation through deviceHref, so this sandbox stubs it
+    // the way the suites above do instead of the upstream's bare query string.
+    deviceHref: (params) => {
+      const search = new URLSearchParams();
+      for (const [key, value] of Object.entries(params ?? {})) {
+        if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+      }
+      const query = search.toString();
+      return query ? `?${query}` : "/";
+    },
+    withDeviceId: (url) => url,
+    selectedDeviceIdRef: { current: "localhost" },
     newSessionBarFocusRef: { current: null },
     newSessionChoicesRef: { current: null },
     requestAnimationFrame: (cb) => frames.push(cb),

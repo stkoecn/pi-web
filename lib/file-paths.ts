@@ -18,6 +18,7 @@ export function encodeFilePathForApi(filePath: string): string {
 }
 
 export function getFileName(filePath: string): string {
+  if (!filePath || typeof filePath !== "string") return "";
   const normalized = normalizeFilePathSlashes(filePath).replace(/\/+$/, "");
   return normalized.split("/").pop() ?? normalized;
 }

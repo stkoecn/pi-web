@@ -167,8 +167,11 @@ export function AgentsConfig({
   onReloaded,
   embedded = false,
   trust,
+  deviceId = "localhost",
 }: {
   cwd: string;
+  /** Gateway device whose subagent profiles are listed. */
+  deviceId?: string;
   sessionId?: string | null;
   onClose: () => void;
   onReloaded?: () => void;
@@ -213,7 +216,9 @@ export function AgentsConfig({
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/subagents/profiles?cwd=${encodeURIComponent(cwd)}`, { cache: "no-store" });
+      const profileParams = new URLSearchParams({ cwd });
+      if (deviceId && deviceId !== "localhost") profileParams.set("deviceId", deviceId);
+      const response = await fetch(`/api/subagents/profiles?${profileParams.toString()}`, { cache: "no-store" });
       const data = await response.json() as Partial<SubagentProfilesResponse> & { error?: string };
       if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
       const next = data.profiles ?? [];

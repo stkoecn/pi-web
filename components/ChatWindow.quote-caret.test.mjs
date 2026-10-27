@@ -6,7 +6,8 @@ import test from "node:test";
 // is typed after it. `window.getSelection().removeAllRanges()` clears the
 // focused textarea's selection too and drops the caret to offset 0 (#1319).
 test("asking about a selection in the current chat keeps the caret at the quote's end", async () => {
-  for (const path of ["../components/ChatWindow.tsx", "../demo/components/ChatWindow.tsx"]) {
+  // This repository has no `demo/` tree; the file under `components/` is the only one.
+  for (const path of ["../components/ChatWindow.tsx"]) {
     const source = await readFile(new URL(path, import.meta.url), "utf8");
     const body = source.match(/const askSelectionHere = useCallback\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\);/);
     assert.ok(body, `expected askSelectionHere in ${path}`);

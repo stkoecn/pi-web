@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { existsSync, readFileSync, statSync } from "fs";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import {
@@ -13,6 +14,13 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
 import { isPluginSourceCheckable } from "@/lib/plugin-updates";
+import {
+  applyPackagesDisabled,
+  configuredVersionOf,
+  FILTERED_PACKAGE_ERROR,
+  getPackageSource,
+  isDisabledPackage,
+} from "@/lib/plugin-entries";
 import { invalidateModelRuntimeWithExtensions } from "@/lib/model-runtime";
 import type {
   PluginDiagnostic,
@@ -43,20 +51,6 @@ function keyFor(source: string, scope: PluginScope): string {
   return `${scope}\0${source}`;
 }
 
-function getPackageSource(entry: PackageSource): string {
-  return typeof entry === "string" ? entry : entry.source;
-}
-
-function isDisabledPackage(entry: PackageSource): boolean {
-  if (typeof entry === "string") return false;
-  return (
-    Array.isArray(entry.extensions) && entry.extensions.length === 0 &&
-    Array.isArray(entry.skills) && entry.skills.length === 0 &&
-    Array.isArray(entry.prompts) && entry.prompts.length === 0 &&
-    Array.isArray(entry.themes) && entry.themes.length === 0
-  );
-}
-
 function getDisabledPackages(settingsManager: SettingsManager): Map<string, boolean> {
   const disabled = new Map<string, boolean>();
   for (const entry of settingsManager.getGlobalSettings().packages ?? []) {
@@ -67,18 +61,6 @@ function getDisabledPackages(settingsManager: SettingsManager): Map<string, bool
   }
   return disabled;
 }
-
-/**
- * An enabled entry that is an object: it filters the package's resources, or
- * sets `autoload`. Disabling replaces its resource lists, and Pi Web keeps no
- * copy, so enabling it again cannot bring the filters back.
- */
-function hasEntrySettings(entry: PackageSource): boolean {
-  return typeof entry === "object" && !isDisabledPackage(entry);
-}
-
-const FILTERED_PACKAGE_ERROR =
-  "Has resource filters, which disabling would remove; use the package's own switch";
 
 /**
  * Disables or re-enables the given packages of one scope with a single
@@ -100,35 +82,8 @@ function setPackagesDisabled(
   const current = scope === "project"
     ? settingsManager.getProjectSettings().packages ?? []
     : settingsManager.getGlobalSettings().packages ?? [];
-  const missing = new Set(sources);
-  const kept = new Set<string>();
-  let changed = false;
-  const next = current.map((entry): PackageSource => {
-    const source = getPackageSource(entry);
-    if (!sources.includes(source)) return entry;
-    missing.delete(source);
-    if (isDisabledPackage(entry) === disabled) return entry;
-    if (disabled && keepEntrySettings && hasEntrySettings(entry)) {
-      kept.add(source);
-      return entry;
-    }
-    changed = true;
-    if (disabled) {
-      return {
-        ...(typeof entry === "string" ? { source: entry } : entry),
-        extensions: [],
-        skills: [],
-        prompts: [],
-        themes: [],
-      };
-    }
-    if (typeof entry === "string") return source;
-    const rest = { ...entry };
-    delete rest.extensions;
-    delete rest.skills;
-    delete rest.prompts;
-    delete rest.themes;
-    return Object.keys(rest).length > 1 ? rest : source;
+  const { next, missing, kept, changed } = applyPackagesDisabled(current, sources, disabled, {
+    keepEntrySettings,
   });
   if (changed) {
     if (scope === "project") settingsManager.setProjectPackages(next);
@@ -229,23 +184,11 @@ function toResourceInfo(resource: ResolvedResource, kind: PluginResourceKind): P
   };
 }
 
-function getConfiguredVersion(source: string): string | undefined {
-  const npmSpec = source.startsWith("npm:") ? source.slice(4) : undefined;
-  if (npmSpec) {
-    const lastAt = npmSpec.lastIndexOf("@");
-    const packageNameEnd = npmSpec.startsWith("@") ? npmSpec.indexOf("/", 1) : 0;
-    if (lastAt > packageNameEnd) return npmSpec.slice(lastAt + 1) || undefined;
-    return undefined;
-  }
-
-  if (source.startsWith("git:") || /^[a-z]+:\/\//.test(source)) {
-    const lastAt = source.lastIndexOf("@");
-    const lastSlash = source.lastIndexOf("/");
-    const lastColon = source.lastIndexOf(":");
-    if (lastAt > Math.max(lastSlash, lastColon)) return source.slice(lastAt + 1) || undefined;
-  }
-  return undefined;
-}
+/**
+ * The version a source pins. Shared with the remote list, which reads the same
+ * sources out of a device's settings file, so both panes label them alike.
+ */
+const getConfiguredVersion = configuredVersionOf;
 
 function readPackageMetadata(installedPath?: string): { packageName?: string; version?: string; description?: string } {
   if (!installedPath) return {};
@@ -406,6 +349,17 @@ function readScope(scope: unknown): PluginScope {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const cwd = searchParams.get("cwd");
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // Configured packages live in the device's settings.json, not this host's.
+    try {
+      const { readRemotePlugins } = await import("@/lib/remote-settings");
+      const target = cwd || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
+      return NextResponse.json(await readRemotePlugins(deviceId, target));
+    } catch (error) {
+      return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
+  }
   if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
 
   try {
@@ -429,6 +383,8 @@ export async function POST(req: Request) {
   if (!hasJsonContentType(req)) {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   }
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) return postRemote(req, deviceId);
 
   try {
     const body = await req.json() as {
@@ -520,5 +476,95 @@ export async function POST(req: Request) {
     // extension factory cache, when the runtime is next built (at the latest
     // when it expires).
     invalidateModelRuntimeWithExtensions();
+  }
+}
+
+/**
+ * A device's plugins are its own settings files and its own `pi` install, so
+ * every action runs there: switches rewrite the device's `settings.json`, and
+ * install/remove/update run the device's `pi` CLI.
+ *
+ * The list answers from those files, which is where pi records a package — the
+ * same place the local route reads, just on the other machine.
+ */
+async function postRemote(req: Request, deviceId: string): Promise<NextResponse> {
+  try {
+    const body = await req.json() as {
+      action?: PluginAction;
+      source?: string;
+      scope?: PluginScope;
+      packages?: unknown;
+      cwd?: string;
+    };
+    if (!body.cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
+    if (!body.action) return NextResponse.json({ error: "action required" }, { status: 400 });
+    if (!body.cwd.startsWith("/")) {
+      return NextResponse.json({ error: "cwd must be an absolute path" }, { status: 400 });
+    }
+
+    const [{ getGateway }, plugins] = await Promise.all([
+      import("@/lib/gateway/singleton"),
+      import("@/lib/remote-plugins"),
+    ]);
+    const driver = await getGateway().getOnlineDriver(deviceId);
+    const agentDir = await plugins.remoteAgentDir(deviceId);
+    const scope = readScope(body.scope);
+
+    if (body.packages !== undefined) {
+      if (body.action !== "enable" && body.action !== "disable") {
+        return NextResponse.json({ error: "packages is only supported by enable and disable" }, { status: 400 });
+      }
+      const packages = readPackageList(body.packages);
+      if (!packages) {
+        return NextResponse.json({ error: "packages must be a list of { source, scope }" }, { status: 400 });
+      }
+      // "Disable all" must not wipe filters the operator set up by hand, the same
+      // rule the local route applies to the same file.
+      const results = await plugins.setRemotePackagesDisabled(
+        driver,
+        agentDir,
+        body.cwd,
+        packages,
+        body.action === "disable",
+        { keepEntrySettings: true },
+      );
+      return NextResponse.json({
+        ...(await plugins.readRemotePluginList(driver, agentDir, body.cwd)),
+        results,
+      } satisfies PluginsBulkResponse);
+    }
+
+    const source = body.source?.trim();
+    if (body.action === "install" || body.action === "remove" || body.action === "update") {
+      if (body.action !== "update" && !source) {
+        return NextResponse.json({ error: "source required" }, { status: 400 });
+      }
+      await plugins.runRemotePluginCommand(driver, body.action, {
+        ...(source ? { source } : {}),
+        scope,
+        cwd: body.cwd,
+      });
+    } else if (body.action === "disable" || body.action === "enable") {
+      if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
+      const results = await plugins.setRemotePackagesDisabled(
+        driver,
+        agentDir,
+        body.cwd,
+        [{ source, scope }],
+        body.action === "disable",
+      );
+      const refused = results.find((result) => result.error);
+      if (refused?.error) return NextResponse.json({ error: refused.error }, { status: 409 });
+    } else {
+      return NextResponse.json({ error: `Unsupported action: ${body.action}` }, { status: 400 });
+    }
+
+    return NextResponse.json(await plugins.readRemotePluginList(driver, agentDir, body.cwd));
+  } catch (error) {
+    const offline = (error as { code?: unknown } | null)?.code === "device-offline";
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: offline ? 503 : 500 },
+    );
   }
 }

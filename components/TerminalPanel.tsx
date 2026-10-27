@@ -194,7 +194,7 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
         await terminalRequest("/api/terminal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows }),
+          body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows, deviceId: tab.deviceId }),
         });
       }
       connect();

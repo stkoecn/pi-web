@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { deleteSessions, MAX_SESSION_DELETE_IDS, type SessionDeleteResult } from "@/lib/session-delete";
 import { SESSION_ID_PATTERN } from "@/lib/session-ui-state-shared";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,18 @@ export async function POST(req: Request) {
   if (!Array.isArray(ids) || ids.length === 0) return refusal(400, "ids must be a non-empty array");
   if (ids.length > MAX_SESSION_DELETE_IDS) return refusal(400, `ids may hold at most ${MAX_SESSION_DELETE_IDS} session ids`);
   if (!ids.every((id) => typeof id === "string" && SESSION_ID_PATTERN.test(id))) return refusal(400, "ids must be session ids");
+
+  // Deleting on this host would remove a local session the user never pointed
+  // at: delete it on the device instead.
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    try {
+      const { deleteRemoteSessions } = await import("@/lib/remote-session-delete");
+      const result = await deleteRemoteSessions(getRequestDeviceId(req), ids as string[], { keepRunning: true });
+      return NextResponse.json(result satisfies SessionDeleteResult, { headers: NO_STORE });
+    } catch (error) {
+      return refusal(500, error instanceof Error ? error.message : String(error));
+    }
+  }
 
   try {
     const result = await deleteSessions(ids as string[], { keepRunning: true });

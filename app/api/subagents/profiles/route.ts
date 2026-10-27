@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { existsSync } from "fs";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import {
@@ -31,6 +32,19 @@ function validateToggleScope(scope: unknown): SubagentWritableScope | "builtin" 
 }
 
 export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    // Profiles are files on the device; the local loader would read this host.
+    try {
+      const { readRemoteSubagentProfiles } = await import("@/lib/remote-settings");
+      const requested = new URL(req.url).searchParams.get("cwd");
+      const target = requested || (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId));
+      return NextResponse.json(await readRemoteSubagentProfiles(deviceId, target));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+  }
   try {
     const cwd = await validateCwd(new URL(req.url).searchParams.get("cwd"));
     return NextResponse.json({ profiles: listSubagentProfileSources(cwd) });

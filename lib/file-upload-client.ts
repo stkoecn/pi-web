@@ -1,5 +1,6 @@
 import { buildAtMentionText } from "./file-fuzzy";
 import { encodeFilePathForApi } from "./file-paths";
+import { withDeviceId } from "./device-context";
 
 /** Browser side of `POST /api/files/[...path]?type=upload`; mirrors `lib/file-upload.ts`. */
 export type UploadConflictStrategy = "error" | "overwrite" | "skip";
@@ -24,6 +25,7 @@ export interface UploadResponse {
  * @param files The files, written under their own names
  * @param strategy What the server does with a name that already exists
  * @param onProgress Upload progress in percent, when the browser reports it
+ * @param deviceId Gateway device the directory lives on; omitted for localhost
  * @returns The HTTP status and the parsed response body
  */
 export function uploadFiles(
@@ -31,6 +33,7 @@ export function uploadFiles(
   files: File[],
   strategy: UploadConflictStrategy,
   onProgress?: (progress: number) => void,
+  deviceId?: string,
 ): Promise<{ status: number; data: UploadResponse }> {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
@@ -39,7 +42,10 @@ export function uploadFiles(
     const xhr = new XMLHttpRequest();
     xhr.open(
       "POST",
-      `/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=${strategy}`,
+      withDeviceId(
+        `/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=${strategy}`,
+        deviceId,
+      ),
     );
     xhr.upload.onprogress = (event) => {
       if (onProgress && event.lengthComputable && event.total > 0) {

@@ -13,6 +13,7 @@ import type {
   ProjectTrustStatus,
 } from "@/lib/api-types";
 import { displayPathWithin, shortenPath } from "@/lib/display-path";
+import { withDeviceId } from "@/lib/device-context";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import {
   getLastSettingsSelection,
@@ -130,6 +131,7 @@ export function resolveSkillLink(href: string, fromDocument: string): { document
 function SkillDetail({
   skill,
   cwd,
+  deviceId,
   onToggle,
   toggling,
   saveError,
@@ -142,6 +144,12 @@ function SkillDetail({
 }: {
   skill: Skill;
   cwd: string;
+  /**
+   * Gateway device the skill lives on. Its content URL must say so: without it
+   * the request lands on this host, whose allow-list can never contain a path
+   * on another machine, and the panel shows "Access denied".
+   */
+  deviceId: string;
   onToggle: (skill: Skill) => void;
   toggling: boolean;
   saveError: string | null;
@@ -190,6 +198,7 @@ function SkillDetail({
     const load = async () => {
       try {
         const params = new URLSearchParams({ cwd, filePath: skill.filePath });
+        if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
         if (documentPath !== rootDocument) params.set("document", documentPath);
         const response = await fetch(`/api/skills/content?${params}`, { signal: controller.signal });
         const data = (await response.json()) as Partial<SkillContentResponse> & { error?: string };
@@ -205,7 +214,7 @@ function SkillDetail({
 
     void load();
     return () => controller.abort();
-  }, [cwd, skill.filePath, documentPath, rootDocument]);
+  }, [cwd, deviceId, skill.filePath, documentPath, rootDocument]);
 
   return (
     <ConfigDetailStack>
@@ -355,11 +364,14 @@ function SkillDetail({
 
 function AddSkillPanel({
   cwd,
+  deviceId,
   installedPackages,
   projectResourcesLoaded,
   onInstalled,
 }: {
   cwd: string;
+  /** Gateway device whose skills are installed; "localhost" means this host. */
+  deviceId: string;
   installedPackages: Record<SkillInstallScope, ReadonlySet<string>>;
   projectResourcesLoaded: boolean;
   onInstalled: () => void;
@@ -414,7 +426,9 @@ function AddSkillPanel({
       setInstalling(pkg);
       setInstallError(null);
       try {
-        const res = await fetch("/api/skills/install", {
+        // The device must ride along: without it these routes answer for this
+        // host, so a remote panel would install into the wrong machine.
+        const res = await fetch(withDeviceId("/api/skills/install", deviceId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ package: pkg, scope, cwd }),
@@ -434,7 +448,7 @@ function AddSkillPanel({
         setInstalling(null);
       }
     },
-    [onInstalled, scope, cwd],
+    [deviceId, onInstalled, scope, cwd],
   );
 
   const installPath =
@@ -628,12 +642,15 @@ export function SkillsConfig({
   onClose,
   embedded = false,
   trust,
+  deviceId = "localhost",
 }: {
   cwd: string;
   onClose: () => void;
   embedded?: boolean;
   /** The page's trust status for `cwd`; a new decision loads the list again. */
   trust?: ProjectTrustStatus | null;
+  /** Gateway device whose skills are listed; "localhost" means this host. */
+  deviceId?: string;
 }) {
   const { t } = useI18n();
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -657,7 +674,9 @@ export function SkillsConfig({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/skills?cwd=${encodeURIComponent(cwd)}`);
+      const skillsUrl = new URLSearchParams({ cwd });
+      if (deviceId && deviceId !== "localhost") skillsUrl.set("deviceId", deviceId);
+      const res = await fetch(`/api/skills?${skillsUrl.toString()}`);
       const d = (await res.json()) as Partial<SkillsResponse> & { error?: string };
       if (!res.ok || d.error) throw new Error(d.error ?? `HTTP ${res.status}`);
       const list = d.skills ?? [];
@@ -712,7 +731,7 @@ export function SkillsConfig({
     setCheckingUpdates((current) => new Set([...current, ...keys]));
     if (!skill) setCheckingAll(true);
     try {
-      const res = await fetch("/api/skills/check", {
+      const res = await fetch(withDeviceId("/api/skills/check", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -743,7 +762,7 @@ export function SkillsConfig({
       });
       if (!skill) setCheckingAll(false);
     }
-  }, [cwd, skills]);
+  }, [cwd, deviceId, skills]);
 
   const updateInstalledSkill = useCallback(async (skill: Skill) => {
     if (!skill.install) return;
@@ -751,7 +770,7 @@ export function SkillsConfig({
     setUpdatingSkill(key);
     setUpdateError(null);
     try {
-      const res = await fetch("/api/skills/update", {
+      const res = await fetch(withDeviceId("/api/skills/update", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -785,7 +804,7 @@ export function SkillsConfig({
     } finally {
       setUpdatingSkill(null);
     }
-  }, [cwd, loadSkills]);
+  }, [cwd, deviceId, loadSkills]);
 
   const toggle = useCallback(async (skill: Skill) => {
     const next = !skill.disableModelInvocation;
@@ -1011,6 +1030,7 @@ export function SkillsConfig({
               {addMode ? (
               <AddSkillPanel
                 cwd={cwd}
+                deviceId={deviceId}
                 projectResourcesLoaded={projectResourcesLoaded}
                 installedPackages={{
                   global: new Set(
@@ -1033,6 +1053,7 @@ export function SkillsConfig({
                 key={selectedSkill.filePath}
                 skill={selectedSkill}
                 cwd={cwd}
+                deviceId={deviceId}
                 onToggle={toggle}
                 toggling={toggling.has(selectedSkill.filePath)}
                 saveError={saveError}
