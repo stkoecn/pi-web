@@ -66,7 +66,9 @@ function listCommand(cwd: string, trusted: boolean): string {
     // `pi` is usually installed into a per-user bin directory that a non-login
     // shell has not added to PATH yet; the CLI itself lives there, so it has to
     // be found the same way the user's own shell finds it.
-    `export PATH="$HOME/.local/bin:$PATH"`,
+    // A user-level install puts `pi` under `$HOME/.local/node/bin`, which is not
+    // on the PATH sshd gives an `exec` request.
+    `export PATH="$HOME/.local/node/bin:$HOME/.local/bin:$PATH"`,
     `PI=$(command -v pi) || exit 9`,
     `PI=$(readlink -f "$PI" 2>/dev/null || echo "$PI")`,
     `D=$(dirname "$PI")`,

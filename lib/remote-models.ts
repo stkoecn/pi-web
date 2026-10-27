@@ -231,8 +231,28 @@ async function resolveChannel(deviceId: string): Promise<{ channel: RPCChannel; 
 
 async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
   try {
+    // If there is no existing live RPC session on that device, reading models.json
+    // directly from disk via SFTP is fast (100-400ms) and avoids the 10-15s cold
+    // spawn timeout when pi is missing, slow, or errored.
+    const { getAllRemoteRpcSessions, getRemoteRpcSession } = await import(
+      "@/lib/remote-agent-manager"
+    );
+    const live = getAllRemoteRpcSessions()
+      .filter((session) => session.deviceId === deviceId)
+      .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+    const existing = live.length > 0 ? getRemoteRpcSession(live[0].sessionId) : undefined;
+
+    if (!existing) {
+      const diskCatalogue = await fetchCatalogueFromDisk(deviceId);
+      if (diskCatalogue.models.length > 0) {
+        return diskCatalogue;
+      }
+    }
+
     const target = await resolveChannel(deviceId);
-    if (!target) return EMPTY_CATALOGUE;
+    if (!target) {
+      return await fetchCatalogueFromDisk(deviceId);
+    }
     const { channel } = target;
 
     const [modelsResponse, levelsResponse, stateResponse] = await Promise.all([
@@ -297,13 +317,113 @@ async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
     const thinkingLevel =
       typeof state?.thinkingLevel === "string" && state.thinkingLevel ? state.thinkingLevel : undefined;
 
+    if (models.length === 0) {
+      const diskCatalogue = await fetchCatalogueFromDisk(deviceId);
+      if (diskCatalogue.models.length > 0) {
+        return diskCatalogue;
+      }
+    }
+
     return {
       models,
       ...(partial ? { partial: true } : {}),
       ...(defaultModel ? { defaultModel } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
     };
-  } catch {
+  } catch (err) {
+    console.warn(`[remote-models] RPC fetchCatalogue failed for ${deviceId}, falling back to disk:`, err);
+    return await fetchCatalogueFromDisk(deviceId);
+  }
+}
+
+/**
+ * Fallback catalogue parser: directly reads and parses `~/.pi/agent/models.json`
+ * and `settings.json` on the remote device via SFTP.
+ *
+ * Used when the remote machine does not have an active RPC session, when pi RPC
+ * failed to spawn, or when pi CLI is missing/errored.
+ */
+async function fetchCatalogueFromDisk(deviceId: string): Promise<RemoteModelCatalogue> {
+  try {
+    const { getGateway } = await import("@/lib/gateway/singleton");
+    const { stripJsonComments } = await import("@/lib/jsonc");
+    const { deviceHomeOrDefault } = await import("@/lib/device-home");
+
+    const driver = getGateway().getOnlineDriver(deviceId);
+    if (!driver || !driver.isAlive()) return EMPTY_CATALOGUE;
+
+    let agentDir = "";
+    try {
+      const probe = await driver.exec('printf %s "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"');
+      if (probe?.exitCode === 0 && probe.stdout.trim().startsWith("/")) {
+        agentDir = probe.stdout.trim();
+      }
+    } catch {}
+    if (!agentDir) {
+      agentDir = `${await deviceHomeOrDefault(deviceId)}/.pi/agent`;
+    }
+
+    const modelsPath = `${agentDir}/models.json`;
+    const settingsPath = `${agentDir}/settings.json`;
+
+    const [modelsBuf, settingsBuf] = await Promise.all([
+      driver.readFile(modelsPath).catch(() => null),
+      driver.readFile(settingsPath).catch(() => null),
+    ]);
+
+    if (!modelsBuf || modelsBuf.length === 0) return EMPTY_CATALOGUE;
+
+    const modelsText = modelsBuf.toString("utf8");
+    const settingsText = settingsBuf ? settingsBuf.toString("utf8") : "";
+
+    const parsedModels = JSON.parse(stripJsonComments(modelsText.replace(/^\uFEFF/, ""))) as any;
+    let parsedSettings: Record<string, any> = {};
+    if (settingsText && settingsText.trim()) {
+      try {
+        parsedSettings = JSON.parse(stripJsonComments(settingsText.replace(/^\uFEFF/, "")));
+      } catch {}
+    }
+
+    const models: RemoteModelInfo[] = [];
+    const providers = (parsedModels && typeof parsedModels === "object" && parsedModels.providers) || {};
+    for (const [providerId, providerObj] of Object.entries(providers)) {
+      if (!providerObj || typeof providerObj !== "object") continue;
+      const providerModels = (providerObj as any).models;
+      if (!Array.isArray(providerModels)) continue;
+      for (const m of providerModels) {
+        if (!m || typeof m !== "object" || !m.id) continue;
+        const normalized = toModelInfo({
+          ...m,
+          provider: providerId,
+        });
+        if (normalized) models.push(normalized);
+      }
+    }
+
+    models.sort((a, b) => a.provider.localeCompare(b.provider));
+
+    let defaultModel: { provider: string; id: string } | undefined = undefined;
+    if (parsedSettings.defaultModel && parsedSettings.defaultProvider) {
+      defaultModel = {
+        provider: String(parsedSettings.defaultProvider),
+        id: String(parsedSettings.defaultModel),
+      };
+    } else if (models.length > 0) {
+      defaultModel = { provider: models[0].provider, id: models[0].id };
+    }
+
+    const thinkingLevel = typeof parsedSettings.defaultThinkingLevel === "string"
+      ? parsedSettings.defaultThinkingLevel
+      : undefined;
+
+    return {
+      models,
+      ...(defaultModel ? { defaultModel } : {}),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
+      partial: false,
+    };
+  } catch (err) {
+    console.error(`[remote-models] fetchCatalogueFromDisk failed for ${deviceId}:`, err);
     return EMPTY_CATALOGUE;
   }
 }

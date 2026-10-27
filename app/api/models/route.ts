@@ -152,10 +152,17 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const deviceId = getRequestDeviceId(req, url.searchParams);
   if (isRemoteDevice(deviceId)) {
-    // The catalogue is built by the device's own `pi` over RPC and cached there
-    // per device (see lib/remote-models.ts); the local cwd allow-list does not
-    // apply, because no local file is read for it.
-    return Response.json(remoteCatalogueToModelsData(await loadRemoteModels(deviceId)));
+    // The catalogue is built by the device's own `pi` over RPC or read from its
+    // models.json on disk (see lib/remote-models.ts).
+    const catalogue = await loadRemoteModels(deviceId);
+    const data = remoteCatalogueToModelsData(catalogue);
+    if (data.modelList.length === 0) {
+      return Response.json({
+        ...data,
+        modelError: `设备 [${deviceId}] 暂未配置可用模型。请前往“设置 - 模型配置”为该设备添加模型，或检查网络连接。`,
+      });
+    }
+    return Response.json(data);
   }
 
   const requestedCwd = resolve(url.searchParams.get("cwd") || process.cwd());

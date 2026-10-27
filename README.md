@@ -164,4 +164,13 @@ npm run test:node
 3. ✅ **Passive Reverse SSH Tunnel**：模拟 `ssh -NR` 请求建立、动态端口分配与路由表注册。
 4. ✅ **Active SSH Target Connection Pool**：模拟远端 VPS 目标主机握手并执行远程命令 (`uname -a`)。
 5. ✅ **WebSocket Terminal PTY**：双向交互式终端输入与回显验证。
-6. ✅ **WebSocket Pi Agent RPC Stream**：验证对接 `pi --mode rpc` JSON-RPC 流式通道。
+
+---
+
+## 开发与上游维护规范
+
+为了保证本项目的独立网关架构与官方原版 `@agegr/pi-web` 的可维护性与低冲突升级，请严格遵循以下工程规范：
+
+- 📖 **[REMOTE-DEVICE-CONTRACT.md](./REMOTE-DEVICE-CONTRACT.md)**：跨设备 API 与前端 Context 交互规范（必读）。
+- 🛠️ **[UPSTREAM-SYNC-GUIDE.md](./UPSTREAM-SYNC-GUIDE.md)**：上游同步升级工作流、Facade Guard 编码规范与测试验收指南。
+
