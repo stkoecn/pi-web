@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
+import React, { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, KeyboardEvent, useMemo } from "react";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { SkillsResponse } from "@/lib/api-types";
 import type { TextContent, UserMessage } from "@/lib/types";
@@ -22,6 +22,7 @@ import {
   buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
+import { extractTargetQuery, type TargetCompletionItem } from "@/lib/target-autocomplete";
 import { getMarkdownListContinuation } from "@/lib/markdown-list-continuation";
 import { isBareMcpCommand, isBuiltinMcpCommand } from "@/lib/mcp-command";
 import { FolderIcon, getFileIcon } from "./FileIcons";
@@ -99,6 +100,8 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  /** Current session id, if any */
+  sessionId?: string | null;
   /** Gateway device the cwd lives on; the @ menu lists that device's files. */
   deviceId?: string;
   /** Files picked with the attach button, handled like files dropped onto the chat. Without it the button takes images only. */
@@ -677,6 +680,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  sessionId = null,
   deviceId = "localhost",
   onAttachFiles,
   compact = false,
@@ -719,6 +723,17 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const skillDormancy = cwd && skillDormancyState?.cwd === cwd
     ? skillDormancyState.values
     : {};
+
+  // Target autocomplete state
+  const [targetQuery, setTargetQuery] = useState<{ start: number; query: string } | null>(null);
+  const [targetMenuOpen, setTargetMenuOpen] = useState(false);
+  const [targetActiveIndex, setTargetActiveIndex] = useState(0);
+  const [targetRoster, setTargetRoster] = useState<TargetCompletionItem[]>([]);
+  const [activeTargetPill, setActiveTargetPill] = useState<TargetCompletionItem | null>(null);
+  const [meshMode, setMeshMode] = useState<"followup" | "steer" | "silent">("followup");
+  const targetMenuRef = useRef<HTMLDivElement>(null);
+  const targetItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [meshNotice, setMeshNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolDropdownRef = useRef<HTMLDivElement>(null);
@@ -1091,12 +1106,71 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     const msg = value.trim();
     if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
+
+    // Check for explicit mesh target via Pill OR text pattern > target [--steer|--silent|-s] message
+    let meshTarget: string | null = activeTargetPill ? activeTargetPill.target : null;
+    let mode: "followup" | "steer" | "silent" = activeTargetPill ? meshMode : "followup";
+    let subMessage = msg;
+
+    if (!meshTarget) {
+      const meshMatch = msg.match(/^>\s*([^\s]+)(?:\s+(--steer|--silent|-s))?\s+([\s\S]*)$/);
+      if (meshMatch) {
+        meshTarget = meshMatch[1];
+        const flag = meshMatch[2];
+        subMessage = meshMatch[3];
+        mode = flag === "--steer" || flag === "-s" ? "steer" : flag === "--silent" ? "silent" : "followup";
+      }
+    }
+
+    if (meshTarget) {
+      clearInput();
+      setActiveTargetPill(null);
+      try {
+        const res = await fetch("/api/mesh/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: meshTarget,
+            message: subMessage,
+            mode,
+            currentDeviceId: deviceId,
+            senderContext: {
+              deviceId,
+              sessionId,
+              cwd: cwd || undefined,
+            },
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          const displayLabel = activeTargetPill ? activeTargetPill.description : meshTarget;
+          setMeshNotice({
+            type: "success",
+            text: `已向 ${displayLabel} 发送 ${mode} 消息：${subMessage.slice(0, 60)}${subMessage.length > 60 ? "..." : ""}`,
+          });
+          return;
+        } else {
+          setMeshNotice({
+            type: "error",
+            text: `发送跨会话消息到 ${meshTarget} 失败：${data.error || "未知错误"}`,
+          });
+          return;
+        }
+      } catch (e) {
+        setMeshNotice({
+          type: "error",
+          text: `发送跨会话消息网络失败：${String(e)}`,
+        });
+        return;
+      }
+    }
+
     const builtinAllowed = !isStreaming || offersBuiltinSlashCommandWhileStreaming(msg);
     if (builtinAllowed && await runBuiltinCommand(msg)) return;
     if (isStreaming) return;
     clearInput();
     onSend(msg, attachedImages.length ? attachedImages : undefined);
-  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock, deviceId, sessionId, cwd, activeTargetPill, meshMode]);
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -1195,6 +1269,12 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     && atServerResult.query === atQueryText;
   const atMatches: FileIndexEntry[] = serverResultInUse ? atServerResult.matches : atLocalMatches;
 
+  useEffect(() => {
+    if (!meshNotice) return;
+    const timer = setTimeout(() => setMeshNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [meshNotice]);
+
   // Open/reset the menu whenever the @token appears or changes (mirrors the
   // slash menu: Escape closes it, the next keystroke re-opens it).
   const atTokenKey = atQuery === null ? null : `${atQuery.start}:${atQuery.quoted ? 1 : 0}:${atQuery.query}`;
@@ -1207,6 +1287,99 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     setAtMenuOpen(true);
     setAtActiveIndex(0);
   }, [atTokenKey]);
+
+  // Target autocomplete: update query from caret position
+  const updateTargetQuery = useCallback((text: string, cursor: number | null) => {
+    const pos = cursor ?? text.length;
+    setTargetQuery(extractTargetQuery(text.slice(0, pos)));
+  }, []);
+
+  // Fetch roster targets when target menu opens
+  useEffect(() => {
+    if (!targetQuery) {
+      setTargetMenuOpen(false);
+      return;
+    }
+    setTargetMenuOpen(true);
+    setTargetActiveIndex(0);
+    // Fetch roster if empty
+    fetch("/api/mesh/roster")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.success || !Array.isArray(data.roster)) return;
+        const items: TargetCompletionItem[] = [];
+        for (const dev of data.roster) {
+          // Iterate over all projects
+          for (const proj of dev.projects) {
+            const rawFolder = proj.path.split(/[\\/]/).filter(Boolean).pop() || proj.path;
+            const projectName = proj.alias || rawFolder;
+
+            // New session target: @[projectPath].host
+            items.push({
+              target: `@${projectName}.${dev.deviceId}`,
+              label: `新起会话`,
+              description: `@${projectName}.${dev.deviceId}`,
+              isNewSession: true,
+              deviceId: dev.deviceId,
+              projectName,
+            });
+            // Existing session targets: session.host
+            for (const sess of proj.sessions) {
+              // Exclude current session to prevent self-targeting deadloops
+              if (sess.id === sessionId && dev.deviceId === deviceId) {
+                continue;
+              }
+
+              const displayTitle = sess.title || sess.name || sess.id.slice(0, 8);
+              // Target is strictly: sessionId.host
+              const uniqueTarget = `${sess.id}.${dev.deviceId}`;
+              // Human-readable format: 短ID@项目名.主机名
+              const sDisplay = `${sess.alias || sess.id.slice(0, 8)}@${projectName}.${dev.deviceId}`;
+              items.push({
+                target: uniqueTarget,
+                label: displayTitle,
+                description: sDisplay,
+                displayTag: sDisplay,
+                isNewSession: false,
+                deviceId: dev.deviceId,
+                projectName,
+                sessionName: displayTitle,
+              });
+            }
+          }
+        }
+        setTargetRoster(items);
+      })
+      .catch(() => {});
+  }, [targetQuery?.query]);
+
+  const filteredTargetMatches = useMemo(() => {
+    if (!targetQuery) return [];
+    const q = targetQuery.query.toLowerCase();
+    if (!q) return targetRoster.slice(0, 30);
+    return targetRoster
+      .filter((item) => item.target.toLowerCase().includes(q) || item.description.toLowerCase().includes(q))
+      .slice(0, 30);
+  }, [targetQuery, targetRoster]);
+
+  const applyTargetCompletion = useCallback((item: TargetCompletionItem) => {
+    if (!targetQuery) return;
+    const ta = textareaRef.current;
+    const current = ta ? ta.value : value;
+    const before = current.slice(0, targetQuery.start);
+    const after = current.slice(targetQuery.start + targetQuery.query.length + 1);
+    const completed = `${before}${after}`.trimStart();
+    valueRef.current = completed;
+    setValue(completed);
+    setActiveTargetPill(item);
+    setTargetMenuOpen(false);
+    setTargetQuery(null);
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(0, 0);
+    });
+  }, [targetQuery, value]);
 
   // Fetch the file index when the menu opens. The server caches per cwd for
   // ~10s, so re-opening refreshes cheaply; while typing nothing refetches.
@@ -1505,6 +1678,44 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
 
+      // > target menu
+      if (targetMenuOpen && targetQuery !== null && !isComposing) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setTargetActiveIndex((i) => cycleListIndex(i, filteredTargetMatches.length, 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setTargetActiveIndex((i) => cycleListIndex(i, filteredTargetMatches.length, -1));
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setTargetMenuOpen(false);
+          return;
+        }
+        if ((e.key === "Tab" || acceptShortcut) && filteredTargetMatches[targetActiveIndex]) {
+          e.preventDefault();
+          applyTargetCompletion(filteredTargetMatches[targetActiveIndex]);
+          return;
+        }
+      }
+
+      // Esc clears activeTargetPill if present
+      if (e.key === "Escape" && activeTargetPill) {
+        e.preventDefault();
+        setActiveTargetPill(null);
+        return;
+      }
+
+      // Backspace on empty input removes activeTargetPill
+      if (e.key === "Backspace" && activeTargetPill && value === "") {
+        e.preventDefault();
+        setActiveTargetPill(null);
+        return;
+      }
+
       if (e.key === "ArrowUp" && !isComposing && !isStreaming && inputHistory.length > 0 && value.trim().length === 0) {
         e.preventDefault();
         setSlashMenuOpen(false);
@@ -1530,7 +1741,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
     },
-    [isMobile, enterSendMode, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isMobile, enterSendMode, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, activeTargetPill]
   );
 
   const handleInput = useCallback(() => {
@@ -2266,6 +2477,181 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               </div>
             );
           })()}
+          {targetMenuOpen && targetQuery !== null && (
+            <div
+              ref={targetMenuRef}
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                bottom: "calc(100% + 8px)",
+                zIndex: 120,
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
+                overflow: "hidden",
+                boxSizing: "border-box",
+                display: "flex",
+                flexDirection: "column",
+                maxHeight: "min(48vh, 360px)",
+              }}
+            >
+              <div
+                style={{
+                  padding: "8px 10px",
+                  borderBottom: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  fontSize: 11,
+                  color: "var(--text-dim)",
+                  flexShrink: 0,
+                }}
+              >
+                <span>跨会话/主机目标 ({filteredTargetMatches.length})</span>
+                <span style={{ fontFamily: "var(--font-mono)" }}>Tab / Enter 补全</span>
+              </div>
+              <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: 4 }}>
+                {filteredTargetMatches.length === 0 ? (
+                  <div style={{ padding: "6px 8px", fontSize: 12, color: "var(--text-dim)" }}>
+                    未匹配到会话或项目
+                  </div>
+                ) : (
+                  filteredTargetMatches.map((item: TargetCompletionItem, index: number) => {
+                    const active = index === targetActiveIndex;
+                    return (
+                      <button
+                        key={item.target}
+                        ref={(node) => {
+                          targetItemRefs.current[index] = node;
+                        }}
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applyTargetCompletion(item);
+                        }}
+                        onMouseEnter={() => setTargetActiveIndex(index)}
+                        style={{
+                          width: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          padding: "6px 8px",
+                          border: "none",
+                          borderRadius: 6,
+                          background: active ? "var(--bg-selected)" : "transparent",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          color: "inherit",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
+                          {/* Device badge */}
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 5px",
+                              borderRadius: 4,
+                              background: "color-mix(in srgb, var(--accent) 14%, transparent)",
+                              color: "var(--accent)",
+                              fontFamily: "var(--font-mono)",
+                              fontWeight: 500,
+                              flexShrink: 0,
+                            }}
+                          >
+                            {item.deviceId}
+                          </span>
+                          {/* Project badge */}
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "1px 5px",
+                              borderRadius: 4,
+                              background: "var(--bg-hover)",
+                              color: "var(--text-muted)",
+                              fontFamily: "var(--font-mono)",
+                              flexShrink: 0,
+                            }}
+                          >
+                            {item.projectName}
+                          </span>
+                          {/* Title / Name */}
+                          <span
+                            style={{
+                              fontSize: 12,
+                              color: active ? "var(--accent)" : "var(--text)",
+                              fontWeight: 500,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={item.label}
+                          >
+                            {item.label}
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 11,
+                            color: active ? "var(--accent)" : "var(--text-dim)",
+                            flexShrink: 0,
+                            paddingLeft: 8,
+                          }}
+                        >
+                          {item.description}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+          {meshNotice && (
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                bottom: "calc(100% + 8px)",
+                zIndex: 110,
+                padding: "8px 12px",
+                borderRadius: 8,
+                fontSize: 12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                background: meshNotice.type === "success" ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)",
+                border: `1px solid ${meshNotice.type === "success" ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+                color: meshNotice.type === "success" ? "#10b981" : "#ef4444",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+              }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {meshNotice.text}
+              </span>
+              <button
+                type="button"
+                onClick={() => setMeshNotice(null)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  padding: "0 4px",
+                  opacity: 0.7,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          )}
           <div
             style={{
               minWidth: 0,
@@ -2274,15 +2660,72 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               gap: 8,
               alignItems: stackedComposer ? "stretch" : "center",
               background: "var(--bg)",
-              border: compact ? "none" : `1px solid ${bashMode ? "var(--tool-bg)" : isStreaming && (onSteer || onFollowUp)
+              border: compact ? "none" : `1px solid ${activeTargetPill ? "var(--accent)" : bashMode ? "var(--tool-bg)" : isStreaming && (onSteer || onFollowUp)
                 ? "rgba(234,179,8,0.4)"
                 : "color-mix(in srgb, var(--border) 70%, transparent)"}`,
               borderRadius: compact ? 0 : 14,
               padding: compact ? 0 : isMobile ? "6px 6px 6px 12px" : "10px 10px 10px 14px",
-              boxShadow: compact ? "none" : "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -12px rgba(15,23,42,0.10)",
+              boxShadow: compact ? "none" : activeTargetPill ? "0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 8px 24px -12px rgba(15,23,42,0.15)" : "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -12px rgba(15,23,42,0.10)",
               transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
             } as React.CSSProperties}
           >
+          {activeTargetPill && (
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "2px 8px 2px 6px",
+                borderRadius: 6,
+                background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)",
+                color: "var(--accent)",
+                fontSize: 12,
+                fontFamily: "var(--font-mono)",
+                flexShrink: 0,
+                alignSelf: "flex-start",
+                marginTop: 2,
+              }}
+            >
+              <span style={{ fontSize: 11, opacity: 0.8 }}>发送给:</span>
+              <span style={{ fontWeight: 600 }}>{activeTargetPill.description}</span>
+              {/* Mode toggle */}
+              <button
+                type="button"
+                onClick={() => setMeshMode((m) => (m === "followup" ? "steer" : m === "steer" ? "silent" : "followup"))}
+                style={{
+                  padding: "1px 4px",
+                  borderRadius: 3,
+                  fontSize: 10,
+                  border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                  background: meshMode === "steer" ? "var(--accent)" : "transparent",
+                  color: meshMode === "steer" ? "#fff" : "var(--accent)",
+                  cursor: "pointer",
+                }}
+                title="切换消息类型 (followup: 排队提问 / steer: 中断插入 / silent: 静默执行)"
+              >
+                {meshMode}
+              </button>
+              {/* Remove button */}
+              <button
+                type="button"
+                onClick={() => setActiveTargetPill(null)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  lineHeight: 1,
+                  padding: "0 2px",
+                  opacity: 0.6,
+                }}
+                title="取消发送到此目标 (Backspace/Esc)"
+              >
+                ×
+              </button>
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             className="chat-input-textarea"
@@ -2293,10 +2736,12 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               setValue(e.target.value);
               setHistoryMenuOpen(false);
               updateAtQuery(e.target.value, e.target.selectionStart);
+              updateTargetQuery(e.target.value, e.target.selectionStart);
             }}
             onSelect={(e) => {
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
+              updateTargetQuery(el.value, el.selectionStart);
             }}
             onKeyDown={handleKeyDown}
             onCompositionStart={() => {
@@ -2307,6 +2752,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               lastCompositionEndAtRef.current = Date.now();
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
+              updateTargetQuery(el.value, el.selectionStart);
             }}
             onInput={handleInput}
             onPaste={handlePaste}

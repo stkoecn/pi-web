@@ -78,6 +78,7 @@ export const zhCNLocale: LocalePlugin = {
     "settings.projectRequired": "打开项目后才能配置此项",
     "settings.mcp": "MCP",
     "settings.devices": "主机设备",
+    "settings.team": "团队协作",
     "devices.add": "添加设备",
     "devices.copyCommand": "复制命令",
     "devices.copied": "已复制到剪贴板！",

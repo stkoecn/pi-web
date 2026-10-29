@@ -78,6 +78,7 @@ export const zhTWLocale: LocalePlugin = {
     "settings.projectRequired": "開啟專案後才能設定此項",
     "settings.mcp": "MCP",
     "settings.devices": "主機裝置",
+    "settings.team": "團隊協作",
     "devices.add": "新增裝置",
     "devices.copyCommand": "複製命令",
     "devices.copied": "已複製到剪貼簿！",

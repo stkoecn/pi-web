@@ -2,9 +2,9 @@ import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import lockfile from "proper-lockfile";
-import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
-import { serializeByKey } from "@/lib/key-serializer";
-import { readRegularFileText } from "@/lib/regular-file";
+import { writePrivateFileAtomicSync } from "../atomic-file";
+import { serializeByKey } from "../key-serializer";
+import { readRegularFileText } from "../regular-file";
 
 // Which hosts the user has switched on.
 //

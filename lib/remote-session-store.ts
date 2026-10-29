@@ -226,17 +226,68 @@ async function scanCatalogue(
 	options: { withDetails?: boolean } = {},
 ): Promise<{ files: RemoteSessionFile[]; details: Map<string, DetailRow> }> {
 	const details = new Map<string, DetailRow>();
+	const nodeScript = `
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+const dir = path.join(home, '.pi', 'agent', 'sessions');
+if (!fs.existsSync(dir)) process.exit(0);
+
+const files = [];
+function walk(d) {
+  try {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (ent.isFile() && p.endsWith('.jsonl')) files.push(p);
+    }
+  } catch {}
+}
+walk(dir);
+files.sort((a, b) => b.localeCompare(a));
+
+for (const file of files.slice(0, ${REMOTE_LIST_LIMIT})) {
+  try {
+    const st = fs.statSync(file);
+    const posixPath = file.split(path.sep).join('/');
+    process.stdout.write('@@' + st.size + ' ' + Math.floor(st.mtimeMs / 1000) + ' ' + posixPath + '\\n');
+    const content = fs.readFileSync(file, 'utf8');
+    const nl = content.indexOf('\\n');
+    process.stdout.write((nl === -1 ? content : content.slice(0, nl)) + '\\n');
+    ${options.withDetails ? `
+    let count = 0, first = '', name = '';
+    for (const line of content.split('\\n')) {
+      if (line.includes('"type":"message"')) count++;
+      if (!first && line.includes('"role":"user"')) first = line.slice(0, 600);
+      if (line.includes('"type":"session_info"')) name = line.slice(0, 600);
+    }
+    if (first) process.stdout.write('@@first ' + first + '\\n');
+    if (name) process.stdout.write('@@name ' + name + '\\n');
+    process.stdout.write('@@count ' + count + '\\n');
+    ` : `
+    process.stdout.write('@@count 0\\n');
+    `}
+  } catch {}
+}
+`;
+	const nodeB64 = Buffer.from(nodeScript, "utf8").toString("base64");
+
 	const script = `
-__dir="$HOME/.pi/agent/sessions"
-[ -d "$__dir" ] || exit 0
-if stat -f '%z' "$__dir" >/dev/null 2>&1; then __bsd=1; else __bsd=0; fi
-find "$__dir" -name '*.jsonl' -type f 2>/dev/null | head -n ${REMOTE_LIST_LIMIT} | while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  if [ "$__bsd" = 1 ]; then set -- $(stat -f '%z %m' "$path" 2>/dev/null); else set -- $(stat -c '%s %Y' "$path" 2>/dev/null); fi
-  printf '@@%s %s %s\\n' "$1" "$2" "$path"
-  head -n 1 "$path"
-  ${options.withDetails ? `awk '/"type":"message"/{c++} first=="" && /"role":"user"/{print "@@first " substr($0,1,600); first=1} /"type":"session_info"/{print "@@name " substr($0,1,600)} END{print "@@count " c+0}' "$path"` : `printf '@@count 0\\n'`}
-done
+if command -v node >/dev/null 2>&1; then
+  printf %s ${nodeB64} | base64 -d | node
+else
+  __dir="$HOME/.pi/agent/sessions"
+  [ -d "$__dir" ] || exit 0
+  if stat -f '%z' "$__dir" >/dev/null 2>&1; then __bsd=1; else __bsd=0; fi
+  find "$__dir" -name '*.jsonl' -type f 2>/dev/null | head -n ${REMOTE_LIST_LIMIT} | while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ "$__bsd" = 1 ]; then set -- $(stat -f '%z %m' "$path" 2>/dev/null); else set -- $(stat -c '%s %Y' "$path" 2>/dev/null); fi
+    printf '@@%s %s %s\\n' "$1" "$2" "$path"
+    head -n 1 "$path"
+    ${options.withDetails ? `awk '/"type":"message"/{c++} first=="" && /"role":"user"/{print "@@first " substr($0,1,600); first=1} /"type":"session_info"/{print "@@name " substr($0,1,600)} END{print "@@count " c+0}' "$path"` : `printf '@@count 0\\n'`}
+  done
+fi
 `;
 	const stdout = await runScript(driver, script);
 	const files: RemoteSessionFile[] = [];
@@ -486,6 +537,30 @@ export function invalidateRemoteSession(deviceId: string, sessionId: string) {
 	if (entry) contents.delete(`${prefix}${entry.file.path}`);
 }
 
+/**
+ * Reads remote session UI state (`~/.pi/agent/pi-web-session-state.json`) if available.
+ */
+export async function readRemoteSessionUiState(deviceId: string): Promise<{
+	projectNames: Record<string, string>;
+	sessions: Record<string, { pinned?: boolean; pinnedAt?: number; archivedAt?: number }>;
+}> {
+	try {
+		const driver = await getDriver(deviceId);
+		const content = await runScript(
+			driver,
+			`cat "$HOME/.pi/agent/pi-web-session-state.json" 2>/dev/null || cat "$USERPROFILE/.pi/agent/pi-web-session-state.json" 2>/dev/null || true`
+		);
+		if (!content || !content.trim()) return { projectNames: {}, sessions: {} };
+		const parsed = JSON.parse(content);
+		return {
+			projectNames: (parsed && typeof parsed.projectNames === "object" && parsed.projectNames) ? parsed.projectNames : {},
+			sessions: (parsed && typeof parsed.sessions === "object" && parsed.sessions) ? parsed.sessions : {},
+		};
+	} catch {
+		// Ignore if file doesn't exist or remote unreachable
+	}
+	return { projectNames: {}, sessions: {} };
+}
 /**
  * A `SessionManager` backed by the remote transcript. `SessionManager.inMemory`
  * gives us `getEntries/getLeafId/getHeader/getTree/getSessionName` with the same

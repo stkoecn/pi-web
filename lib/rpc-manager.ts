@@ -265,7 +265,7 @@ const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 // Tools that belong to the session, not to a branch of it: the ones that reach other tools,
 // and pi-web's subagent tools, which the built-in subagent setting switches on for the whole
 // session. Navigation keeps them although the target branch was recorded without them.
-const SESSION_TOOL_NAMES = new Set<string>(["codemode", "tool_search", ...SUBAGENT_CONTROL_TOOL_NAMES]);
+const SESSION_TOOL_NAMES = new Set<string>(["codemode", "tool_search", "send_session_message", ...SUBAGENT_CONTROL_TOOL_NAMES]);
 
 /**
  * The active tools for a coding tool selection. The selection replaces only the coding
@@ -2553,7 +2553,12 @@ export async function startRpcSession(
     // which MCP servers the session connects (ADR 0006).
     const builtins = subagentResources || chatOnly
       ? undefined
-      : await createPiWebBuiltinExtensions({ agentDir });
+      : await createPiWebBuiltinExtensions({
+          agentDir,
+          cwd: sessionCwd,
+          sessionId: sessionId,
+          deviceId: "localhost",
+        });
     const subagentCodemode = subagentResources?.codemode
       ? await createSubagentCodemodeExtension({
           agentDir,

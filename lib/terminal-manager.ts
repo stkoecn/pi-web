@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
+import { existsSync } from "fs";
+import { homedir, platform } from "os";
 import type { IPty } from "node-pty";
 import { samePath } from "./paths";
 
@@ -50,10 +51,11 @@ function registry(): Map<string, TerminalRecord> {
 }
 
 function shellEnvironment(): Record<string, string> {
+  const isWin = platform() === "win32";
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     // The browser login password guards this server, not the shells it starts.
-    const comparableKey = process.platform === "win32" ? key.toUpperCase() : key;
+    const comparableKey = isWin ? key.toUpperCase() : key;
     if (value !== undefined && comparableKey !== "PI_WEB_PASSWORD") env[key] = value;
   }
   env.TERM = "xterm-256color";
@@ -76,6 +78,52 @@ function scheduleCleanup(id: string, record: TerminalRecord): void {
 
 function dimension(value: number, fallback: number): number {
   return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
+}
+
+function resolveShellAndArgs(): { shell: string; args: string[] } {
+  // Use platform() from "os" instead of process.platform so Next.js / Turbopack SWC
+  // does not statically dead-code-eliminate or inline the build host's platform into the bundle.
+  if (platform() === "win32") {
+    return {
+      shell: process.env.ComSpec ?? "cmd.exe",
+      args: [],
+    };
+  }
+
+  const envShell = process.env.SHELL;
+  if (envShell && existsSync(envShell)) {
+    const isBourneOnly = envShell.endsWith("/sh") || envShell.endsWith("/ash");
+    return {
+      shell: envShell,
+      args: isBourneOnly ? [] : ["-l"],
+    };
+  }
+
+  const candidates = [
+    "/bin/bash",
+    "/usr/bin/bash",
+    "/usr/local/bin/bash",
+    "/bin/zsh",
+    "/usr/bin/zsh",
+    "/bin/ash",
+    "/bin/sh",
+    "/usr/bin/sh",
+  ];
+
+  for (const cand of candidates) {
+    if (existsSync(cand)) {
+      const isBourneOnly = cand.endsWith("/sh") || cand.endsWith("/ash");
+      return {
+        shell: cand,
+        args: isBourneOnly ? [] : ["-l"],
+      };
+    }
+  }
+
+  return {
+    shell: "/bin/sh",
+    args: [],
+  };
 }
 
 export async function createTerminal(
@@ -155,10 +203,7 @@ export async function createTerminal(
       { cause: error },
     );
   }
-  const shell = process.platform === "win32"
-    ? process.env.ComSpec ?? "cmd.exe"
-    : process.env.SHELL || "/bin/sh";
-  const args = process.platform === "win32" ? [] : ["-l"];
+  const { shell, args } = resolveShellAndArgs();
   const pty = spawn(shell, args, {
     name: "xterm-256color",
     cols: dimension(cols, 80),

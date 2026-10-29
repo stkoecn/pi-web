@@ -26,6 +26,8 @@ export class SSHHostDriver implements IHostDriver {
    * command written to a shell that is already open.
    */
   private shellPool: PersistentShellPool | null = null;
+  private isWindowsTarget: boolean | null = null;
+  private targetProbePromise: Promise<boolean> | null = null;
 
   constructor(deviceId: string, client: Client) {
     this.deviceId = deviceId;
@@ -55,6 +57,34 @@ export class SSHHostDriver implements IHostDriver {
   }
 
   /**
+   * Probe whether the remote device is Windows (e.g. MINGW, MSYS, Windows_NT).
+   * On Windows OpenSSH, persistent non-interactive shells holding an open stdin
+   * cause MSYS2 bash/sh to busy-spin on Win32 named pipes, consuming 100% CPU.
+   * For Windows targets, persistent shell pools are disabled in favor of clean
+   * one-shot execs.
+   */
+  private async isWindows(): Promise<boolean> {
+    if (this.isWindowsTarget !== null) return this.isWindowsTarget;
+    if (this.targetProbePromise) return this.targetProbePromise;
+
+    this.targetProbePromise = (async () => {
+      try {
+        const res = await this.execOneShot('uname -s 2>/dev/null || echo %OS%');
+        const out = (res.stdout || '').toLowerCase();
+        const win = out.includes('mingw') || out.includes('msys') || out.includes('cygwin') || out.includes('windows');
+        this.isWindowsTarget = win;
+        return win;
+      } catch {
+        return false;
+      } finally {
+        this.targetProbePromise = null;
+      }
+    })();
+
+    return this.targetProbePromise;
+  }
+
+  /**
    * Open the command channel and the SFTP channel ahead of the first request.
    *
    * Both cost a full round trip to open, and every route needs at least one of
@@ -63,8 +93,9 @@ export class SSHHostDriver implements IHostDriver {
    */
   async warmUp(): Promise<void> {
     if (!this.alive) return;
+    const isWin = await this.isWindows();
     await Promise.allSettled([
-      this.getShellPool().ready(),
+      !isWin ? this.getShellPool().ready() : Promise.resolve(),
       this.getSFTP().then(() => undefined),
     ]);
   }
@@ -273,6 +304,12 @@ export class SSHHostDriver implements IHostDriver {
 
     const command = [cmd, ...args.map(a => `"${a.replace(/"/g, '\\"')}"`)].join(' ');
 
+    const isWin = await this.isWindows();
+    if (isWin) {
+      // Windows targets must never use persistent shell pools to prevent MSYS2 pipe spinning
+      return this.execOneShot(opts?.cwd ? `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${command}` : command, opts);
+    }
+
     try {
       const result = await this.getShellPool().exec(command, {
         cwd: opts?.cwd,
@@ -284,7 +321,7 @@ export class SSHHostDriver implements IHostDriver {
       // The shell channel can die (remote sshd restart, network blip). Fall back
       // to a one-shot channel so a single dead shell does not fail the caller.
       if (!this.alive) throw error;
-      return this.execOneShot(command, opts);
+      return this.execOneShot(opts?.cwd ? `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${command}` : command, opts);
     }
   }
 
@@ -347,7 +384,9 @@ export class SSHHostDriver implements IHostDriver {
     // when it was installed under `$HOME/.local/node/bin`.
     let command = `${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
     if (opts.cwd) {
-      command = `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${command}`;
+      // Normalize backslashes to forward slashes to prevent shell escape stripping (e.g. D:\proj\helper -> D:projhelper)
+      const normalizedCwd = opts.cwd.replace(/\\/g, '/');
+      command = `cd "${normalizedCwd.replace(/"/g, '\\"')}" && ${command}`;
     }
 
     return withChannelRetry(() => new Promise<RPCChannel>((resolve, reject) => {

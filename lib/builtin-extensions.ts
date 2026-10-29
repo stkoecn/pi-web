@@ -447,8 +447,13 @@ export async function createSubagentMcpExtensions(options: {
   });
 }
 
+import { createMeshExtension } from "./gateway/mesh-extension";
+
 export interface PiWebBuiltinExtensionsOptions {
   agentDir: string;
+  cwd?: string;
+  sessionId?: string;
+  deviceId?: string;
   /** Timing overrides for tests. */
   mcpHost?: Pick<McpHostOptions, "idleMs" | "promptWaitMs">;
 }
@@ -471,7 +476,11 @@ export async function createPiWebBuiltinExtensions(
     ...(options.mcpHost ? { mcpHost: options.mcpHost } : {}),
   });
   return {
-    extensions: [builtin("codemode", sandbox.available ? createCodemodeExtension() : unavailableExtension), ...extensions],
+    extensions: [
+      builtin("codemode", sandbox.available ? createCodemodeExtension() : unavailableExtension),
+      createMeshExtension(options.deviceId || "localhost", options.sessionId, options.cwd),
+      ...extensions,
+    ],
     mcpHost,
   };
 }

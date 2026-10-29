@@ -108,6 +108,7 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
       historyMenuOpen: false, inputHistory: ["previous"], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [{}], slashActiveIndex: 0,
       atMenuOpen: false, atQuery: null, atMatches: [{}], atActiveIndex: 0,
+      targetMenuOpen: false, targetQuery: null, filteredTargetMatches: [{}], targetActiveIndex: 0, applyTargetCompletion() {},
       onSteer() {}, onFollowUp() {},
       sendQueued(mode) { action = mode; }, handleSend() { action = "send"; },
       applySlashCommand() { action = "slash"; },
@@ -759,6 +760,8 @@ test("handleSend lets a handled /mcp through while streaming and sends an unowne
       runBuiltinCommand: async (message) => { calls.builtin.push(message); return handled; },
       clearInput() {},
       onSend: (message) => calls.sent.push(message),
+      activeTargetPill: null,
+      meshMode: "followup",
     });
     await handleSend();
     return calls;

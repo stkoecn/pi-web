@@ -478,9 +478,10 @@ export async function ensureRemoteRpcSessionForExisting(
     const file = await findRemoteSessionFile(deviceId, sessionId);
     if (!file) return undefined;
 
+    const normalizedCwd = file.cwd ? file.cwd.replace(/\\/g, "/") : await deviceHomeOrDefault(deviceId);
     const created = await createRemoteRpcSession({
       deviceId,
-      cwd: file.cwd || (await deviceHomeOrDefault(deviceId)),
+      cwd: normalizedCwd,
       resumeSession: file.path,
     });
     // pi reports the persisted session's own id; alias the requested id too so

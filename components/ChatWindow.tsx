@@ -1000,6 +1000,8 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
       onAudioUnlock={unlockAudio}
       draftKey={session?.id ?? newSessionDraftKey ?? undefined}
       cwd={session?.cwd ?? newSessionCwd}
+      sessionId={session?.id ?? null}
+      deviceId={deviceId}
       onAttachFiles={onAttachFiles}
     />
   );

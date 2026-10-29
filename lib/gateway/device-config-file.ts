@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
+import { writePrivateFileAtomicSync } from "../atomic-file";
 import type { ActiveDeviceConfig } from "./types/device";
 
 /**

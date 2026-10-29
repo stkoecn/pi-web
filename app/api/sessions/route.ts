@@ -43,7 +43,13 @@ export async function GET(req: Request) {
       // catalogue plus `deviceOnline: false` lets the UI say "offline" at once
       // while the pool keeps reconnecting in the background.
       const { getGateway } = await import("@/lib/gateway/singleton");
-      const entry = getGateway().registry.get(deviceId);
+      const gateway = getGateway();
+      let entry = gateway.registry.get(deviceId);
+      if (!entry || !entry.driver.isAlive()) {
+        // If not connected yet (e.g. initial load of discovered/idle host), initiate connection
+        await gateway.connectForSelection(deviceId).catch(() => {});
+        entry = gateway.registry.get(deviceId);
+      }
       const online = Boolean(entry && entry.driver.isAlive());
       if (!online) {
         return jsonResponse(req, {

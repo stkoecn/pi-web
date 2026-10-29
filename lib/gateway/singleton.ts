@@ -378,13 +378,21 @@ export class GatewayManager {
     const targetId = id || 'localhost';
     if (targetId === 'localhost') return this.registry.getDriver('localhost');
 
+    const entry = this.registry.get(targetId);
+    if (entry && entry.driver.isAlive()) {
+      return entry.driver;
+    }
+
+    // Trigger connection if device is not currently alive or in-flight
+    void this.connectForSelection(targetId).catch(() => {});
+
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const entry = this.registry.get(targetId);
-      if (entry && entry.driver.isAlive()) {
-        return entry.driver;
+      const current = this.registry.get(targetId);
+      if (current && current.driver.isAlive()) {
+        return current.driver;
       }
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 100));
     }
     return this.registry.getDriver(targetId);
   }
@@ -465,14 +473,21 @@ export class GatewayManager {
   public async getDriverForRequest(id?: string, timeoutMs = 10000): Promise<IHostDriver> {
     const targetId = id || 'localhost';
     if (targetId === 'localhost') return this.registry.getDriver('localhost');
-    const entry = this.registry.get(targetId);
+    let entry = this.registry.get(targetId);
     // No entry means no device by that id is configured, so there is nothing to
     // wait for. Every configured device has a placeholder entry before the
     // first request is served (SSHClientPool.addDevice registers it), which is
     // what makes this test the same as "unknown to this gateway".
     if (!entry) throw new DeviceOfflineError(targetId);
     if (entry.driver.isAlive()) return entry.driver;
-    if (entry.info.status !== 'connecting') throw new DeviceOfflineError(targetId);
+    if (entry.info.status !== 'connecting') {
+      const res = await this.connectForSelection(targetId).catch(() => null);
+      if (!res || !res.success) {
+        throw new DeviceOfflineError(targetId);
+      }
+      entry = this.registry.get(targetId);
+      if (entry?.driver.isAlive()) return entry.driver;
+    }
     try {
       return await this.getOrConnectDriver(targetId, timeoutMs);
     } catch (error) {

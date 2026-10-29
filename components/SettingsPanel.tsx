@@ -34,6 +34,7 @@ import { SkillsConfig } from "./SkillsConfig";
 import { AgentsConfig } from "./AgentsConfig";
 import { PluginsConfig } from "./PluginsConfig";
 import { McpConfig } from "./McpConfig";
+import { TeamConfig } from "./TeamConfig";
 import { ConfigButton, ConfigSwitch } from "./SettingsUi";
 import { FontSettings } from "./FontSettings";
 
@@ -73,6 +74,7 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
 
   if (section === "general") return <svg {...common}><path d="M20 7h-9M14 17H5" /><circle cx="7" cy="7" r="3" /><circle cx="17" cy="17" r="3" /></svg>;
   if (section === "devices") return <svg {...common}><rect x="2" y="3" width="20" height="7" rx="2" /><rect x="2" y="14" width="20" height="7" rx="2" /><path d="M6 6.5h.01M6 17.5h.01M11 6.5h6M11 17.5h6" /></svg>;
+  if (section === "team") return <svg {...common}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>;
   if (section === "models") return <svg {...common}><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3" /></svg>;
   if (section === "skills") return <svg {...common}><path d="m12 2-10 5 10 5 10-5-10-5Z" /><path d="m2 12 10 5 10-5M2 17l10 5 10-5" /></svg>;
   if (section === "agents") return <svg {...common} className="settings-section-icon is-agent"><rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" /></svg>;
@@ -531,6 +533,7 @@ export function SettingsPanel({
   const sections: { id: SettingsSection; label: string; requiresProject: boolean }[] = ([
     { id: "general", label: t("settings.general") },
     { id: "devices", label: t("settings.devices") },
+    { id: "team", label: t("settings.team") },
     { id: "models", label: t("common.models") },
     { id: "skills", label: t("common.skills") },
     { id: "agents", label: t("common.agents") },
@@ -630,6 +633,7 @@ export function SettingsPanel({
           {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
           {/* The gateway's host list is a property of this Pi Web, not of the selected device. */}
           {sectionHost("devices", <DevicesConfig embedded onClose={onClose} onDevicesChanged={onDevicesChanged} />)}
+          {sectionHost("team", <TeamConfig embedded cwd={cwd} onClose={onClose} />)}
           {sectionHost("models", <ModelsConfig embedded cwd={cwd} deviceId={deviceId} onClose={onClose} />)}
           {/* Visited sections stay mounted, so the ones whose answer depends on trust take the page's
               status and load again in place when trusting from Settings › MCP changes it. */}

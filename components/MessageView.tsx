@@ -428,6 +428,10 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
     });
   };
 
+  const meshMatch = content.match(/^\[(?:From ([^\]]+)|Inter-Session Message)\](?:\[reply by using send_session_message\])?:\s*([\s\S]*)$/);
+  let meshSender = meshMatch ? (meshMatch[1] || "Remote Session") : null;
+  const meshBody = meshMatch ? meshMatch[2] : null;
+
   return (
     <div
       style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: "flex-end" }}
@@ -452,7 +456,27 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
             overflowY: "auto",
           }}
         >
-          {commandText ? (
+          {meshSender ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: "1px 6px",
+                    borderRadius: 4,
+                    background: "color-mix(in srgb, var(--accent) 18%, transparent)",
+                    color: "var(--accent)",
+                    fontFamily: "var(--font-mono)",
+                    fontWeight: 500,
+                  }}
+                >
+                  MESH · 来自 {meshSender}
+                </span>
+              </div>
+              {imageBlocksNode}
+              {meshBody && <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd} onOpenFile={onOpenFile}>{meshBody}</SafeMarkdownBody>}
+            </div>
+          ) : commandText ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
               {imageBlocksNode}
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>

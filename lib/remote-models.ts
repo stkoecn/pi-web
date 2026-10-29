@@ -26,7 +26,7 @@
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { RPCChannel } from "@/lib/gateway/types/host-driver";
+import type { IHostDriver, RPCChannel } from "@/lib/gateway/types/host-driver";
 import { deviceHomeOrDefault } from "@/lib/device-home";
 
 /** One model as the remote device reports it, normalised to what the UI needs. */
@@ -349,7 +349,13 @@ async function fetchCatalogueFromDisk(deviceId: string): Promise<RemoteModelCata
     const { stripJsonComments } = await import("@/lib/jsonc");
     const { deviceHomeOrDefault } = await import("@/lib/device-home");
 
-    const driver = getGateway().getOnlineDriver(deviceId);
+    const gateway = getGateway();
+    let driver: IHostDriver;
+    try {
+      driver = gateway.getOnlineDriver(deviceId);
+    } catch {
+      driver = await gateway.getDriverForRequest(deviceId, 5000);
+    }
     if (!driver || !driver.isAlive()) return EMPTY_CATALOGUE;
 
     let agentDir = "";

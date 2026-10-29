@@ -33,14 +33,27 @@ function refusal(status: number, reason: SessionUiStateRefusalReason, error: str
 
 // GET /api/sessions/ui-state
 //
-// This state file (pins, archive, project order, project names) lives on the
-// host that serves the request. A remote device's own file cannot be read yet,
-// so the sidebar gets an empty-but-valid state rather than the local host's —
-// showing localhost pins while browsing a remote device would be wrong.
+// Reads the UI state file (pins, archive, project order, project names).
+// If a remote device is targeted, attempts to fetch and parse the remote device's
+// `~/.pi/agent/pi-web-session-state.json`.
 export async function GET(req: Request) {
-  const state = isRemoteDevice(getRequestDeviceId(req))
-    ? emptySessionUiState()
-    : readSessionUiState();
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    try {
+      const { readRemoteSessionUiState } = await import("@/lib/remote-session-store");
+      const remote = await readRemoteSessionUiState(deviceId);
+      const state = {
+        ...emptySessionUiState(),
+        projectNames: remote.projectNames || {},
+        sessions: (remote.sessions as any) || {},
+      };
+      return NextResponse.json({ state } satisfies SessionUiStateResponse, { headers: NO_STORE });
+    } catch {
+      return NextResponse.json({ state: emptySessionUiState() } satisfies SessionUiStateResponse, { headers: NO_STORE });
+    }
+  }
+
+  const state = readSessionUiState();
   return NextResponse.json({ state } satisfies SessionUiStateResponse, { headers: NO_STORE });
 }
 

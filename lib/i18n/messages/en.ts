@@ -78,6 +78,7 @@ export const enLocale: LocalePlugin = {
     "settings.projectRequired": "Open a project to configure this section",
     "settings.mcp": "MCP",
     "settings.devices": "Devices",
+    "settings.team": "Team Mesh",
     "devices.add": "Add device",
     "devices.copyCommand": "Copy command",
     "devices.copied": "Copied to clipboard!",
