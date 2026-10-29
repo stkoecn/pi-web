@@ -1,8 +1,8 @@
 import { randomUUID } from "crypto";
-import { existsSync } from "fs";
-import { homedir, platform } from "os";
+import { homedir } from "os";
 import type { IPty } from "node-pty";
 import { samePath } from "./paths";
+import type { DebugServerGlobal } from "./debug-types";
 
 export type TerminalEvent =
   | { type: "output"; data: string; offset: number; reset?: boolean }
@@ -27,6 +27,11 @@ interface TerminalRecord {
   exited: boolean;
   exitCode: number | null;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * For the debug panel: when `cleanupTimer` removes the shell; null while no cleanup is armed
+   * (a stream is attached). A record created before a hot reload has none.
+   */
+  cleanupAt?: number | null;
 }
 
 declare global {
@@ -51,11 +56,10 @@ function registry(): Map<string, TerminalRecord> {
 }
 
 function shellEnvironment(): Record<string, string> {
-  const isWin = platform() === "win32";
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     // The browser login password guards this server, not the shells it starts.
-    const comparableKey = isWin ? key.toUpperCase() : key;
+    const comparableKey = process.platform === "win32" ? key.toUpperCase() : key;
     if (value !== undefined && comparableKey !== "PI_WEB_PASSWORD") env[key] = value;
   }
   env.TERM = "xterm-256color";
@@ -72,58 +76,13 @@ function emit(record: TerminalRecord, event: TerminalEvent): void {
 
 function scheduleCleanup(id: string, record: TerminalRecord): void {
   if (record.cleanupTimer || record.listeners.size || registry().get(id) !== record) return;
+  record.cleanupAt = Date.now() + TERMINAL_RECONNECT_MS;
   record.cleanupTimer = setTimeout(() => killTerminal(id), TERMINAL_RECONNECT_MS);
   record.cleanupTimer.unref?.();
 }
 
 function dimension(value: number, fallback: number): number {
   return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
-}
-
-function resolveShellAndArgs(): { shell: string; args: string[] } {
-  // Use platform() from "os" instead of process.platform so Next.js / Turbopack SWC
-  // does not statically dead-code-eliminate or inline the build host's platform into the bundle.
-  if (platform() === "win32") {
-    return {
-      shell: process.env.ComSpec ?? "cmd.exe",
-      args: [],
-    };
-  }
-
-  const envShell = process.env.SHELL;
-  if (envShell && existsSync(envShell)) {
-    const isBourneOnly = envShell.endsWith("/sh") || envShell.endsWith("/ash");
-    return {
-      shell: envShell,
-      args: isBourneOnly ? [] : ["-l"],
-    };
-  }
-
-  const candidates = [
-    "/bin/bash",
-    "/usr/bin/bash",
-    "/usr/local/bin/bash",
-    "/bin/zsh",
-    "/usr/bin/zsh",
-    "/bin/ash",
-    "/bin/sh",
-    "/usr/bin/sh",
-  ];
-
-  for (const cand of candidates) {
-    if (existsSync(cand)) {
-      const isBourneOnly = cand.endsWith("/sh") || cand.endsWith("/ash");
-      return {
-        shell: cand,
-        args: isBourneOnly ? [] : ["-l"],
-      };
-    }
-  }
-
-  return {
-    shell: "/bin/sh",
-    args: [],
-  };
 }
 
 export async function createTerminal(
@@ -203,7 +162,10 @@ export async function createTerminal(
       { cause: error },
     );
   }
-  const { shell, args } = resolveShellAndArgs();
+  const shell = process.platform === "win32"
+    ? process.env.ComSpec ?? "cmd.exe"
+    : process.env.SHELL || "/bin/sh";
+  const args = process.platform === "win32" ? [] : ["-l"];
   const pty = spawn(shell, args, {
     name: "xterm-256color",
     cols: dimension(cols, 80),
@@ -247,6 +209,30 @@ export function hasTerminal(id: string): boolean {
 
 export function getTerminalCwd(id: string): string | undefined {
   return registry().get(id)?.cwd;
+}
+
+/**
+ * Counts for the debug panel. Reads the map as it is: `registry()` would create it and install
+ * the process handlers, and nothing here touches a timer or a stream. A record from before a hot
+ * reload has no `cleanupAt` and adds no deadline.
+ */
+export function getTerminalStats(now = Date.now()): DebugServerGlobal["terminals"] {
+  const stats: DebugServerGlobal["terminals"] = { count: 0, listeners: 0, detached: 0, exited: 0, nextCleanupAt: null };
+  const terminals = globalThis.__piWebTerminals;
+  if (!(terminals instanceof Map)) return stats;
+  for (const record of terminals.values()) {
+    const listeners = record.listeners?.size ?? 0;
+    stats.count += 1;
+    stats.listeners += listeners;
+    if (listeners === 0) stats.detached += 1;
+    if (record.exited) stats.exited += 1;
+    const cleanupAt = record.cleanupAt;
+    if (typeof cleanupAt !== "number") continue;
+    // A deadline already passed fires on the next turn of the loop.
+    const due = Math.max(cleanupAt, now);
+    if (stats.nextCleanupAt === null || due < stats.nextCleanupAt) stats.nextCleanupAt = due;
+  }
+  return stats;
 }
 
 export function subscribeTerminal(
