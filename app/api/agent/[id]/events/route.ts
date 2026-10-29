@@ -4,6 +4,8 @@ import { toClientAgentEvent } from "@/lib/agent-event-wire";
 import type { AgentEventLike } from "@/lib/agent-event-wire";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { getRpcSession, startRpcSession } from "@/lib/rpc-manager";
+import { isValidLivenessHolder } from "@/lib/session-liveness";
+import { describeStreamClient } from "@/lib/stream-client";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
@@ -117,13 +119,18 @@ async function resolveRemoteSession(req: Request, id: string) {
   }
 }
 
-// GET /api/agent/[id]/events - SSE stream of agent events
+// GET /api/agent/[id]/events?holder=<page id> - SSE stream of agent events. The holder, the
+// request's reported address and its browser label only label the stream for the debug panel: the
+// page's lease renewals keep the session alive, never the stream (#1283).
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   if (req.signal.aborted) return new Response(null, { status: 204 });
+  const holderParam = new URL(req.url).searchParams.get("holder");
+  const holder = isValidLivenessHolder(holderParam) ? holderParam : null;
+  const clientInfo = { holder, ...describeStreamClient(req.headers) };
 
   const remote = await resolveRemoteSession(req, id);
   if (remote) {
@@ -133,6 +140,7 @@ export async function GET(
       req,
       id,
       Promise.resolve(toRemoteEventSession(remote)),
+      clientInfo
     );
     return new Response(stream, { headers: SSE_HEADERS });
   }
@@ -151,7 +159,7 @@ export async function GET(
     sessionPromise = startRpcSession(id, filePath, undefined).then((result) => result.session);
   }
 
-  const stream = createAgentEventStream(req, id, sessionPromise);
+  const stream = createAgentEventStream(req, id, sessionPromise, clientInfo);
 
   return new Response(stream, { headers: SSE_HEADERS });
 }

@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { allowFileRoot } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { startRpcSession } from "@/lib/rpc-manager";
+import { cwdMissingBody } from "@/lib/missing-cwd";
 import { getRequestDeviceId, isRemoteDevice, LOCAL_DEVICE_ID } from "@/lib/device-context";
 import { deviceHomeOrDefault } from "@/lib/device-home";
 
@@ -101,7 +102,7 @@ export async function POST(req: Request) {
     }
     if (!existsSync(cwd)) {
       return NextResponse.json({
-        error: `Directory does not exist: ${cwd}`,
+        ...cwdMissingBody(cwd),
         ...(commandType === "prompt"
           ? { code: "prompt_rejected", accepted: false }
           : {}),

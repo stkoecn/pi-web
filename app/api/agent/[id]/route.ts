@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
+import { cwdMissingBody, missingCwdFromBody } from "@/lib/missing-cwd";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 /**
@@ -138,8 +139,11 @@ export async function POST(
 
     return NextResponse.json({ success: true, data: result });
   } catch (error) {
+    // Read by its fields: the wrapper that threw may come from another route's bundle.
+    const missingCwd = missingCwdFromBody(error);
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
+      ...(missingCwd ? cwdMissingBody(missingCwd) : {}),
       ...(commandType === "prompt" && !promptAccepted
         ? { code: "prompt_rejected", accepted: false }
         : {}),
