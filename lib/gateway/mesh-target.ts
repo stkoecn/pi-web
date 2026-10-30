@@ -1,4 +1,5 @@
 import { getSessionAlias, getProjectByAlias } from "./mesh-config";
+import { getCanonicalHostId, isLocalHostId } from "./host-identity";
 
 export interface ParsedMeshTarget {
   raw: string;
@@ -19,21 +20,22 @@ export interface ParsedMeshTarget {
  * - `coder@pi-web` -> session='coder', project='pi-web', host=currentHost
  * - `@pi-web` -> new session, project='pi-web', host=currentHost
  */
-export function parseMeshTarget(target: string, currentDeviceId = "localhost"): ParsedMeshTarget | null {
+export function parseMeshTarget(target: string, currentDeviceId = getCanonicalHostId()): ParsedMeshTarget | null {
   const trimmed = target.trim();
+  const defaultHost = isLocalHostId(currentDeviceId) ? getCanonicalHostId() : currentDeviceId;
 
   // Pattern A: No '@', but has '.' e.g. "sess123.wshome" -> direct host session
   if (!trimmed.includes("@")) {
     if (trimmed.includes(".")) {
       const dotIdx = trimmed.lastIndexOf(".");
       const sessionPart = trimmed.slice(0, dotIdx).trim();
-      const hostPart = trimmed.slice(dotIdx + 1).trim() || currentDeviceId;
+      const hostPart = trimmed.slice(dotIdx + 1).trim() || defaultHost;
       if (sessionPart && hostPart) {
         return {
           raw: trimmed,
           sessionTarget: sessionPart,
           projectTarget: undefined,
-          deviceTarget: hostPart,
+          deviceTarget: isLocalHostId(hostPart) ? getCanonicalHostId() : hostPart,
           isNewSession: false,
         };
       }
@@ -49,7 +51,7 @@ export function parseMeshTarget(target: string, currentDeviceId = "localhost"): 
   if (!rightPart) return null;
 
   let projectTarget = "";
-  let deviceTarget = currentDeviceId;
+  let deviceTarget = defaultHost;
 
   // Check if rightPart uses bracket notation: `[projectPath].host` or `[projectPath]`
   if (rightPart.startsWith("[")) {
@@ -58,9 +60,9 @@ export function parseMeshTarget(target: string, currentDeviceId = "localhost"): 
       projectTarget = rightPart.slice(1, closeBracketIdx).trim();
       const afterBracket = rightPart.slice(closeBracketIdx + 1).trim();
       if (afterBracket.startsWith(".")) {
-        deviceTarget = afterBracket.slice(1).trim() || currentDeviceId;
+        deviceTarget = afterBracket.slice(1).trim() || defaultHost;
       } else {
-        deviceTarget = currentDeviceId;
+        deviceTarget = defaultHost;
       }
     } else {
       projectTarget = rightPart;
@@ -68,12 +70,9 @@ export function parseMeshTarget(target: string, currentDeviceId = "localhost"): 
   } else if (rightPart.includes(".")) {
     const dotIdx = rightPart.lastIndexOf(".");
     projectTarget = rightPart.slice(0, dotIdx).trim();
-    deviceTarget = rightPart.slice(dotIdx + 1).trim() || currentDeviceId;
+    deviceTarget = rightPart.slice(dotIdx + 1).trim() || defaultHost;
   } else {
     // e.g. "sess@wshome" where rightPart has no dot, but sessionPart is set.
-    // Could rightPart be a host directly if no dot?
-    // We treat it as projectTarget under currentDeviceId, or if projectTarget matches a host device?
-    // Standard rule: rightPart = projectTarget, deviceTarget = currentDeviceId
     projectTarget = rightPart;
   }
 
@@ -81,7 +80,7 @@ export function parseMeshTarget(target: string, currentDeviceId = "localhost"): 
     raw: trimmed,
     sessionTarget: sessionPart || undefined,
     projectTarget: projectTarget || undefined,
-    deviceTarget,
+    deviceTarget: isLocalHostId(deviceTarget) ? getCanonicalHostId() : deviceTarget,
     isNewSession: !sessionPart,
   };
 }

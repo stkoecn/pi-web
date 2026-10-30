@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { disambiguateProjectPaths } from "@/lib/gateway/project-disambiguation";
 import { getGateway } from "@/lib/gateway/singleton";
 import { isRemoteDevice, LOCAL_DEVICE_ID } from "@/lib/device-context";
+import { getCanonicalHostId, isLocalHostId } from "@/lib/gateway/host-identity";
 import { listAllSessions } from "@/lib/session-reader";
 import { readSessionUiState } from "@/lib/session-ui-state";
 import { sessionDisplayTitle } from "@/lib/session-fork-name";
@@ -28,9 +29,10 @@ export async function GET(req: Request) {
     const projectTeamCfg = currentCwd ? readProjectTeamConfig(currentCwd) : { version: 1 as const, enabledProjects: [] };
     const enabledSet = new Set(projectTeamCfg.enabledProjects.map((k) => k.toLowerCase()));
 
-    // Collect devices - ensure unique deviceIds
+    // Collect devices - ensure unique deviceIds, mapped to canonical host ID for local
+    const canonicalLocal = getCanonicalHostId();
     const deviceEntries = gateway.listDevices();
-    const allDeviceIds = Array.from(new Set([LOCAL_DEVICE_ID, ...deviceEntries.map((d) => d.id)]));
+    const allDeviceIds = Array.from(new Set([canonicalLocal, ...deviceEntries.map((d) => isLocalHostId(d.id) ? canonicalLocal : d.id)]));
 
     const result: Array<{
       deviceId: string;
@@ -52,10 +54,10 @@ export async function GET(req: Request) {
       }>;
     }> = [];
 
-    const deviceIdsToScan = targetDevice ? [targetDevice] : allDeviceIds;
+    const deviceIdsToScan = targetDevice ? [isLocalHostId(targetDevice) ? canonicalLocal : targetDevice] : allDeviceIds;
 
     for (const devId of deviceIdsToScan) {
-      const isLocal = !isRemoteDevice(devId);
+      const isLocal = isLocalHostId(devId);
       const devEntry = !isLocal ? gateway.registry.get(devId) : null;
       const isOnline = isLocal || Boolean(devEntry?.driver.isAlive());
 
@@ -181,7 +183,8 @@ export async function POST(req: Request) {
       if (!body.deviceId || !body.projectPath) {
         return NextResponse.json({ error: "Missing deviceId or projectPath" }, { status: 400 });
       }
-      setProjectDescription(body.deviceId, body.projectPath, body.description || "");
+      const targetDev = isLocalHostId(body.deviceId) ? getCanonicalHostId() : body.deviceId;
+      setProjectDescription(targetDev, body.projectPath, body.description || "");
       return NextResponse.json({ success: true });
     }
 
@@ -189,7 +192,8 @@ export async function POST(req: Request) {
       if (!body.deviceId || !body.sessionId) {
         return NextResponse.json({ error: "Missing deviceId or sessionId" }, { status: 400 });
       }
-      setSessionDescription(body.deviceId, body.sessionId, body.description || "");
+      const targetDev = isLocalHostId(body.deviceId) ? getCanonicalHostId() : body.deviceId;
+      setSessionDescription(targetDev, body.sessionId, body.description || "");
       return NextResponse.json({ success: true });
     }
 
@@ -197,7 +201,8 @@ export async function POST(req: Request) {
       if (!body.currentCwd || !body.deviceId || !body.projectPath || body.enabled === undefined) {
         return NextResponse.json({ error: "Missing required fields for toggle_project_enabled" }, { status: 400 });
       }
-      toggleProjectEnabledForContacts(body.currentCwd, body.deviceId, body.projectPath, body.enabled);
+      const targetDev = isLocalHostId(body.deviceId) ? getCanonicalHostId() : body.deviceId;
+      toggleProjectEnabledForContacts(body.currentCwd, targetDev, body.projectPath, body.enabled);
       return NextResponse.json({ success: true });
     }
 

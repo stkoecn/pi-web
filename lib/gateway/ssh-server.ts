@@ -8,6 +8,7 @@ import { SSHClientPool } from './ssh-client-pool';
 import type { IHostDriver, TerminalOptions, TerminalSession, FileEntry, ExecResult, RPCChannel } from './types/host-driver';
 import { SSHHostDriver } from './drivers/ssh-host-driver';
 import { buildConnectConfig } from './ssh-connect-config';
+import { setupMeshReverseBridge } from './mesh-reverse-bridge';
 
 const SSHServerClass = ssh2.Server;
 
@@ -96,6 +97,7 @@ export class ReverseTunnelHostDriver implements IHostDriver {
         this.lastFailure = false;
         this.sshDriver = new SSHHostDriver(this.deviceId, client);
         void this.sshDriver.warmUp();
+        void setupMeshReverseBridge(this.deviceId, client).catch(() => {});
         resolve(this.sshDriver);
       });
       client.on('error', (err: Error) => {

@@ -8,13 +8,15 @@ import {
 } from "./team-mesh-config";
 import { getGateway } from "./singleton";
 import { isRemoteDevice, LOCAL_DEVICE_ID } from "../device-context";
+import { getCanonicalHostId, isLocalHostId } from "./host-identity";
 import { listAllSessions } from "../session-reader";
 import { readSessionUiState } from "../session-ui-state";
 import { sessionDisplayTitle } from "../session-fork-name";
 
 export const MESH_EXTENSION_NAME = "pi-web-mesh";
 
-export function createMeshExtension(currentDeviceId = "localhost", currentSessionId?: string, currentCwd?: string): InlineExtension {
+export function createMeshExtension(currentDeviceId = getCanonicalHostId(), currentSessionId?: string, currentCwd?: string): InlineExtension {
+  const hostId = isLocalHostId(currentDeviceId) ? getCanonicalHostId() : currentDeviceId;
   return {
     name: MESH_EXTENSION_NAME,
     factory: async (pi) => {
@@ -44,9 +46,9 @@ export function createMeshExtension(currentDeviceId = "localhost", currentSessio
               target: params.target,
               message: params.message,
               mode: params.mode || "followup",
-              currentDeviceId,
+              currentDeviceId: hostId,
               senderContext: {
-                deviceId: currentDeviceId,
+                deviceId: hostId,
                 sessionId: currentSessionId,
                 cwd: currentCwd,
               },
@@ -120,7 +122,7 @@ export function createMeshExtension(currentDeviceId = "localhost", currentSessio
 
             for (const key of projectCfg.enabledProjects) {
               const { deviceId, projectPath } = parseProjectKey(key);
-              const isLocal = !isRemoteDevice(deviceId);
+              const isLocal = isLocalHostId(deviceId);
               const devEntry = !isLocal ? gateway.registry.get(deviceId) : null;
               const isOnline = isLocal || Boolean(devEntry?.driver.isAlive());
 

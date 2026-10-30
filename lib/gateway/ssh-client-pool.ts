@@ -6,6 +6,7 @@ import { SSHHostDriver } from './drivers/ssh-host-driver';
 import { OfflineHostDriver } from './drivers/offline-host-driver';
 import { buildConnectConfig } from './ssh-connect-config';
 import { openJumpSocket, type JumpSocket } from './ssh-jump';
+import { setupMeshReverseBridge } from './mesh-reverse-bridge';
 
 const SSHClientClass = ssh2.Client;
 
@@ -188,6 +189,9 @@ export class SSHClientPool {
       // first request after any page load needs one, so paying it here (while the
       // page is still loading) is free.
       void driver.warmUp();
+
+      // Establish reverse bridge over the existing SSH tunnel for native mesh communication
+      void setupMeshReverseBridge(config.id, client).catch(() => {});
 
       const existing = this.registry.get(config.id);
       const mode = existing ? existing.info.mode : 'active_ssh';

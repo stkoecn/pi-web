@@ -58,7 +58,7 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
   const [error, setError] = useState<string | null>(null);
 
   // Selected state
-  const [selectedDevice, setSelectedDevice] = useState<string>("localhost");
+  const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [selectedProjectPath, setSelectedProjectPath] = useState<string | null>(null);
 
   // Editing state for Project Description

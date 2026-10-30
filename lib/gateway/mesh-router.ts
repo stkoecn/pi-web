@@ -2,6 +2,7 @@ import { parseMeshTarget, resolveProjectPath } from "./mesh-target";
 import { getSessionAlias } from "./mesh-config";
 import { getGateway } from "./singleton";
 import { isRemoteDevice, LOCAL_DEVICE_ID } from "../device-context";
+import { getCanonicalHostId, isLocalHostId } from "./host-identity";
 import { getRpcSession, startRpcSession } from "../rpc-manager";
 import { resolveSessionPath, listAllSessions } from "../session-reader";
 import { randomUUID } from "crypto";
@@ -31,20 +32,25 @@ export interface SendMeshMessageResult {
  * Global router to dispatch messages across sessions and hosts.
  */
 export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<SendMeshMessageResult> {
-  const { target, message, mode = "followup", currentDeviceId = LOCAL_DEVICE_ID } = options;
+  const canonicalLocal = getCanonicalHostId();
+  const currentDev = options.currentDeviceId ? (isLocalHostId(options.currentDeviceId) ? canonicalLocal : options.currentDeviceId) : canonicalLocal;
+  const { target, message, mode = "followup", currentDeviceId = currentDev } = options;
 
   const parsed = parseMeshTarget(target, currentDeviceId);
   if (!parsed) {
     throw new Error(`Invalid mesh target format: "${target}". Expected [session]@[project].[host] or @[project].[host]`);
   }
 
-  const { deviceTarget, projectTarget, sessionTarget, isNewSession } = parsed;
+  const { deviceTarget: rawDeviceTarget, projectTarget, sessionTarget, isNewSession } = parsed;
+  const isTargetLocal = isLocalHostId(rawDeviceTarget);
+  const deviceTarget = isTargetLocal ? canonicalLocal : rawDeviceTarget;
 
   // Self-targeting loop prevention: reject if targeting own session on same device
+  const senderDev = options.senderContext?.deviceId ? (isLocalHostId(options.senderContext.deviceId) ? canonicalLocal : options.senderContext.deviceId) : undefined;
   if (
-    options.senderContext?.deviceId &&
+    senderDev &&
     options.senderContext?.sessionId &&
-    (options.senderContext.deviceId === deviceTarget || (options.senderContext.deviceId === "localhost" && deviceTarget === "localhost")) &&
+    senderDev === deviceTarget &&
     sessionTarget &&
     (options.senderContext.sessionId === sessionTarget || options.senderContext.sessionId.startsWith(sessionTarget))
   ) {
@@ -52,7 +58,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   }
 
   // 1. Ensure target device is dialed / alive if remote
-  if (isRemoteDevice(deviceTarget)) {
+  if (!isTargetLocal) {
     const gateway = getGateway();
     await gateway.connectForSelection(deviceTarget).catch(() => {});
   }
@@ -61,7 +67,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   let resolvedCwd = projectTarget || "";
   let targetSessions: Array<{ id: string; cwd?: string }> = [];
 
-  if (isRemoteDevice(deviceTarget)) {
+  if (!isTargetLocal) {
     const { listRemoteSessions } = await import("../remote-session-store");
     targetSessions = (await listRemoteSessions(deviceTarget).catch(() => [])) as Array<{ id: string; cwd?: string }>;
   } else {
@@ -96,7 +102,8 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   }
 
   // 3. Sender context and reply prompt formatting
-  const senderDeviceId = options.senderContext?.deviceId || options.currentDeviceId || "localhost";
+  const rawSenderDev = options.senderContext?.deviceId || options.currentDeviceId || canonicalLocal;
+  const senderDeviceId = isLocalHostId(rawSenderDev) ? canonicalLocal : rawSenderDev;
   const senderSessionId = options.senderContext?.sessionId;
 
   // Format: [From 会话ID.主机名][reply by using send_session_message]: message
@@ -106,7 +113,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
 
   // 4. Case A: Target is a brand-new session
   if (!resolvedSessionId || isNewSession) {
-    if (isRemoteDevice(deviceTarget)) {
+    if (!isTargetLocal) {
       const { createRemoteRpcSession } = await import("../remote-agent-manager");
       const created = await createRemoteRpcSession({
         deviceId: deviceTarget,
@@ -133,7 +140,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       });
       return {
         success: true,
-        targetDeviceId: LOCAL_DEVICE_ID,
+        targetDeviceId: canonicalLocal,
         targetSessionId: realSessionId || session.sessionId,
         createdNewSession: true,
         mode,
@@ -142,7 +149,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   }
 
   // 5. Case B: Target is an existing session
-  if (isRemoteDevice(deviceTarget)) {
+  if (!isTargetLocal) {
     // Ensure remote host driver is connected before attempting session RPC
     const gateway = (await import("./singleton")).getGateway();
     await gateway.getDriverForRequest(deviceTarget);
@@ -246,7 +253,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
 
     return {
       success: true,
-      targetDeviceId: LOCAL_DEVICE_ID,
+      targetDeviceId: canonicalLocal,
       targetSessionId: resolvedSessionId,
       createdNewSession: false,
       mode,
