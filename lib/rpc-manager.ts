@@ -3115,7 +3115,11 @@ export async function startRpcSession(
     // which MCP servers the session connects (ADR 0006).
     const builtins = subagentResources || chatOnly
       ? undefined
-      : await createPiWebBuiltinExtensions({ agentDir });
+      : await createPiWebBuiltinExtensions({
+          agentDir,
+          cwd: sessionCwd,
+          sessionId: sessionManager.getSessionId(),
+        });
     const subagentCodemode = subagentResources?.codemode
       ? await createSubagentCodemodeExtension({
           agentDir,

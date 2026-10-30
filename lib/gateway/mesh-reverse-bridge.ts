@@ -77,17 +77,26 @@ export function setupMeshReverseBridge(
                 target: string;
                 message: string;
                 mode?: "followup" | "steer" | "silent";
+                sessionId?: string;
+                senderContext?: {
+                  deviceId?: string;
+                  sessionId?: string;
+                  cwd?: string;
+                };
               };
 
               console.log(`[MeshReverseBridge:${deviceId}] Received bridge message:`, payload.target);
 
+              const senderSessionId = payload.senderContext?.sessionId || payload.sessionId;
               const result = await sendMeshMessage({
                 target: payload.target,
                 message: payload.message,
                 mode: payload.mode || "followup",
                 currentDeviceId: deviceId,
                 senderContext: {
-                  deviceId,
+                  deviceId: payload.senderContext?.deviceId || deviceId,
+                  sessionId: senderSessionId,
+                  cwd: payload.senderContext?.cwd,
                 },
               });
 
