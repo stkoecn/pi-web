@@ -582,6 +582,29 @@ export class AgentSessionWrapper {
         // Prompts parked while compaction ran go out now, FIFO, whatever its outcome (as the TUI).
         this.flushParkedPrompts();
       }
+      if (event.type === "message_end") {
+        const message = event.message as { role?: unknown; content?: unknown } | undefined;
+        if (message?.role === "assistant") {
+          let textContent = "";
+          if (typeof message.content === "string") {
+            textContent = message.content;
+          } else if (Array.isArray(message.content)) {
+            for (const block of message.content) {
+              if (block && (block as any).type === "text" && typeof (block as any).text === "string") {
+                textContent += (block as any).text + "\n";
+              }
+            }
+          }
+          if (textContent.includes(":::mesh-reply")) {
+            import("./gateway/mesh-interceptor").then(({ interceptMeshReplyFromText }) => {
+              interceptMeshReplyFromText(textContent, this.sessionId).catch((e) => {
+                console.error("[LocalSession] Mesh interceptor error:", e);
+              });
+            }).catch(() => {});
+          }
+        }
+      }
+
       this.emit(
         event.type === "message_end" ? this.withTranscriptNotices(event)
           : event.type === "agent_settled" ? this.withSubagentsActive(event)

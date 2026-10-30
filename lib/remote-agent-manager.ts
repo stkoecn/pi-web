@@ -301,6 +301,28 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
         console.error("[RemoteRpcSession] listener error:", err);
       }
     }
+
+    // Intercept :::mesh-reply[target]...::: from assistant messages in RPC stream over SSH tunnel
+    if (msg?.type === "message_end" && msg.message?.role === "assistant") {
+      const assistantMsg = msg.message;
+      let textContent = "";
+      if (typeof assistantMsg.content === "string") {
+        textContent = assistantMsg.content;
+      } else if (Array.isArray(assistantMsg.content)) {
+        for (const block of assistantMsg.content) {
+          if (block && block.type === "text" && typeof block.text === "string") {
+            textContent += block.text + "\n";
+          }
+        }
+      }
+      if (textContent.includes(":::mesh-reply")) {
+        import("./gateway/mesh-interceptor").then(({ interceptMeshReplyFromText }) => {
+          interceptMeshReplyFromText(textContent, sessionObj.sessionId, deviceId).catch((e) => {
+            console.error("[RemoteRpcSession] Mesh interceptor error:", e);
+          });
+        }).catch(() => {});
+      }
+    }
   });
 
   channel.onError((err) => {

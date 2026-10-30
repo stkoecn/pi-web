@@ -106,9 +106,13 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   const senderDeviceId = isLocalHostId(rawSenderDev) ? canonicalLocal : rawSenderDev;
   const senderSessionId = options.senderContext?.sessionId;
 
-  // Format: [From 会话ID.主机名][reply by using send_session_message]: message
+  // Format reply instruction depending on whether target is local or remote
   const replyTarget = senderSessionId ? `${senderSessionId}.${senderDeviceId}` : senderDeviceId;
-  const senderTag = `[From ${replyTarget}][reply by using send_session_message]: `;
+  
+  // Notice instruction: explain the native text block protocol and the tool call.
+  // The gateway intercepts :::mesh-reply[target]...::: automatically on the existing RPC channel over SSH,
+  // requiring ZERO local tools, ports, or packages!
+  const senderTag = `[From ${replyTarget}][To reply: use tool 'send_session_message', OR simply include a block in your response:\n:::mesh-reply[${replyTarget}]\nYour reply content here...\n:::]:\n`;
   const fullMessage = `${senderTag}${message}`;
 
   // 4. Case A: Target is a brand-new session
