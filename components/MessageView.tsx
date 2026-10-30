@@ -428,9 +428,26 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
     });
   };
 
-  const meshMatch = content.match(/^\[(?:From ([^\]]+)|Inter-Session Message)\](?:\[reply by using send_session_message\])?:\s*([\s\S]*)$/);
-  let meshSender = meshMatch ? (meshMatch[1] || "Remote Session") : null;
+  // Match mesh message header.
+  // Supports single-line and multi-line formats:
+  // [From target][reply instructions...]:\n\nmessage
+  const meshMatch = content.match(/^\[(?:From\s+([^\]]+)|Inter-Session Message)\](?:\[(?:reply by using send_session_message|To reply:[\s\S]*?)\])?:\s*([\s\S]*)$/);
+  let meshSender = meshMatch ? (meshMatch[1]?.trim() || "Remote Session") : null;
   const meshBody = meshMatch ? meshMatch[2] : null;
+
+  // Format sender for clean UI badge:
+  // If sender is "01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome", format as "01a18c40.wshome"
+  const formattedSender = useMemo(() => {
+    if (!meshSender) return null;
+    const dotIdx = meshSender.lastIndexOf(".");
+    if (dotIdx > 0) {
+      const sess = meshSender.slice(0, dotIdx);
+      const host = meshSender.slice(dotIdx + 1);
+      const shortSess = sess.length > 8 ? sess.slice(0, 8) : sess;
+      return `${shortSess}.${host}`;
+    }
+    return meshSender;
+  }, [meshSender]);
 
   return (
     <div
@@ -469,8 +486,9 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     fontFamily: "var(--font-mono)",
                     fontWeight: 500,
                   }}
+                  title={`完整发件地址: ${meshSender}`}
                 >
-                  MESH · 来自 {meshSender}
+                  MESH · 来自 {formattedSender}
                 </span>
               </div>
               {imageBlocksNode}
