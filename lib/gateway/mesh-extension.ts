@@ -24,10 +24,10 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
       pi.registerTool(defineTool({
         name: "send_session_message",
         label: "Send Session Message",
-        description: "Send a message to another session or start a new session on this host or any connected remote host. Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') or '@project.host' to start a new session.",
+        description: "Send a message to another session or start a new session on this host or any connected remote host. Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
         parameters: Type.Object({
           target: Type.String({
-            description: "Destination target in the format 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome', using the target specified in [From target][reply by using send_session_message]) or '@project.host' to start a new session.",
+            description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
           }),
           message: Type.String({
             description: "The instructions, context, or question to send to the target session.",
@@ -203,7 +203,8 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
 
             const formatted = contacts.map((c, i) => {
               const lines = [
-                `[${i + 1}] Target: ${c.target}`,
+                `[${i + 1}] Target (Existing Session): ${c.target}`,
+                `    New Session Target: ${c.host}:${c.projectPath}`,
                 `    Host: ${c.host}`,
                 `    Project: ${c.projectPath}${c.projectDescription ? ` (${c.projectDescription})` : ""}`,
                 `    Session: "${c.sessionTitle || c.sessionId}"`,

@@ -11,6 +11,8 @@ export interface ParsedMeshTarget {
 
 /**
  * Parses mesh targets like:
+ * - `wsnas:/home/user/work/pi-web` -> new session on host='wsnas', project='/home/user/work/pi-web'
+ * - `wshome:D:/work/repoA/pi-web` -> new session on host='wshome', project='D:/work/repoA/pi-web'
  * - `sess123.wshome` -> session='sess123', project=undefined, host='wshome' (Direct Host Session)
  * - `sess123@wshome` -> session='sess123', project=undefined, host='wshome' (Direct Host Session)
  * - `coder@[/path/to/project].wshome` -> session='coder', project='/path/to/project', host='wshome'
@@ -23,6 +25,25 @@ export interface ParsedMeshTarget {
 export function parseMeshTarget(target: string, currentDeviceId = getCanonicalHostId()): ParsedMeshTarget | null {
   const trimmed = target.trim();
   const defaultHost = isLocalHostId(currentDeviceId) ? getCanonicalHostId() : currentDeviceId;
+
+  // Pattern 0: "host:path" e.g. "wsnas:/home/windsing/pi-web" or "wshome:D:/proj/pi-web"
+  // Note: on Windows a path alone like "D:/path" has a colon at index 1.
+  // A host prefix has colon after host name (idx > 1) and does not look like a single drive letter.
+  const colonIdx = trimmed.indexOf(":");
+  if (colonIdx > 1 && !trimmed.startsWith("@") && !trimmed.includes(".jsonl")) {
+    const candidateHost = trimmed.slice(0, colonIdx).trim();
+    const candidatePath = trimmed.slice(colonIdx + 1).trim();
+    // Validate candidateHost is not a drive letter like "C:" (idx would be 1, but check regex just in case)
+    if (/^[a-zA-Z0-9_-]+$/.test(candidateHost) && candidatePath.length > 0) {
+      return {
+        raw: trimmed,
+        sessionTarget: undefined,
+        projectTarget: candidatePath,
+        deviceTarget: isLocalHostId(candidateHost) ? getCanonicalHostId() : candidateHost,
+        isNewSession: true,
+      };
+    }
+  }
 
   // Pattern A: No '@', but has '.' e.g. "sess123.wshome" -> direct host session
   if (!trimmed.includes("@")) {

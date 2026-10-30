@@ -1314,11 +1314,14 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             const rawFolder = proj.path.split(/[\\/]/).filter(Boolean).pop() || proj.path;
             const projectName = proj.alias || rawFolder;
 
-            // New session target: @[projectPath].host
+            // New session target: host:absolutePath (e.g. wsnas:/home/user/proj or wshome:D:/proj)
+            const newSessionTarget = `${dev.deviceId}:${proj.path}`;
+            const newSessionDisplay = `@${projectName}.${dev.deviceId}`;
             items.push({
-              target: `@${projectName}.${dev.deviceId}`,
+              target: newSessionTarget,
               label: `新起会话`,
-              description: `@${projectName}.${dev.deviceId}`,
+              description: newSessionDisplay,
+              displayTag: newSessionDisplay,
               isNewSession: true,
               deviceId: dev.deviceId,
               projectName,
