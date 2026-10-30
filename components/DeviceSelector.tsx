@@ -70,7 +70,7 @@ export function DeviceSelector({
   connectingDeviceId = null,
 }: Props) {
   const [devices, setDevices] = useState<DeviceInfo[]>([
-    { id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" },
+    { id: "localhost", name: "localhost", mode: "active_ssh", status: "online" },
   ]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -231,7 +231,7 @@ export function DeviceSelector({
                 flex: "0 1 auto",
               }}
             >
-              {currentDevice.id === "localhost" ? "Local" : currentDevice.name || currentDevice.id}
+              {currentDevice.name || currentDevice.id}
             </span>
 
             {/* Caret */}

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { DeviceInfo } from './types/device';
 import type { IHostDriver } from './types/host-driver';
 import { LocalHostDriver } from './drivers/local-host-driver';
+import { getCanonicalHostId } from './host-identity';
 
 export interface DeviceEntry {
   info: DeviceInfo;
@@ -15,10 +16,11 @@ export class DeviceRegistry extends EventEmitter {
     super();
     if (enableLocalhost) {
       const localDriver = new LocalHostDriver();
+      const hostId = getCanonicalHostId();
       this.devices.set('localhost', {
         info: {
           id: 'localhost',
-          name: 'Local Host',
+          name: hostId,
           mode: 'active_ssh',
           remoteAddr: '127.0.0.1',
           status: 'online',
