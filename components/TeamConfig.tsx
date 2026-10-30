@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import {
   ConfigButton,
@@ -61,6 +61,11 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [selectedProjectPath, setSelectedProjectPath] = useState<string | null>(null);
 
+  const selectedDeviceRef = useRef(selectedDevice);
+  selectedDeviceRef.current = selectedDevice;
+  const selectedProjectPathRef = useRef(selectedProjectPath);
+  selectedProjectPathRef.current = selectedProjectPath;
+
   // Editing state for Project Description
   const [editingProjectDesc, setEditingProjectDesc] = useState<boolean>(false);
   const [projectDescVal, setProjectDescVal] = useState<string>("");
@@ -80,7 +85,6 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
 
   const fetchRoster = useCallback(async () => {
     try {
-      setLoading(true);
       setError(null);
       const url = new URL("/api/mesh/roster", window.location.origin);
       if (cwd) url.searchParams.set("currentCwd", cwd);
@@ -89,11 +93,16 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
       const data = await res.json();
       if (data.success && Array.isArray(data.roster)) {
         setRoster(data.roster);
-        // Retain or pick default selection
-        const dev = data.roster.find((d: RosterDevice) => d.deviceId === selectedDevice) || data.roster[0];
+        // Retain or pick default selection using refs to avoid effect loops
+        const currentDevId = selectedDeviceRef.current;
+        const currentPath = selectedProjectPathRef.current;
+
+        const dev = data.roster.find((d: RosterDevice) => d.deviceId === currentDevId) || data.roster[0];
         if (dev) {
-          setSelectedDevice(dev.deviceId);
-          if (!selectedProjectPath || !dev.projects.some((p: RosterProject) => p.path === selectedProjectPath)) {
+          if (dev.deviceId !== currentDevId) {
+            setSelectedDevice(dev.deviceId);
+          }
+          if (!currentPath || !dev.projects.some((p: RosterProject) => p.path === currentPath)) {
             if (dev.projects.length > 0) {
               setSelectedProjectPath(dev.projects[0].path);
             }
@@ -107,7 +116,7 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
     } finally {
       setLoading(false);
     }
-  }, [cwd, selectedDevice, selectedProjectPath]);
+  }, [cwd]);
 
   useEffect(() => {
     fetchRoster();
