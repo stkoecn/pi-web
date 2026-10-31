@@ -301,10 +301,10 @@ function haveSameRelevantToolResults(
 
 export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSubagent, entryId, searchBlock, onFork, forking, onEditContent, onCancelEdit, isEditing, showTimestamp, prevTimestamp, sessionId, writtenFiles, turnDurationMs, onCompact, isCompacting, compactError }: Props) {
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onEditContent={onEditContent} onCancelEdit={onCancelEdit} isEditing={isEditing} />;
+    return <UserMessageView message={message as UserMessage} cwd={cwd || undefined} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onEditContent={onEditContent} onCancelEdit={onCancelEdit} isEditing={isEditing} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} turnDurationMs={turnDurationMs} onCompact={onCompact} isCompacting={isCompacting} compactError={compactError} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd || undefined} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} turnDurationMs={turnDurationMs} onCompact={onCompact} isCompacting={isCompacting} compactError={compactError} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -314,7 +314,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     if ((message as CustomMessage).customType === "compaction") {
       return <CompactionMessageView message={message as CustomMessage} />;
     }
-    return <CustomMessageView message={message as CustomMessage} cwd={cwd} onOpenFile={onOpenFile} />;
+    return <CustomMessageView message={message as CustomMessage} cwd={cwd || undefined} onOpenFile={onOpenFile} />;
   }
   if (message.role === "bashExecution") {
     return <BashExecutionView message={message as BashExecutionMessage} sessionId={sessionId} />;
@@ -344,6 +344,154 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.isCompacting === next.isCompacting
     && prev.compactError === next.compactError;
 });
+
+function MeshInboundCard({
+  sender,
+  mode,
+  body,
+  cwd,
+  onOpenFile,
+  imageBlocksNode,
+}: {
+  sender: string;
+  mode?: string | null;
+  body?: string | null;
+  cwd?: string | null;
+  onOpenFile?: (path: string) => void;
+  imageBlocksNode?: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const copyText = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!body) return;
+    navigator.clipboard?.writeText(body);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        borderRadius: 7,
+        overflow: "hidden",
+        fontSize: 12,
+        border: "1px solid rgba(139, 92, 246, 0.28)",
+        background: "rgba(139, 92, 246, 0.04)",
+        margin: "8px 0",
+      }}
+    >
+      {/* ── Tool call header style ── */}
+      <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            flex: 1,
+            minWidth: 0,
+            padding: "6px 10px",
+            background: "none",
+            border: "none",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            fontSize: 12,
+            textAlign: "left",
+          }}
+        >
+          <span
+            style={{
+              color: "#a855f7",
+              fontFamily: "var(--font-mono)",
+              fontWeight: 600,
+              fontSize: 11,
+              flexShrink: 0,
+            }}
+          >
+            MESH 接收
+          </span>
+          <span
+            style={{
+              color: "var(--text-dim)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              flex: 1,
+              minWidth: 0,
+            }}
+            title={`来自: ${sender}`}
+          >
+            来自: {sender}{mode ? ` · ${mode.toUpperCase()}` : ""}
+          </span>
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="var(--text-dim)"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              flexShrink: 0,
+              transform: expanded ? "rotate(180deg)" : "none",
+              transition: "transform 0.15s",
+            }}
+          >
+            <polyline points="2 3.5 5 6.5 8 3.5" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={copyText}
+          title="复制消息内容"
+          style={{
+            background: "none",
+            border: "none",
+            color: copied ? "var(--accent)" : "var(--text-dim)",
+            cursor: "pointer",
+            padding: "0 10px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            opacity: 0.8,
+          }}
+        >
+          {copied ? "已复制" : "复制"}
+        </button>
+      </div>
+
+      {/* ── Expanded Content Body ── */}
+      {expanded && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderTop: "1px solid rgba(139, 92, 246, 0.15)",
+            fontSize: "calc(14px + var(--chat-font-size-offset, 0px))",
+            lineHeight: 1.6,
+            color: "var(--text)",
+            wordBreak: "break-word",
+          }}
+        >
+          {imageBlocksNode}
+          {body && (
+            <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd || undefined} onOpenFile={onOpenFile}>
+              {body}
+            </SafeMarkdownBody>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onEditContent, onCancelEdit, isEditing }: {
   message: UserMessage;
@@ -444,9 +592,24 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
     return meshSender;
   }, [meshSender]);
 
+  if (meshSender) {
+    return (
+      <div style={{ marginBottom: 16, width: "100%" }}>
+        <MeshInboundCard
+          sender={formattedSender || "Remote Session"}
+          mode={meshDeliveryMode}
+          body={meshBody}
+          cwd={cwd}
+          onOpenFile={onOpenFile}
+          imageBlocksNode={imageBlocksNode}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
-      style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: meshSender ? "flex-start" : "flex-end" }}
+      style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: "flex-end" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -497,7 +660,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                 </span>
               </div>
               {imageBlocksNode}
-              {meshBody && <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd} onOpenFile={onOpenFile}>{meshBody}</SafeMarkdownBody>}
+              {meshBody && <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd || undefined} onOpenFile={onOpenFile}>{meshBody}</SafeMarkdownBody>}
             </div>
           ) : commandText ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
@@ -555,13 +718,13 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                 )}
               </div>
               {expanded && (
-                <MarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd} onOpenFile={onOpenFile}>{content}</MarkdownBody>
+                <MarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd || undefined} onOpenFile={onOpenFile}>{content}</MarkdownBody>
               )}
             </div>
           ) : (
           <>
           {imageBlocksNode}
-          {content && <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
+          {content && <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd || undefined} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
           </>
           )}
         </div>
@@ -926,7 +1089,7 @@ function AssistantMessageView({
         {/* Not keyed by the entry id: a message of this run gets one when the file is
             read again, and its blocks keep their state across that read (#1184). */}
         {blockItems.map(({ block, originalIndex }) => (
-          <BlockView key={originalIndex} block={block} searchTarget={block === searchBlock} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
+          <BlockView key={originalIndex} block={block} searchTarget={block === searchBlock} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd || undefined} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
         ))}
       </div>
 
@@ -1053,7 +1216,7 @@ function AssistantMessageView({
 
 function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, onOpenSubagent, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; searchTarget?: boolean; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void; onOpenSubagent?: (sessionId: string, label: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
-    return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} /></div>;
+    return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd || undefined} onOpenFile={onOpenFile} /></div>;
   }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
@@ -1069,7 +1232,7 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
 }
 
 function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void }) {
-  return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
+  return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd || undefined} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
 }
 
 // A model looping in its thinking can write megabytes. As one text node, every
@@ -1299,16 +1462,16 @@ function MeshOutboundBubble({
           boxSizing: "border-box",
           background: isError
             ? "color-mix(in srgb, #ef4444 10%, var(--bg-panel, #1e1e2e))"
-            : "color-mix(in srgb, #8b5cf6 10%, var(--bg-panel, #1e1e2e))",
+            : "color-mix(in srgb, #22c55e 7%, var(--bg-panel, #1e1e2e))",
           border: isError
             ? "1px solid rgba(239, 68, 68, 0.4)"
-            : "1px solid rgba(139, 92, 246, 0.35)",
+            : "1px solid rgba(34, 197, 94, 0.32)",
           borderRadius: 12,
           padding: "10px 14px",
           color: "var(--text)",
           boxShadow: isError
             ? "0 0 0 1px rgba(239, 68, 68, 0.15)"
-            : "0 0 0 1px rgba(139, 92, 246, 0.1)",
+            : "0 0 0 1px rgba(34, 197, 94, 0.12)",
         }}
       >
         {/* Header Bar */}
@@ -1327,9 +1490,9 @@ function MeshOutboundBubble({
                 fontSize: 10,
                 padding: "1px 6px",
                 borderRadius: 4,
-                background: isError ? "rgba(239, 68, 68, 0.16)" : "rgba(139, 92, 246, 0.16)",
-                color: isError ? "#ef4444" : "#a855f7",
-                border: isError ? "1px solid rgba(239, 68, 68, 0.28)" : "1px solid rgba(139, 92, 246, 0.28)",
+                background: isError ? "rgba(239, 68, 68, 0.16)" : "rgba(34, 197, 94, 0.16)",
+                color: isError ? "#ef4444" : "#16a34a",
+                border: isError ? "1px solid rgba(239, 68, 68, 0.28)" : "1px solid rgba(34, 197, 94, 0.28)",
                 fontFamily: "var(--font-mono)",
                 fontWeight: 500,
               }}
@@ -2315,7 +2478,7 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
                   })}
                 </div>
               )}
-              {text ? <MarkdownBody className="markdown-custom-message" cwd={cwd} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noMessage")}</span>}
+              {text ? <MarkdownBody className="markdown-custom-message" cwd={cwd || undefined} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noMessage")}</span>}
             </div>
 
             <div

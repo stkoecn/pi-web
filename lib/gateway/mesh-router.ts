@@ -212,17 +212,31 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
 
   for (const [key, entry] of pendingReplies.entries()) {
     let matched = false;
-    // 1. Exact match on target session + device
-    if (resolvedSessionId && key === makePendingReplyKey(deviceTarget, resolvedSessionId)) {
+    // 1. Destination match: this message is sent to the session that is waiting for a reply
+    if (
+      (resolvedSessionId && key === makePendingReplyKey(deviceTarget, resolvedSessionId)) ||
+      (sessionTarget && entry.senderSessionId && (
+        entry.senderSessionId === sessionTarget ||
+        entry.senderSessionId.startsWith(sessionTarget) ||
+        sessionTarget.startsWith(entry.senderSessionId)
+      ) && entry.senderDeviceId.toLowerCase() === deviceTarget.toLowerCase())
+    ) {
       matched = true;
     }
-    // 2. Caller match: this message is originating from the target session of an active wait
+    // 2. Origin match: this message is originating from the target session (or target device) that was asked to reply
     else if (
-      callerSess &&
       callerDev &&
       entry.targetDeviceId.toLowerCase() === callerDev.toLowerCase() &&
-      (entry.targetSessionId === callerSess || entry.targetSessionId.startsWith(callerSess) || callerSess.startsWith(entry.targetSessionId)) &&
-      entry.senderDeviceId.toLowerCase() === deviceTarget.toLowerCase()
+      entry.senderDeviceId.toLowerCase() === deviceTarget.toLowerCase() &&
+      (!callerSess || !entry.targetSessionId || entry.targetSessionId === callerSess || entry.targetSessionId.startsWith(callerSess) || callerSess.startsWith(entry.targetSessionId))
+    ) {
+      matched = true;
+    }
+    // 3. Host-level fallback: if only one wait is active between these two devices
+    else if (
+      entry.senderDeviceId.toLowerCase() === deviceTarget.toLowerCase() &&
+      callerDev &&
+      entry.targetDeviceId.toLowerCase() === callerDev.toLowerCase()
     ) {
       matched = true;
     }

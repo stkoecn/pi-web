@@ -110,16 +110,20 @@ export function setupMeshReverseBridge(
 
               console.log(`[MeshReverseBridge:${deviceId}] Received bridge message:`, payload.target);
 
-              const senderSessionId = payload.senderContext?.sessionId || payload.sessionId;
+              const p = payload as any;
+              const senderSessionId = p.senderContext?.sessionId || p.sender?.sessionId || p.sessionId;
+              const senderDev = p.senderContext?.deviceId || p.sender?.host || p.sender?.deviceId || deviceId;
+              const senderCwd = p.senderContext?.cwd || p.sender?.cwd;
+
               const result = await sendMeshMessage({
                 target: payload.target,
                 message: payload.message,
                 mode: payload.mode || "realtime",
                 currentDeviceId: deviceId,
                 senderContext: {
-                  deviceId: payload.senderContext?.deviceId || deviceId,
+                  deviceId: senderDev,
                   sessionId: senderSessionId,
-                  cwd: payload.senderContext?.cwd,
+                  cwd: senderCwd,
                 },
               });
 
