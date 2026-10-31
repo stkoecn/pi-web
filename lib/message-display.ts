@@ -68,16 +68,19 @@ export function isHiddenCustomMessage(message: { role?: AgentMessage["role"]; di
   return message.role === "custom" && !message.display;
 }
 
-export function isMessageGroupAnchor(message: { role?: AgentMessage["role"]; customType?: string; display?: boolean }): boolean {
+export function isMessageGroupAnchor(message: { role?: AgentMessage["role"]; customType?: string; display?: boolean; content?: unknown }): boolean {
   // A background subagent completion starts a new displayed turn, same as a
   // user message or compaction summary: pi-web's own, and @tintinweb/pi-subagents'
   // (a follow-up that triggers a turn). Other custom messages stay inside the turn.
-  return message.role === "user"
-    || (message.role === "custom" && !isHiddenCustomMessage(message) && (
-      message.customType === "compaction"
-      || message.customType === "pi-web:subagent-notification"
-      || message.customType === "subagent-notification"
-    ));
+  if (message.role === "user") return true;
+  // Outbound mesh communications are checkpoints: they start a displayed turn,
+  // isolating prior intermediate process details into a closed fold and prominently exposing the communication.
+  if (isMeshOutboundMessage(message as AgentMessage)) return true;
+  return message.role === "custom" && !isHiddenCustomMessage(message) && (
+    message.customType === "compaction"
+    || message.customType === "pi-web:subagent-notification"
+    || message.customType === "subagent-notification"
+  );
 }
 
 export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {
