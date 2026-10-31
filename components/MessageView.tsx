@@ -1327,54 +1327,16 @@ function MeshOutboundBubble({
                 fontSize: 10,
                 padding: "1px 6px",
                 borderRadius: 4,
-                background: isError ? "rgba(239, 68, 68, 0.16)" : "rgba(139, 92, 246, 0.18)",
+                background: isError ? "rgba(239, 68, 68, 0.16)" : "rgba(139, 92, 246, 0.16)",
                 color: isError ? "#ef4444" : "#a855f7",
-                border: isError ? "1px solid rgba(239, 68, 68, 0.28)" : "1px solid rgba(139, 92, 246, 0.3)",
-                fontFamily: "var(--font-mono)",
-                fontWeight: 600,
-                letterSpacing: "0.02em",
-              }}
-            >
-              MESH 发送
-            </span>
-            <span
-              style={{
-                fontSize: 11,
-                fontFamily: "var(--font-mono)",
-                color: "var(--text-muted)",
-              }}
-            >
-              发往:
-            </span>
-            <span
-              style={{
-                fontSize: 12,
+                border: isError ? "1px solid rgba(239, 68, 68, 0.28)" : "1px solid rgba(139, 92, 246, 0.28)",
                 fontFamily: "var(--font-mono)",
                 fontWeight: 500,
-                color: isError ? "#f87171" : "#c084fc",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                maxWidth: "360px",
               }}
-              title={target}
+              title={`完整收件地址: ${target}`}
             >
-              {target || "未知目标"}
+              MESH{mode ? ` · ${mode.toUpperCase()}` : ""} · 发往 {target || "未知目标"}
             </span>
-            {mode && mode !== "followup" && (
-              <span
-                style={{
-                  fontSize: 10,
-                  padding: "0 4px",
-                  borderRadius: 3,
-                  background: "var(--bg-hover)",
-                  color: "var(--text-dim)",
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {mode}
-              </span>
-            )}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
