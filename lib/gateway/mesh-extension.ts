@@ -54,16 +54,10 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
                 cwd: currentCwd,
               },
             });
-            const replySection = result.reply
-              ? `
-
-[Response received from ${result.targetSessionId} on host \"${result.targetDeviceId}\"]:
-${result.reply}`
-              : "";
             return {
               content: [{
                 type: "text",
-                text: `Message successfully dispatched to ${result.targetSessionId} on host \"${result.targetDeviceId}\" (mode: ${result.mode}, newSession: ${result.createdNewSession}).${replySection}`,
+                text: `Message successfully dispatched to ${result.targetSessionId} on host \"${result.targetDeviceId}\" (mode: ${result.mode}, newSession: ${result.createdNewSession}).`,
               }],
               details: undefined,
             };

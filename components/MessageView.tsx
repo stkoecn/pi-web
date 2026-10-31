@@ -1701,22 +1701,7 @@ function MeshOutboundBubble({
             {message}
           </SafeMarkdownBody>
 
-          {resultText && (
-            <div
-              style={{
-                marginTop: 8,
-                padding: "6px 10px",
-                borderRadius: 6,
-                background: "rgba(0, 0, 0, 0.12)",
-                fontSize: 11,
-                fontFamily: "var(--font-mono)",
-                color: isError ? "#f87171" : "var(--text-dim)",
-              }}
-            >
-              <div style={{ fontWeight: 600, marginBottom: 2 }}>回执:</div>
-              <div style={{ whiteSpace: "pre-wrap" }}>{resultText}</div>
-            </div>
-          )}
+          
         </div>
       )}
     </div>

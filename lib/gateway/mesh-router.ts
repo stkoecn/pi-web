@@ -486,6 +486,35 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     if (earlyWaitKey && pendingReplies.has(earlyWaitKey)) { const entry = pendingReplies.get(earlyWaitKey); if (entry) entry.cleanup = earlyTargetCleanup; }
     const replyText = await earlyWaitPromise;
     earlyTargetCleanup?.();
+    // Deliver the captured reply as an independent incoming message into sender session,
+    // so it displays as an independent purple [IN ↙] card on the timeline!
+    if (replyText && !replyText.startsWith("Timeout:") && !replyText.startsWith("Realtime wait stopped") && !replyText.startsWith("Delivered reply")) {
+      const fromPeer = resolvedSessionId ? `${resolvedSessionId}.${deviceTarget}` : deviceTarget;
+      const inboundMsg = `[From ${fromPeer}][mode: realtime]:
+${replyText}`;
+      try {
+        if (isLocalHostId(senderDeviceId)) {
+          const localSender = getRpcSession(senderSessionId);
+          if (localSender && localSender.isAlive()) {
+            await localSender.send({
+              type: "prompt",
+              message: inboundMsg,
+              streamingBehavior: "followUp",
+            });
+          }
+        } else {
+          const { getRemoteRpcSession } = await import("../remote-agent-manager");
+          const remoteSender = getRemoteRpcSession(senderSessionId);
+          if (remoteSender) {
+            remoteSender.channel.send({
+              type: "prompt",
+              message: inboundMsg,
+              streamingBehavior: "followUp",
+            });
+          }
+        }
+      } catch (_) {}
+    }
     return {
       success: true,
       targetDeviceId: deviceTarget,
