@@ -345,6 +345,33 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.compactError === next.compactError;
 });
 
+function SendRobotIcon({ size = 14, color = "#16a34a" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+      <path d="M8 1V3M5 1.5C6 2.5 10 2.5 11 1.5" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
+      <rect x="2.5" y="3.5" width="11" height="9" rx="2.5" stroke={color} strokeWidth="1.2" fill="currentColor" fillOpacity="0.12" />
+      <circle cx="5.5" cy="7.5" r="1.2" fill={color} />
+      <circle cx="10.5" cy="7.5" r="1.2" fill={color} />
+      <path d="M6 10H10" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M1.5 7V9M14.5 7V9" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ReceiveRobotIcon({ size = 14, color = "#a855f7" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+      <path d="M8 1.5V3M2 8C2 4.68629 4.68629 2 8 2C11.3137 2 14 4.68629 14 8" stroke={color} strokeWidth="1" strokeDasharray="1.5 1.5" strokeLinecap="round" opacity="0.6" />
+      <rect x="2.5" y="4" width="11" height="9" rx="2.5" stroke={color} strokeWidth="1.2" fill="currentColor" fillOpacity="0.12" />
+      <rect x="4.8" y="7" width="1.8" height="2.2" rx="0.9" fill={color} />
+      <rect x="9.4" y="7" width="1.8" height="2.2" rx="0.9" fill={color} />
+      <path d="M6.5 10.5C7 11 9 11 9.5 10.5" stroke={color} strokeWidth="1.1" strokeLinecap="round" />
+      <rect x="1" y="6.5" width="1.5" height="4" rx="0.75" fill={color} />
+      <rect x="13.5" y="6.5" width="1.5" height="4" rx="0.75" fill={color} />
+    </svg>
+  );
+}
+
 function MeshInboundCard({
   sender,
   mode,
@@ -405,6 +432,9 @@ function MeshInboundCard({
         >
           <span
             style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
               color: "#a855f7",
               fontFamily: "var(--font-mono)",
               fontWeight: 600,
@@ -412,7 +442,8 @@ function MeshInboundCard({
               flexShrink: 0,
             }}
           >
-            MESH 接收
+            <ReceiveRobotIcon size={14} color="#a855f7" />
+            接收
           </span>
           <span
             style={{
@@ -1410,212 +1441,225 @@ function MeshOutboundBubble({
   duration?: number;
   sessionId?: string;
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [cancelledLocally, setCancelledLocally] = useState(false);
+  const effectiveSessionId = sessionId || undefined;
 
   const handleCancelWait = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (cancelling || cancelledLocally) return;
     setCancelling(true);
     setCancelledLocally(true);
-
-    const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
-    const effectiveSessionId = sessionId || urlParams?.get("session") || undefined;
-    const effectiveDeviceId = urlParams?.get("deviceId") || undefined;
-
     try {
-      const cancelUrl = effectiveDeviceId ? `/api/mesh/cancel?deviceId=${encodeURIComponent(effectiveDeviceId)}` : "/api/mesh/cancel";
-      await fetch(cancelUrl, {
+      let url = "/api/mesh/cancel";
+      
+      await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: effectiveSessionId }),
       });
-    } catch (_) {} finally {
-      setCancelling(false);
-    }
+    } catch (_) {}
   };
+
   const rawInput = block.input || (block as any).arguments;
   const input = (typeof rawInput === "object" && rawInput !== null) ? (rawInput as Record<string, unknown>) : {};
   const target = typeof input.target === "string" ? input.target : "";
   const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
-  const mode = typeof input.mode === "string" ? input.mode : "followup";
+  const mode = typeof input.mode === "string" ? input.mode : "realtime";
 
   const isError = result?.isError ?? false;
   const resultText = result
     ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join(String.fromCharCode(10))
     : null;
 
+  const isWaiting = mode === "realtime" && result === undefined && !cancelledLocally;
+
   return (
     <div
       style={{
-        margin: "12px 0",
         width: "100%",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-start",
+        borderRadius: 7,
+        overflow: "hidden",
+        fontSize: 12,
+        border: isError ? "1px solid rgba(248,113,113,0.45)" : "1px solid rgba(34,197,94,0.28)",
+        background: isError ? "rgba(248,113,113,0.05)" : "rgba(34,197,94,0.04)",
+        margin: "8px 0",
       }}
     >
-      <div
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          background: isError
-            ? "color-mix(in srgb, #ef4444 10%, var(--bg-panel, #1e1e2e))"
-            : "color-mix(in srgb, #22c55e 7%, var(--bg-panel, #1e1e2e))",
-          border: isError
-            ? "1px solid rgba(239, 68, 68, 0.4)"
-            : "1px solid rgba(34, 197, 94, 0.32)",
-          borderRadius: 12,
-          padding: "10px 14px",
-          color: "var(--text)",
-          boxShadow: isError
-            ? "0 0 0 1px rgba(239, 68, 68, 0.15)"
-            : "0 0 0 1px rgba(34, 197, 94, 0.12)",
-        }}
-      >
-        {/* Header Bar */}
-        <div
+      {/* ── Tool call header style (exact bash style) ── */}
+      <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
           style={{
             display: "flex",
             alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: 8,
-            gap: 8,
+            gap: 7,
+            flex: 1,
+            minWidth: 0,
+            padding: "6px 10px",
+            background: "none",
+            border: "none",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            fontSize: 12,
+            textAlign: "left",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
-            <span
-              style={{
-                fontSize: 10,
-                padding: "1px 6px",
-                borderRadius: 4,
-                background: isError ? "rgba(239, 68, 68, 0.16)" : "rgba(34, 197, 94, 0.16)",
-                color: isError ? "#ef4444" : "#16a34a",
-                border: isError ? "1px solid rgba(239, 68, 68, 0.28)" : "1px solid rgba(34, 197, 94, 0.28)",
-                fontFamily: "var(--font-mono)",
-                fontWeight: 500,
-              }}
-              title={`完整收件地址: ${target}`}
-            >
-              MESH{mode ? ` · ${mode.toUpperCase()}` : ""} · 发往 {target || "未知目标"}
-            </span>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            {duration !== undefined && duration > 0 && (
-              <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-                {duration < 1000 ? `${Math.round(duration)}ms` : `${(duration / 1000).toFixed(1)}s`}
-              </span>
-            )}
-            {result ? (
-              <span
-                style={{
-                  fontSize: 11,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 3,
-                  color: isError ? "#ef4444" : "#22c55e",
-                  fontWeight: 500,
-                }}
-              >
-                {isError ? "✕ 发送失败" : "✓ 已送达"}
-              </span>
-            ) : cancelledLocally ? (
-              <span
-                style={{
-                  fontSize: 11,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 3,
-                  color: "#ef4444",
-                  fontWeight: 500,
-                }}
-              >
-                ✕ 已停止等待
-              </span>
-            ) : (
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
-                  {mode === "realtime" ? "等待回复中..." : "发送中..."}
-                </span>
-                {mode === "realtime" && (
-                  <button
-                    type="button"
-                    onClick={handleCancelWait}
-                    disabled={cancelling}
-                    style={{
-                      fontSize: 10,
-                      padding: "2px 7px",
-                      borderRadius: 4,
-                      background: "rgba(239, 68, 68, 0.12)",
-                      border: "1px solid rgba(239, 68, 68, 0.3)",
-                      color: "#ef4444",
-                      cursor: "pointer",
-                      fontFamily: "var(--font-mono)",
-                      fontWeight: 500,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 3,
-                    }}
-                    title="主动停止当前的实时等待"
-                  >
-                    <span>✕</span>
-                    <span>{cancelling ? "正在停止..." : "停止等待"}</span>
-                  </button>
-                )}
-              </div>
-            )}
-            {resultText && (
-              <button
-                type="button"
-                onClick={() => setDetailsOpen(!detailsOpen)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  padding: "2px 4px",
-                  cursor: "pointer",
-                  color: "var(--text-dim)",
-                  fontSize: 11,
-                  textDecoration: "underline",
-                }}
-              >
-                {detailsOpen ? "收起回执" : "回执"}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Message Body */}
-        <div
-          style={{
-            fontSize: "calc(13.5px + var(--chat-font-size-offset, 0px))",
-            lineHeight: 1.6,
-            wordBreak: "break-word",
-            padding: "4px 2px",
-          }}
-        >
-          <SafeMarkdownBody>{message}</SafeMarkdownBody>
-        </div>
-
-        {/* Receipt / Details if open */}
-        {detailsOpen && resultText && (
-          <div
+          <span
             style={{
-              marginTop: 8,
-              padding: "6px 10px",
-              background: "rgba(0, 0, 0, 0.2)",
-              borderRadius: 6,
-              fontSize: 11,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              color: isError ? "#f87171" : "#16a34a",
               fontFamily: "var(--font-mono)",
-              color: isError ? "#ef4444" : "var(--text-muted)",
-              whiteSpace: "pre-wrap",
+              fontWeight: 600,
+              fontSize: 11,
+              flexShrink: 0,
             }}
           >
-            {resultText}
-          </div>
+            <SendRobotIcon size={14} color={isError ? "#f87171" : "#16a34a"} />
+            发送
+          </span>
+          <span
+            style={{
+              color: "var(--text-dim)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              flex: 1,
+              minWidth: 0,
+            }}
+            title={`发往: ${target}`}
+          >
+            发往: {target || "未知目标"}{mode ? ` · ${mode.toUpperCase()}` : ""}
+          </span>
+
+          {/* Status info in header */}
+          {isWaiting ? (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11,
+                color: "#16a34a",
+                fontFamily: "var(--font-mono)",
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: "#16a34a",
+                  boxShadow: "0 0 6px rgba(34, 197, 94, 0.8)",
+                  animation: "pulse 1.5s infinite ease-in-out",
+                }}
+              />
+              等待回复...
+            </span>
+          ) : result !== undefined ? (
+            <span
+              style={{
+                fontSize: 11,
+                color: isError ? "#f87171" : "#16a34a",
+                fontFamily: "var(--font-mono)",
+                flexShrink: 0,
+              }}
+            >
+              {isError ? "✕ 失败" : "✓ 已送达"}
+            </span>
+          ) : null}
+
+          {duration !== undefined && (
+            <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+              {formatToolDuration(duration)}
+            </span>
+          )}
+
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="var(--text-dim)"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              flexShrink: 0,
+              transform: expanded ? "rotate(180deg)" : "none",
+              transition: "transform 0.15s",
+            }}
+          >
+            <polyline points="2 3.5 5 6.5 8 3.5" />
+          </svg>
+        </button>
+
+        {isWaiting && (
+          <button
+            type="button"
+            onClick={handleCancelWait}
+            disabled={cancelling}
+            title="手动停止等待对端回复"
+            style={{
+              background: "none",
+              border: "none",
+              color: cancelling ? "var(--text-dim)" : "#ef4444",
+              cursor: cancelling ? "default" : "pointer",
+              padding: "0 10px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              opacity: cancelling ? 0.6 : 0.85,
+            }}
+          >
+            {cancelling ? "已取消" : "✕ 停止"}
+          </button>
         )}
       </div>
+
+      {/* ── Expanded Content Body ── */}
+      {expanded && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderTop: isError ? "1px solid rgba(248,113,113,0.15)" : "1px solid rgba(34,197,94,0.15)",
+            fontSize: "calc(14px + var(--chat-font-size-offset, 0px))",
+            lineHeight: 1.6,
+            color: "var(--text)",
+            wordBreak: "break-word",
+          }}
+        >
+          <SafeMarkdownBody keepLineBreaks>
+            {message}
+          </SafeMarkdownBody>
+
+          {resultText && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: "6px 10px",
+                borderRadius: 6,
+                background: "rgba(0, 0, 0, 0.12)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                color: isError ? "#f87171" : "var(--text-dim)",
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>回执:</div>
+              <div style={{ whiteSpace: "pre-wrap" }}>{resultText}</div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
