@@ -111,9 +111,19 @@ export function setupMeshReverseBridge(
               console.log(`[MeshReverseBridge:${deviceId}] Received bridge message:`, payload.target);
 
               const p = payload as any;
-              const senderSessionId = p.senderContext?.sessionId || p.sender?.sessionId || p.sessionId;
+              let senderSessionId = p.senderContext?.sessionId || p.sender?.sessionId || p.sessionId;
               const senderDev = p.senderContext?.deviceId || p.sender?.host || p.sender?.deviceId || deviceId;
               const senderCwd = p.senderContext?.cwd || p.sender?.cwd;
+
+              if (!senderSessionId) {
+                try {
+                  const { getRunningRemoteRpcSessionIdsForDevice } = await import("../remote-agent-manager");
+                  const running = getRunningRemoteRpcSessionIdsForDevice(deviceId);
+                  if (running && running.length === 1) {
+                    senderSessionId = running[0];
+                  }
+                } catch (_) {}
+              }
 
               const result = await sendMeshMessage({
                 target: payload.target,

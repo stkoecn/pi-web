@@ -430,10 +430,25 @@ export class SSHHostDriver implements IHostDriver {
     // not relative to cwd (which causes e.g. D:\proj\tmp\.pi\agent\... not found).
     args.push('-e', `~/.pi/agent/mesh-agent-extension.mjs`);
 
+    // Explicitly inject device and session environment variables so mesh extension knows its identity
+    const envVars: string[] = [`PI_WEB_DEVICE_ID="${this.deviceId}"`];
+    let candidateSessionId: string | undefined;
+    if (opts.resumeSession) {
+      const slashIdx = Math.max(opts.resumeSession.lastIndexOf("/"), opts.resumeSession.lastIndexOf("\\"));
+      const base = slashIdx === -1 ? opts.resumeSession : opts.resumeSession.slice(slashIdx + 1);
+      const clean = base.endsWith(".jsonl") ? base.slice(0, -6) : base;
+      const underIdx = clean.lastIndexOf("_");
+      candidateSessionId = underIdx === -1 ? clean : clean.slice(underIdx + 1);
+    }
+    if (candidateSessionId) {
+      envVars.push(`PI_SESSION_ID="${candidateSessionId}"`);
+    }
+    const envPrefix = envVars.join(" ");
+
     // The same PATH a user-installed `pi` needs: sshd hands an `exec` request
     // to a non-interactive shell that reads no rc file, so `pi` is not on PATH
     // when it was installed under `$HOME/.local/node/bin`.
-    let command = `${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
+    let command = `${envPrefix} ${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
     if (opts.cwd) {
       // Normalize backslashes to forward slashes to prevent shell escape stripping (e.g. D:\proj\helper -> D:projhelper)
       const normalizedCwd = opts.cwd.replace(/\\/g, '/');
