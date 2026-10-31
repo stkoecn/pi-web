@@ -1719,17 +1719,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "message_end": {
-        // Same late-event guard: after reconcile finished this run,
-        // loadSession already loaded this message from the session file —
-        // appending it again would duplicate it.
-        if (!agentRunningRef.current) break;
         if (isSystemMessageEvent(event)) break;
         const completed = event.message as AgentMessage | undefined;
         if (completed && completed.role === "user") {
-          // Delivered steering/follow-up messages surface here as user
-          // messages. The run's initial prompt also emits one, but handleSend
-          // already appended it optimistically. Consume only the still-adjacent
-          // optimistic bubble; later same-text queue deliveries must render.
+          // Delivered steering/follow-up messages or external mesh prompts surface here
+          // as user messages. Even if agentRunningRef was temporarily false or queuing,
+          // the user message must always be rendered immediately at the bottom!
           const delivered = normalizeToolCalls(completed);
           const deliveredKey = userMessageKey(delivered);
           const optimisticKey = optimisticUserMessageKeyRef.current;
@@ -1741,9 +1736,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
                 ? prev
                 : [...prev.slice(0, -1), delivered];
             }
+            if (last && userMessageKey(last) === deliveredKey) {
+              return prev;
+            }
             return [...prev, delivered];
           });
-        } else if (completed) {
+          if (isNearBottomRef.current) {
+            requestAnimationFrame(() => scrollToBottom("smooth"));
+          }
+          break;
+        }
+
+        // For non-user messages, late-event guard against ghost streaming bubbles
+        if (!agentRunningRef.current) break;
+        if (completed) {
           // pi's showCacheMissNotices (#1265): the wrapper sends them beside the message.
           const notices = Array.isArray(event.transcriptNotices) ? event.transcriptNotices as TranscriptNotice[] : undefined;
           setMessages((prev) => [...prev, withTranscriptNotices(normalizeToolCalls(completed), notices)]);
