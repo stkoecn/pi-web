@@ -372,6 +372,63 @@ function ReceiveRobotIcon({ size = 14, color = "#a855f7" }: { size?: number; col
   );
 }
 
+function OutboundBadge({ color = "#16a34a", isError = false }: { color?: string; isError?: boolean }) {
+  const fg = isError ? "#f87171" : color;
+  const bg = isError ? "rgba(248, 113, 113, 0.16)" : "rgba(34, 197, 94, 0.16)";
+  const border = isError ? "1px solid rgba(248, 113, 113, 0.28)" : "1px solid rgba(34, 197, 94, 0.28)";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 9.5,
+        fontFamily: "var(--font-mono)",
+        fontWeight: 700,
+        padding: "1px 5px",
+        borderRadius: 3.5,
+        background: bg,
+        color: fg,
+        border,
+        letterSpacing: "0.03em",
+        lineHeight: 1,
+      }}
+    >
+      OUT
+      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2.5 7.5L7.5 2.5M3.5 2.5H7.5V6.5" />
+      </svg>
+    </span>
+  );
+}
+
+function InboundBadge({ color = "#a855f7" }: { color?: string }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 9.5,
+        fontFamily: "var(--font-mono)",
+        fontWeight: 700,
+        padding: "1px 5px",
+        borderRadius: 3.5,
+        background: "rgba(139, 92, 246, 0.16)",
+        color,
+        border: "1px solid rgba(139, 92, 246, 0.28)",
+        letterSpacing: "0.03em",
+        lineHeight: 1,
+      }}
+    >
+      IN
+      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M7.5 2.5L2.5 7.5M6.5 7.5H2.5V3.5" />
+      </svg>
+    </span>
+  );
+}
+
 function MeshInboundCard({
   sender,
   mode,
@@ -443,6 +500,7 @@ function MeshInboundCard({
             }}
           >
             <ReceiveRobotIcon size={14} color="#a855f7" />
+            <InboundBadge color="#a855f7" />
             接收
           </span>
           <span
@@ -1520,6 +1578,7 @@ function MeshOutboundBubble({
             }}
           >
             <SendRobotIcon size={14} color={isError ? "#f87171" : "#16a34a"} />
+            <OutboundBadge color="#16a34a" isError={isError} />
             发送
           </span>
           <span
