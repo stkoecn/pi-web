@@ -447,11 +447,11 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div style={{ display: "flex", alignItems: meshSender ? "flex-start" : "flex-end", flexDirection: meshSender ? "row-reverse" : "row", gap: 6, maxWidth: "85%" }}>
+      <div style={{ display: "flex", alignItems: meshSender ? "flex-start" : "flex-end", flexDirection: meshSender ? "row-reverse" : "row", gap: 6, width: meshSender ? "100%" : undefined, maxWidth: meshSender ? "100%" : "85%" }}>
         <div
           style={{
-            flex: meshSender ? "0 1 auto" : 1,
-            width: meshSender ? "fit-content" : undefined,
+            flex: 1,
+            width: meshSender ? "100%" : undefined,
             minWidth: 0,
             background: isEditing
               ? "color-mix(in srgb, var(--accent) 14%, var(--user-bg))"
@@ -1232,7 +1232,200 @@ export function formatToolDuration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${remainder}s`;
 }
 
+function MeshOutboundBubble({
+  block,
+  result,
+  duration,
+}: {
+  block: ToolCallContent;
+  result?: ToolResultMessage;
+  duration?: number;
+}) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const input = (typeof block.input === "object" && block.input !== null) ? (block.input as Record<string, unknown>) : {};
+  const target = typeof input.target === "string" ? input.target : "";
+  const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
+  const mode = typeof input.mode === "string" ? input.mode : "followup";
+
+  const isError = result?.isError ?? false;
+  const resultText = result
+    ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join(String.fromCharCode(10))
+    : null;
+
+  return (
+    <div
+      style={{
+        margin: "12px 0",
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          background: isError
+            ? "color-mix(in srgb, #ef4444 10%, var(--bg-panel, #1e1e2e))"
+            : "color-mix(in srgb, #8b5cf6 10%, var(--bg-panel, #1e1e2e))",
+          border: isError
+            ? "1px solid rgba(239, 68, 68, 0.4)"
+            : "1px solid rgba(139, 92, 246, 0.35)",
+          borderRadius: 12,
+          padding: "10px 14px",
+          color: "var(--text)",
+          boxShadow: isError
+            ? "0 0 0 1px rgba(239, 68, 68, 0.15)"
+            : "0 0 0 1px rgba(139, 92, 246, 0.1)",
+        }}
+      >
+        {/* Header Bar */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 8,
+            gap: 8,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+            <span
+              style={{
+                fontSize: 10,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: isError ? "rgba(239, 68, 68, 0.16)" : "rgba(139, 92, 246, 0.18)",
+                color: isError ? "#ef4444" : "#a855f7",
+                border: isError ? "1px solid rgba(239, 68, 68, 0.28)" : "1px solid rgba(139, 92, 246, 0.3)",
+                fontFamily: "var(--font-mono)",
+                fontWeight: 600,
+                letterSpacing: "0.02em",
+              }}
+            >
+              MESH 发送
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                color: "var(--text-muted)",
+              }}
+            >
+              发往:
+            </span>
+            <span
+              style={{
+                fontSize: 12,
+                fontFamily: "var(--font-mono)",
+                fontWeight: 500,
+                color: isError ? "#f87171" : "#c084fc",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                maxWidth: "360px",
+              }}
+              title={target}
+            >
+              {target || "未知目标"}
+            </span>
+            {mode && mode !== "followup" && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "0 4px",
+                  borderRadius: 3,
+                  background: "var(--bg-hover)",
+                  color: "var(--text-dim)",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {mode}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            {duration !== undefined && duration > 0 && (
+              <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+                {duration < 1000 ? `${Math.round(duration)}ms` : `${(duration / 1000).toFixed(1)}s`}
+              </span>
+            )}
+            {result ? (
+              <span
+                style={{
+                  fontSize: 11,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 3,
+                  color: isError ? "#ef4444" : "#22c55e",
+                  fontWeight: 500,
+                }}
+              >
+                {isError ? "✕ 发送失败" : "✓ 已送达"}
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>发送中...</span>
+            )}
+            {resultText && (
+              <button
+                type="button"
+                onClick={() => setDetailsOpen(!detailsOpen)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: "2px 4px",
+                  cursor: "pointer",
+                  color: "var(--text-dim)",
+                  fontSize: 11,
+                  textDecoration: "underline",
+                }}
+              >
+                {detailsOpen ? "收起回执" : "回执"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Message Body */}
+        <div
+          style={{
+            fontSize: "calc(13.5px + var(--chat-font-size-offset, 0px))",
+            lineHeight: 1.6,
+            wordBreak: "break-word",
+            padding: "4px 2px",
+          }}
+        >
+          <SafeMarkdownBody>{message}</SafeMarkdownBody>
+        </div>
+
+        {/* Receipt / Details if open */}
+        {detailsOpen && resultText && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: "6px 10px",
+              background: "rgba(0, 0, 0, 0.2)",
+              borderRadius: 6,
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              color: isError ? "#ef4444" : "var(--text-muted)",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {resultText}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ToolCallBlock({ block, result, duration, onOpenSubagent }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSubagent?: (sessionId: string, label: string) => void }) {
+  if (block.toolName === "send_session_message") {
+    return <MeshOutboundBubble block={block} result={result} duration={duration} />;
+  }
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(() => isToolCallExpanded(block.toolCallId));
   const toggleExpanded = () => {
