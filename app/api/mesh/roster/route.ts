@@ -56,7 +56,8 @@ export async function GET(req: Request) {
       }>;
     }> = [];
 
-    const deviceIdsToScan = targetDevice ? [isLocalHostId(targetDevice) ? canonicalLocal : targetDevice] : allDeviceIds;
+    // Always scan all devices so caller sees full roster of available peers
+    const deviceIdsToScan = allDeviceIds;
 
     for (const devId of deviceIdsToScan) {
       const isLocal = isLocalHostId(devId);
