@@ -67,6 +67,7 @@ function makePendingReplyKey(deviceId: string, sessionId: string): string {
  */
 export function cancelRealtimeWait(sessionId?: string, deviceId?: string): boolean {
   let hit = false;
+  let isReplyToPending = false;
   for (const [key, entry] of pendingReplies.entries()) {
     const matchesSession = !sessionId
       || key.includes(sessionId)
@@ -209,6 +210,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   // Intercept reply: match by destination session key, OR if the current sender was targeted by an active realtime wait!
   const callerDev = options.senderContext?.deviceId ? (isLocalHostId(options.senderContext.deviceId) ? canonicalLocal : options.senderContext.deviceId) : undefined;
   const callerSess = options.senderContext?.sessionId;
+  let isReplyToPending = false;
 
   for (const [key, entry] of pendingReplies.entries()) {
     let matched = false;
@@ -245,6 +247,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       pendingReplies.delete(key);
       entry.cleanup?.();
       entry.resolve(message);
+      isReplyToPending = true;
       break;
     }
   }
@@ -418,6 +421,22 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     }
 
     // Case B local finished
+  }
+
+  // If this message was a direct reply that resolved an active wait on the recipient,
+  // do NOT make the sender wait again! Deliver immediately and return.
+  if (isReplyToPending) {
+    if (earlyWaitKey) pendingReplies.delete(earlyWaitKey);
+    if (earlyTimer) clearTimeout(earlyTimer);
+    earlyTargetCleanup?.();
+    return {
+      success: true,
+      targetDeviceId: deviceTarget,
+      targetSessionId: resolvedSessionId || "unknown",
+      createdNewSession: isNewSession,
+      mode,
+      reply: "Delivered reply to waiting peer session.",
+    };
   }
 
   // If in realtime mode and sender has a session id, wait on the early-registered promise
