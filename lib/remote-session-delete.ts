@@ -50,6 +50,15 @@ function sessionIdOfPath(path: string): string {
  * one round trip. Only the first line of each file and its single subagent
  * metadata line are read, so a folder of hundreds of sessions stays cheap.
  */
+async function runScript(driver: IHostDriver, script: string): Promise<string> {
+  const encoded = Buffer.from(script, "utf8").toString("base64");
+  const res = await driver.exec(`printf %s ${encoded} | base64 -d | sh`);
+  if (res.exitCode !== 0 && !res.stdout) {
+    throw new Error(res.stderr.trim() || `remote script failed (exit ${res.exitCode})`);
+  }
+  return res.stdout;
+}
+
 async function scanDeviceSessions(
   driver: IHostDriver,
   agentDir: string,
@@ -133,7 +142,21 @@ export async function deleteRemoteSessions(
   const missing: string[] = [];
   const targets = new Map<string, DeviceSessionFile>();
   for (const id of new Set(ids)) {
-    const file = byId.get(id);
+    let file = byId.get(id);
+    if (!file) {
+      try {
+        const { findRemoteSessionFile } = await import("./remote-session-store");
+        const found = await findRemoteSessionFile(deviceId, id);
+        if (found) {
+          file = {
+            path: found.path,
+            sessionId: found.sessionId,
+          };
+          byPath.set(pathKey(found.path), file);
+          byId.set(id, file);
+        }
+      } catch {}
+    }
     if (file) targets.set(id, file);
     else missing.push(id);
   }
@@ -212,17 +235,23 @@ export async function deleteRemoteSessions(
   }
 
   const removed = [...doomed.keys()];
-  const unlinked = await unlinkRemoteFilesWithNode(driver, removed);
-  if (!unlinked) {
-    const rmResult = await driver.exec(
-      `for f in ${removed.map(shellQuote).join(" ")}; do rm -f -- "$f"; done; true`,
-      [],
-      { timeoutMs: 60_000 },
-    );
-    if (rmResult.exitCode !== 0) {
-      throw new Error(rmResult.stderr.trim() || `Failed to delete ${removed.length} session file(s)`);
-    }
-  }
+  const b64Removed = Buffer.from(JSON.stringify(removed), "utf8").toString("base64");
+  const delScript = [
+    "if command -v node >/dev/null 2>&1; then",
+    "  node -e '",
+    "    const fs = require(\"fs\");",
+    "    const files = JSON.parse(Buffer.from(\"" + b64Removed + "\", \"base64\").toString(\"utf8\"));",
+    "    for (const f of files) {",
+    "      try { fs.unlinkSync(f); } catch (e) {}",
+    "    }",
+    "  '",
+    "  exit 0",
+    "fi",
+    "for f in " + removed.map(shellQuote).join(" ") + "; do rm -f -- \"$f\"; done; true",
+  ].join("\n");
+  await runScript(driver, delScript).catch(async () => {
+    await driver.exec(`for f in ${removed.map(shellQuote).join(" ")}; do rm -f -- "$f"; done; true`, [], { timeoutMs: 60_000 });
+  });
 
   for (const { path, parent } of reparented) {
     try {

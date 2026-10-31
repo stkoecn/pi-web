@@ -450,7 +450,8 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
       <div style={{ display: "flex", alignItems: meshSender ? "flex-start" : "flex-end", flexDirection: meshSender ? "row-reverse" : "row", gap: 6, maxWidth: "85%" }}>
         <div
           style={{
-            flex: 1,
+            flex: meshSender ? "0 1 auto" : 1,
+            width: meshSender ? "fit-content" : undefined,
             minWidth: 0,
             background: isEditing
               ? "color-mix(in srgb, var(--accent) 14%, var(--user-bg))"
