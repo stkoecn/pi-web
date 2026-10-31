@@ -141,8 +141,9 @@ export async function GET(req: Request) {
       const disambiguatedLabels = disambiguateProjectPaths(allPaths);
 
       const projects = Array.from(projectMap.entries()).map(([pPath, sessions]) => {
-        const customName = projectRenames[pPath] || projectRenames[pPath.replace(/\\/g, "/")];
-        const projKey = `${devId}:${pPath}`.toLowerCase();
+        const normPPath = pPath.split("\\").join("/");
+        const customName = projectRenames[pPath] || projectRenames[normPPath];
+        const projKey = `${devId}:${normPPath}`.toLowerCase();
         const isEnabled = enabledSet.has(projKey);
         const projDesc = devDesc[pPath] || "";
 

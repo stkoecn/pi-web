@@ -186,7 +186,7 @@ export async function loadProjectTeamConfig(
     const driver = await getGateway().getOrConnectDriver(deviceId);
     const normCwd = projectCwd.split("\\").join("/");
     const configPath = `${normCwd}/.pi/team-mesh.json`;
-    const readScript = "node -e \"const fs=require('fs'); try { console.log(Buffer.from(fs.readFileSync(" + JSON.stringify(configPath) + ")).toString('base64')); } catch {}\" 2>/dev/null";
+    const readScript = `node -e \"const fs=require(\\\"fs\\\"); try { console.log(Buffer.from(fs.readFileSync(\\\"${configPath}\\\")).toString(\\\"base64\\\")); } catch {}\"`;
     const res = await driver.exec(readScript, [], { timeoutMs: 15_000 });
     if (res.exitCode === 0 && res.stdout.trim()) {
       const raw = Buffer.from(res.stdout.trim(), "base64").toString("utf8");
@@ -224,7 +224,7 @@ export async function saveProjectTeamConfig(
     const normCwd = projectCwd.split("\\").join("/");
     const configPath = `${normCwd}/.pi/team-mesh.json`;
     const b64 = Buffer.from(JSON.stringify(config, null, 2), "utf8").toString("base64");
-    const writeScript = "node -e \"const fs=require('fs'), path=require('path'); const p = " + JSON.stringify(configPath) + "; try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from('" + b64 + "', 'base64')); } catch (e) { console.error(e); process.exit(1); }\" 2>/dev/null";
+    const writeScript = `node -e \"const fs=require(\\\"fs\\\"), path=require(\\\"path\\\"); const p = \\\"${configPath}\\\"; try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(\\\"${b64}\\\", \\\"base64\\\")); } catch (e) { process.exit(1); }\"`;
     await driver.exec(writeScript, [], { timeoutMs: 15_000 });
   } catch (err) {
     console.error(`[team-mesh] Failed to write remote project config on ${deviceId}:`, err);
