@@ -161,6 +161,6 @@ export function collapsesProcessDetails(answer: AssistantMessage | null): boolea
 export function isMeshOutboundMessage(message: AgentMessage | undefined | null): boolean {
   if (!message || message.role !== "assistant") return false;
   return (message.content ?? []).some(
-    (b) => b.type === "toolCall" && b.toolName === "send_session_message"
+    (b: any) => b.type === "toolCall" && (b.toolName === "send_session_message" || b.name === "send_session_message")
   );
 }

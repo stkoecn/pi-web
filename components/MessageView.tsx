@@ -1060,8 +1060,9 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
   }
   if (block.type === "toolCall") {
     const tc = block as ToolCallContent;
-    const result = toolResults?.get(tc.toolCallId);
-    const duration = toolCallDurations?.get(tc.toolCallId);
+    const callId = tc.toolCallId || (tc as any).id;
+    const result = toolResults?.get(callId);
+    const duration = toolCallDurations?.get(callId);
     return <ToolCallBlock block={tc} result={result} duration={duration} onOpenSubagent={onOpenSubagent} sessionId={sessionId} />;
   }
   return null;
@@ -1261,7 +1262,8 @@ function MeshOutboundBubble({
       });
     } catch (_) {}
   };
-  const input = (typeof block.input === "object" && block.input !== null) ? (block.input as Record<string, unknown>) : {};
+  const rawInput = block.input || (block as any).arguments;
+  const input = (typeof rawInput === "object" && rawInput !== null) ? (rawInput as Record<string, unknown>) : {};
   const target = typeof input.target === "string" ? input.target : "";
   const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
   const mode = typeof input.mode === "string" ? input.mode : "followup";
@@ -1471,7 +1473,8 @@ function MeshOutboundBubble({
 }
 
 function ToolCallBlock({ block, result, duration, onOpenSubagent, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSubagent?: (sessionId: string, label: string) => void; sessionId?: string }) {
-  if (block.toolName === "send_session_message") {
+  const toolName = block.toolName || (block as any).name;
+  if (toolName === "send_session_message") {
     return <MeshOutboundBubble block={block} result={result} duration={duration} sessionId={sessionId} />;
   }
   const { t } = useI18n();
