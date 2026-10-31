@@ -25,12 +25,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "message is required" }, { status: 400 });
     }
 
+    const mode = (body.mode as any) || "realtime";
+    const senderSessionId = body.senderContext?.sessionId || (body as any).sessionId;
+    const senderDeviceId = body.senderContext?.deviceId || body.currentDeviceId || (body as any).deviceId;
+
     const result = await sendMeshMessage({
       target: body.target,
       message: body.message,
-      mode: body.mode || "followup",
-      currentDeviceId: body.currentDeviceId,
-      senderContext: body.senderContext,
+      mode,
+      currentDeviceId: body.currentDeviceId || senderDeviceId,
+      senderContext: {
+        deviceId: senderDeviceId,
+        sessionId: senderSessionId,
+        cwd: body.senderContext?.cwd,
+      },
     });
 
     console.log("[/api/mesh/send] Result:", JSON.stringify(result));

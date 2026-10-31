@@ -50,6 +50,14 @@ interface PendingReplyEntry {
 }
 const pendingReplies = new Map<string, PendingReplyEntry>();
 
+function extractTextFromAssistantMessage(message: any): string | null {
+  if (!message || message.role !== "assistant") return null;
+  const texts = (message.content ?? [])
+    .filter((b: any) => b.type === "text" && typeof b.text === "string" && b.text.trim())
+    .map((b: any) => b.text);
+  return texts.length > 0 ? texts.join(String.fromCharCode(10)) : null;
+}
+
 function makePendingReplyKey(deviceId: string, sessionId: string): string {
   return `${deviceId.toLowerCase()}:${sessionId}`;
 }
@@ -57,17 +65,26 @@ function makePendingReplyKey(deviceId: string, sessionId: string): string {
 /**
  * Manually cancel a pending realtime wait for a given session.
  */
-export function cancelRealtimeWait(sessionId: string, deviceId?: string): boolean {
+export function cancelRealtimeWait(sessionId?: string, deviceId?: string): boolean {
+  let hit = false;
   for (const [key, entry] of pendingReplies.entries()) {
-    if (key.includes(sessionId) && (!deviceId || key.startsWith(deviceId.toLowerCase()))) {
+    const matchesSession = !sessionId
+      || key.includes(sessionId)
+      || entry.senderSessionId.includes(sessionId)
+      || entry.targetSessionId.includes(sessionId);
+    const matchesDevice = !deviceId
+      || key.startsWith(deviceId.toLowerCase())
+      || entry.senderDeviceId.toLowerCase() === deviceId.toLowerCase();
+
+    if (matchesSession && matchesDevice) {
       pendingReplies.delete(key);
       if (entry.timer) clearTimeout(entry.timer);
       entry.cleanup?.();
       entry.resolve("Realtime wait stopped by user.");
-      return true;
+      hit = true;
     }
   }
-  return false;
+  return hit;
 }
 
 /**
@@ -89,6 +106,45 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
 
   // Self-targeting loop prevention: reject if targeting own session on same device
   const senderDev = options.senderContext?.deviceId ? (isLocalHostId(options.senderContext.deviceId) ? canonicalLocal : options.senderContext.deviceId) : undefined;
+  const senderSessionId = options.senderContext?.sessionId;
+  const senderDeviceId = senderDev || canonicalLocal;
+
+  // Early registration: register pendingReplies entry immediately (at 0ms) so cancelRealtimeWait
+  // can cancel the wait even if the user clicks "stop" while session startup or network dispatch is still running.
+  let earlyWaitPromise: Promise<string> | undefined;
+  let earlyTriggerResolve: ((msg: string) => void) | undefined;
+  let earlyWaitKey: string | undefined;
+  let earlyTimer: NodeJS.Timeout | undefined;
+  let isEarlySettled = false;
+
+  if (mode === "realtime" && senderSessionId) {
+    earlyWaitKey = makePendingReplyKey(senderDeviceId, senderSessionId!);
+    earlyWaitPromise = new Promise<string>((resolve) => {
+      const triggerResolve = (msg: string) => {
+        if (isEarlySettled) return;
+        isEarlySettled = true;
+        if (earlyWaitKey) pendingReplies.delete(earlyWaitKey);
+        if (earlyTimer) clearTimeout(earlyTimer);
+        resolve(msg);
+      };
+
+      earlyTriggerResolve = triggerResolve;
+
+      earlyTimer = setTimeout(() => {
+        triggerResolve("Timeout: Target session did not reply within 300s. The message was delivered, but no response was received.");
+      }, 300_000);
+      earlyTimer.unref?.();
+
+      pendingReplies.set(earlyWaitKey!, {
+        senderDeviceId,
+        senderSessionId: senderSessionId!,
+        targetDeviceId: deviceTarget,
+        targetSessionId: sessionTarget || "",
+        resolve: triggerResolve,
+        timer: earlyTimer,
+      });
+    });
+  }
   if (
     senderDev &&
     options.senderContext?.sessionId &&
@@ -143,6 +199,12 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     }
   }
 
+  // Update early registered entry with final resolved targetSessionId
+  if (earlyWaitKey && pendingReplies.has(earlyWaitKey) && resolvedSessionId) {
+    const entry = pendingReplies.get(earlyWaitKey);
+    if (entry) entry.targetSessionId = resolvedSessionId;
+  }
+
   // Intercept reply: match by destination session key, OR if the current sender was targeted by an active realtime wait!
   const callerDev = options.senderContext?.deviceId ? (isLocalHostId(options.senderContext.deviceId) ? canonicalLocal : options.senderContext.deviceId) : undefined;
   const callerSess = options.senderContext?.sessionId;
@@ -173,9 +235,6 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   }
 
   // 3. Sender context and reply prompt formatting
-  const rawSenderDev = options.senderContext?.deviceId || options.currentDeviceId || canonicalLocal;
-  const senderDeviceId = isLocalHostId(rawSenderDev) ? canonicalLocal : rawSenderDev;
-  const senderSessionId = options.senderContext?.sessionId;
 
   // Format reply instruction depending on whether target is local or remote
   const replyTarget = senderSessionId ? `${senderSessionId}.${senderDeviceId}` : senderDeviceId;
@@ -298,81 +357,51 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     // Case B local finished
   }
 
-  // If in realtime mode and sender has a session id, block until recipient replies or 300s timeout
-  if (mode === "realtime" && senderSessionId) {
-    const myWaitKey = makePendingReplyKey(senderDeviceId, senderSessionId);
-    const replyText = await new Promise<string>(async (resolve) => {
-      let settled = false;
+  // If in realtime mode and sender has a session id, wait on the early-registered promise
+  if (mode === "realtime" && senderSessionId && earlyWaitPromise) {
+    // If not already settled by an early cancel, attach listeners to target session
+    if (!isEarlySettled) {
       let cleanupListener: (() => void) | undefined;
+      const targetSess = resolvedSessionId;
 
-      const triggerResolve = (msg: string) => {
-        if (settled) return;
-        settled = true;
-        pendingReplies.delete(myWaitKey);
-        if (timer) clearTimeout(timer);
-        cleanupListener?.();
-        resolve(msg);
-      };
-
-      const timer = setTimeout(() => {
-        triggerResolve("Timeout: Target session did not reply within 300s. The message was delivered, but no response was received.");
-      }, 300_000);
-      timer.unref?.();
-
-      pendingReplies.set(myWaitKey, {
-        senderDeviceId,
-        senderSessionId,
-        targetDeviceId: deviceTarget,
-        targetSessionId: resolvedSessionId || "",
-        resolve: (text) => triggerResolve(text),
-        timer,
-        cleanup: () => cleanupListener?.(),
-      });
-
-      // Hook into target session events: ANY assistant message or turn completion resolves the wait
-      try {
-        if (isTargetLocal) {
-          const { getRpcSession } = await import("../rpc-manager");
-          const targetSession = getRpcSession(resolvedSessionId);
-          if (targetSession) {
-            cleanupListener = targetSession.onEvent((event: any) => {
-              if (event?.type === "message_end" && event.message?.role === "assistant") {
-                const content = typeof event.message.content === "string"
-                  ? event.message.content
-                  : Array.isArray(event.message.content)
-                  ? event.message.content.map((c: any) => c.text || "").join(String.fromCharCode(10))
-                  : "";
-                if (content.trim()) triggerResolve(content.trim());
-              } else if (event?.type === "agent_end") {
-                triggerResolve("[Target session finished turn]");
-              }
-            });
-          }
-        } else {
-          const { getRemoteRpcSession } = await import("../remote-agent-manager");
-          const remoteSession = getRemoteRpcSession(resolvedSessionId);
-          if (remoteSession) {
-            const listener = (msg: any) => {
-              if (msg?.type === "event" && msg.event?.type === "message_end" && msg.event.message?.role === "assistant") {
-                const content = typeof msg.event.message.content === "string"
-                  ? msg.event.message.content
-                  : Array.isArray(msg.event.message.content)
-                  ? msg.event.message.content.map((c: any) => c.text || "").join(String.fromCharCode(10))
-                  : "";
-                if (content.trim()) triggerResolve(content.trim());
-              } else if (msg?.type === "event" && msg.event?.type === "agent_end") {
-                triggerResolve("[Target session finished turn]");
-              }
-            };
-            remoteSession.listeners.add(listener);
-            cleanupListener = () => { remoteSession.listeners.delete(listener); };
-          }
+      if (!isTargetLocal) {
+        const { getRemoteRpcSession } = await import("../remote-agent-manager");
+        const remote = getRemoteRpcSession(targetSess);
+        if (remote) {
+          const handler = (event: any) => {
+            if (event.type === "message_end" && event.message?.role === "assistant") {
+              const text = extractTextFromAssistantMessage(event.message);
+              if (text && earlyTriggerResolve) earlyTriggerResolve(text);
+            } else if (event.type === "agent_end") {
+              if (earlyTriggerResolve) earlyTriggerResolve("Agent completed execution.");
+            }
+          };
+          remote.listeners.add(handler);
+          cleanupListener = () => remote.listeners.delete(handler);
         }
-      } catch (_) {
-        // Fall back to sendMeshMessage reply interception
+      } else {
+        const existing = getRpcSession(targetSess);
+        if (existing) {
+          const off = existing.onEvent((event: any) => {
+            if (event.type === "message_end" && event.message?.role === "assistant") {
+              const text = extractTextFromAssistantMessage(event.message);
+              if (text && earlyTriggerResolve) earlyTriggerResolve(text);
+            } else if (event.type === "agent_end") {
+              if (earlyTriggerResolve) earlyTriggerResolve("Agent completed execution.");
+            }
+          });
+          cleanupListener = () => off();
+        }
       }
-    });
 
+      // Attach cleanup to the registered entry
+      if (earlyWaitKey && pendingReplies.has(earlyWaitKey)) {
+        const entry = pendingReplies.get(earlyWaitKey);
+        if (entry) entry.cleanup = cleanupListener;
+      }
+    }
+
+    const replyText = await earlyWaitPromise;
     return {
       success: true,
       targetDeviceId: deviceTarget,
@@ -382,6 +411,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       reply: replyText,
     };
   }
+
   return {
     success: true,
     targetDeviceId: deviceTarget,

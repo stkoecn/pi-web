@@ -1249,18 +1249,28 @@ function MeshOutboundBubble({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [cancelledLocally, setCancelledLocally] = useState(false);
 
   const handleCancelWait = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (cancelling) return;
+    if (cancelling || cancelledLocally) return;
     setCancelling(true);
+    setCancelledLocally(true);
+
+    const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const effectiveSessionId = sessionId || urlParams?.get("session") || undefined;
+    const effectiveDeviceId = urlParams?.get("deviceId") || undefined;
+
     try {
-      await fetch("/api/mesh/cancel", {
+      const cancelUrl = effectiveDeviceId ? `/api/mesh/cancel?deviceId=${encodeURIComponent(effectiveDeviceId)}` : "/api/mesh/cancel";
+      await fetch(cancelUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ sessionId: effectiveSessionId }),
       });
-    } catch (_) {}
+    } catch (_) {} finally {
+      setCancelling(false);
+    }
   };
   const rawInput = block.input || (block as any).arguments;
   const input = (typeof rawInput === "object" && rawInput !== null) ? (rawInput as Record<string, unknown>) : {};
@@ -1385,6 +1395,19 @@ function MeshOutboundBubble({
                 }}
               >
                 {isError ? "✕ 发送失败" : "✓ 已送达"}
+              </span>
+            ) : cancelledLocally ? (
+              <span
+                style={{
+                  fontSize: 11,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 3,
+                  color: "#ef4444",
+                  fontWeight: 500,
+                }}
+              >
+                ✕ 已停止等待
               </span>
             ) : (
               <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
