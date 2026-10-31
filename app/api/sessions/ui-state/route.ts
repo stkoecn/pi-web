@@ -65,11 +65,26 @@ export async function POST(req: Request) {
   if (!hasJsonContentType(req)) {
     return refusal(415, "content-type", "Content-Type must be application/json");
   }
-  // A write cannot be honoured for a remote device yet (the state file lives on
-  // the host). Answer with an empty-but-valid state of the same shape instead
-  // of writing the remote device's pins into this host's file.
-  if (isRemoteDevice(getRequestDeviceId(req))) {
-    return NextResponse.json({ state: emptySessionUiState() } satisfies SessionUiStateResponse, { headers: NO_STORE });
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return refusal(400, "invalid-request", "Invalid JSON body");
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return refusal(400, "invalid-request", "Expected a JSON object");
+    }
+    const parsed = parseSessionUiStateRequest(body);
+    if (!parsed.ok) return refusal(400, "invalid-request", parsed.error);
+    try {
+      const { updateRemoteSessionUiState } = await import("@/lib/remote-session-store");
+      const state = await updateRemoteSessionUiState(deviceId, parsed.request);
+      return NextResponse.json({ state } satisfies SessionUiStateResponse, { headers: NO_STORE });
+    } catch (error) {
+      return refusal(500, "internal", error instanceof Error ? error.message : String(error));
+    }
   }
 
   let body: unknown;

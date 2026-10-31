@@ -443,17 +443,25 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 
   return (
     <div
-      style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: "flex-end" }}
+      style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: meshSender ? "flex-start" : "flex-end" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 6, maxWidth: "85%" }}>
+      <div style={{ display: "flex", alignItems: meshSender ? "flex-start" : "flex-end", flexDirection: meshSender ? "row-reverse" : "row", gap: 6, maxWidth: "85%" }}>
         <div
           style={{
             flex: 1,
             minWidth: 0,
-            background: isEditing ? "color-mix(in srgb, var(--accent) 14%, var(--user-bg))" : "var(--user-bg)",
-            border: isEditing ? "1px solid color-mix(in srgb, var(--accent) 62%, var(--user-bg))" : "1px solid rgba(59,130,246,0.2)",
+            background: isEditing
+              ? "color-mix(in srgb, var(--accent) 14%, var(--user-bg))"
+              : meshSender
+              ? "color-mix(in srgb, #22c55e 10%, var(--user-bg))"
+              : "var(--user-bg)",
+            border: isEditing
+              ? "1px solid color-mix(in srgb, var(--accent) 62%, var(--user-bg))"
+              : meshSender
+              ? "1px solid rgba(34,197,94,0.35)"
+              : "1px solid rgba(59,130,246,0.2)",
             boxShadow: isEditing ? "0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent)" : undefined,
             borderRadius: 12,
             padding: "8px 12px",
@@ -473,8 +481,9 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     fontSize: 10,
                     padding: "1px 6px",
                     borderRadius: 4,
-                    background: "color-mix(in srgb, var(--accent) 18%, transparent)",
-                    color: "var(--accent)",
+                    background: "rgba(34, 197, 94, 0.16)",
+                    color: "#16a34a",
+                    border: "1px solid rgba(34, 197, 94, 0.28)",
                     fontFamily: "var(--font-mono)",
                     fontWeight: 500,
                   }}

@@ -1,3 +1,4 @@
+import { scanSessionsWithNode, unlinkRemoteFilesWithNode } from "./remote-session-delete-node";
 import "server-only";
 import { getGateway } from "@/lib/gateway/singleton";
 import type { IHostDriver } from "@/lib/gateway/types/host-driver";
@@ -54,6 +55,8 @@ async function scanDeviceSessions(
   agentDir: string,
 ): Promise<DeviceSessionFile[]> {
   const sessionsDir = `${agentDir}/sessions`;
+  const nodeScanned = await scanSessionsWithNode(driver, sessionsDir);
+  if (nodeScanned) return nodeScanned;
   const script = `
 __dir=${shellQuote(sessionsDir)}
 [ -d "$__dir" ] || exit 0
@@ -120,7 +123,7 @@ export async function deleteRemoteSessions(
 ): Promise<SessionDeleteResult> {
   // Deleting is a click the user watches, so it must not wait out a reconnect:
   // an offline device is reported at once and the pool reconnects on its own.
-  const driver = getGateway().getOnlineDriver(deviceId);
+  const driver = await getGateway().getOrConnectDriver(deviceId);
   const agentDir = await getRemoteAgentDir(deviceId);
   const scanned = await scanDeviceSessions(driver, agentDir);
 
@@ -209,13 +212,16 @@ export async function deleteRemoteSessions(
   }
 
   const removed = [...doomed.keys()];
-  const rmResult = await driver.exec(
-    `for f in ${removed.map(shellQuote).join(" ")}; do rm -f -- "$f"; done; true`,
-    [],
-    { timeoutMs: 60_000 },
-  );
-  if (rmResult.exitCode !== 0) {
-    throw new Error(rmResult.stderr.trim() || `Failed to delete ${removed.length} session file(s)`);
+  const unlinked = await unlinkRemoteFilesWithNode(driver, removed);
+  if (!unlinked) {
+    const rmResult = await driver.exec(
+      `for f in ${removed.map(shellQuote).join(" ")}; do rm -f -- "$f"; done; true`,
+      [],
+      { timeoutMs: 60_000 },
+    );
+    if (rmResult.exitCode !== 0) {
+      throw new Error(rmResult.stderr.trim() || `Failed to delete ${removed.length} session file(s)`);
+    }
   }
 
   for (const { path, parent } of reparented) {

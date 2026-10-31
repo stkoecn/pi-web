@@ -13,6 +13,12 @@
  */
 
 import { parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	applySessionUiStateRequest,
+	emptySessionUiState,
+	type SessionUiState,
+	type SessionUiStateRequest,
+} from "./session-ui-state-shared";
 import { getGateway } from "@/lib/gateway/singleton";
 import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 import { readRemoteTextFile } from "@/lib/remote-files";
@@ -540,6 +546,28 @@ export function invalidateRemoteSession(deviceId: string, sessionId: string) {
 /**
  * Reads remote session UI state (`~/.pi/agent/pi-web-session-state.json`) if available.
  */
+/**
+ * Updates the remote session UI state on the targeted device.
+ */
+export async function updateRemoteSessionUiState(
+	deviceId: string,
+	request: SessionUiStateRequest,
+): Promise<SessionUiState> {
+	const driver = await getDriver(deviceId);
+	const remote = await readRemoteSessionUiState(deviceId);
+	const current: SessionUiState = {
+		...emptySessionUiState(),
+		projectNames: remote.projectNames || {},
+		sessions: (remote.sessions as any) || {},
+	};
+	const { state: updated } = applySessionUiStateRequest(current, request, Date.now());
+	const json = JSON.stringify(updated, null, 2);
+	const b64 = Buffer.from(json, "utf8").toString("base64");
+	const writeScript = "node -e \"const fs = require('fs'); const path = require('path'); const os = require('os'); const dir = path.join(os.homedir(), '.pi', 'agent'); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'pi-web-session-state.json'), Buffer.from('" + b64 + "', 'base64'));\" 2>/dev/null || (mkdir -p \"$HOME/.pi/agent\" && echo \"" + b64 + "\" | base64 -d > \"$HOME/.pi/agent/pi-web-session-state.json\")";
+	await runScript(driver, writeScript).catch(() => {});
+	return updated;
+}
+
 export async function readRemoteSessionUiState(deviceId: string): Promise<{
 	projectNames: Record<string, string>;
 	sessions: Record<string, { pinned?: boolean; pinnedAt?: number; archivedAt?: number }>;
