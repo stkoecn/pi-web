@@ -868,10 +868,15 @@ export function AppShell() {
       ?? (selectedSession ? workspaceKeyOf(selectedSession) : null);
     activeProjectKeyRef.current = newProject;
 
-    // Keep the project identity in sync during the initial URL restore without
-    // remounting the just-created or restored chat.
+    // Keep the project identity in sync during the initial URL restore or when
+    // a session is explicitly selected, without remounting or resetting the selected session.
     if (suppressCwdBumpRef.current) {
       suppressCwdBumpRef.current = false;
+      return;
+    }
+
+    // If a session is currently selected and belongs to the incoming cwd, don't clear it!
+    if (selectedSession && selectedSession.cwd && (selectedSession.cwd === cwd || projectKey === workspaceKeyOf(selectedSession))) {
       return;
     }
     // The server may hydrate a normalized key after a custom cwd is already
@@ -965,11 +970,10 @@ export function AppShell() {
     // On mobile, collapse the overlay drawer so the chat is revealed after pick
     // (unless the sidebar still has something to show: a fork's row and toast).
     if (isMobile && !isRestore && !options?.keepSidebarOpen) setSidebarOpen(false);
-    if (isRestore) {
-      // Suppress the redundant sessionKey bump that would come from the
-      // onCwdChange effect firing after setSelectedCwd in the sidebar
-      suppressCwdBumpRef.current = true;
-    }
+    // Suppress the redundant sessionKey bump that would come from the
+    // onCwdChange effect firing after setSelectedCwd in the sidebar, both on
+    // initial restore and on explicit session pick.
+    suppressCwdBumpRef.current = true;
     // Skip router.replace when the URL already has this session — calling
     // replace in production Next.js triggers a Suspense remount loop.
     // Tab-memory restore lands on `/` and must write `?session=` so reload
@@ -977,7 +981,7 @@ export function AppShell() {
     if (!isRestore || new URLSearchParams(window.location.search).get("session") !== session.id) {
       router.replace(deviceHref({ session: session.id }), { scroll: false });
     }
-  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession]);
+  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession, deviceHref]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string, projectKey?: string | null, options?: NewSessionOptions) => {
     invalidateWorkspaceRestore();
@@ -1341,7 +1345,11 @@ export function AppShell() {
         if (!home || home === nextCwd) return;
         setActiveCwd((current) => (current === nextCwd ? home : current));
         setNewSessionCwd((current) => (current === nextCwd ? home : current));
-        router.replace(deviceHref({ deviceId: id, cwd: home }, "/"), { scroll: false });
+        // Only update router URL with home cwd if the user has not already picked a session
+        const currentUrlParams = new URLSearchParams(window.location.search);
+        if (!currentUrlParams.has("session")) {
+          router.replace(deviceHref({ deviceId: id, cwd: home }, "/"), { scroll: false });
+        }
       });
     } else {
       router.replace(deviceHref(null, "/"), { scroll: false });

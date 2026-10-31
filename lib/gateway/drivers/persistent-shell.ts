@@ -204,11 +204,12 @@ class PersistentShell {
     return new Promise<ShellExecResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending?.nonce !== nonce) return;
+        this.dead = true; // Mark dead immediately so it cannot be acquired again
         this.pending = null;
         reject(new Error(`Remote command timed out after ${timeoutMs}ms: ${command.slice(0, 120)}`));
         // The shell may still be running the command; its output would be
         // attributed to the next one, so throw the channel away.
-        setTimeout(() => this.dispose(), RECYCLE_AFTER_TIMEOUT_MS);
+        this.dispose();
       }, timeoutMs);
       timer.unref?.();
 

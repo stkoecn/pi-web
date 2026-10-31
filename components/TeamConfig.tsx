@@ -234,9 +234,9 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
         <ConfigSidebar>
           <ConfigSidebarList>
             {loading && roster.length === 0 ? (
-              <div className="config-sidebar-empty">正在加载主机与项目...</div>
+              <div className="config-sidebar-message">{t("i18n.loading")}</div>
             ) : roster.length === 0 ? (
-              <div className="config-sidebar-empty">未发现可用设备</div>
+              <div className="config-sidebar-message is-empty">未发现可用设备</div>
             ) : (
               (() => {
                 // Group devices/projects into enabled vs disabled

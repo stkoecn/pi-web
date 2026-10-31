@@ -1174,13 +1174,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     if (selectedCwdProp !== lastSyncedCwdPropRef.current) {
       lastSyncedCwdPropRef.current = selectedCwdProp;
-      const isRemote = deviceId && deviceId !== "localhost";
-      if (isRemote && (selectedCwdProp.includes("\\") || /^[a-zA-Z]:/.test(selectedCwdProp))) {
-        // A Windows path arrived from a previous device: adopt this one's home.
-        setSelectedCwd(deviceHomeOrRoot(deviceId));
-      } else {
-        setSelectedCwd(selectedCwdProp);
-      }
+      setSelectedCwd(selectedCwdProp);
     }
   }, [selectedCwdProp]);
 

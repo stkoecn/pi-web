@@ -25,19 +25,42 @@ export function setupMeshReverseBridge(
   requestedPort = DEFAULT_MESH_BRIDGE_PORT,
 ): Promise<number> {
   return new Promise((resolve) => {
+    let activeBridgePort = requestedPort;
+    const MAX_HEADER_SIZE = 64 * 1024;
+
     // Listen for incoming connection forwards from remote sshd
     client.on("tcp connection", (info, accept, reject) => {
       // Check if this connection matches our forwarded bridge port
-      if (info.destPort !== requestedPort && info.destPort !== 0) {
-        // Not our bridge port
+      if (info.destPort !== activeBridgePort && info.destPort !== 0) {
+        // Explicitly reject mismatched ports so remote sshd does not hang
+        reject();
         return;
       }
 
       const stream = accept();
 
+      const streamTimeout = setTimeout(() => {
+        try { stream.destroy(); } catch {}
+      }, 15000);
+      streamTimeout.unref?.();
+
+      stream.on("error", () => {
+        clearTimeout(streamTimeout);
+        try { stream.destroy(); } catch {}
+      });
+      stream.on("close", () => {
+        clearTimeout(streamTimeout);
+      });
+
       let reqBuffer = Buffer.alloc(0);
       stream.on("data", (chunk: Buffer) => {
         reqBuffer = Buffer.concat([reqBuffer, chunk]);
+
+        // Guard against memory exhaustion from malformed headers
+        if (reqBuffer.length > MAX_HEADER_SIZE && reqBuffer.indexOf("\r\n\r\n") === -1) {
+          try { stream.destroy(); } catch {}
+          return;
+        }
 
         // Look for end of HTTP headers
         const headerEnd = reqBuffer.indexOf("\r\n\r\n");
@@ -122,12 +145,14 @@ export function setupMeshReverseBridge(
             console.error(`[MeshReverseBridge:${deviceId}] Failed to forward any bridge port: ${err2.message}`);
             resolve(0);
           } else {
+            activeBridgePort = port2;
             console.log(`[MeshReverseBridge:${deviceId}] Bridge active on remote 127.0.0.1:${port2} via SSH reverse tunnel`);
             resolve(port2);
           }
         });
       } else {
         const bound = port || requestedPort;
+        activeBridgePort = bound;
         console.log(`[MeshReverseBridge:${deviceId}] Bridge active on remote 127.0.0.1:${bound} via SSH reverse tunnel`);
         resolve(bound);
       }

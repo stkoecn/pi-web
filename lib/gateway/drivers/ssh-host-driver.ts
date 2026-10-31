@@ -98,6 +98,16 @@ export class SSHHostDriver implements IHostDriver {
       !isWin ? this.getShellPool().ready() : Promise.resolve(),
       this.getSFTP().then(() => undefined),
     ]);
+
+    // Automatically ensure remote mesh extension and drain any offline outbox messages
+    import("../mesh-provision").then(async ({ ensureRemoteMeshExtension, drainRemoteMeshOutbox }) => {
+      try {
+        await ensureRemoteMeshExtension(this);
+        await drainRemoteMeshOutbox(this);
+      } catch (err) {
+        console.warn(`[SSHHostDriver] Mesh auto-provisioning or drain failed for ${this.deviceId}:`, err);
+      }
+    }).catch(() => {});
   }
 
   private getShellPool(): PersistentShellPool {
@@ -115,6 +125,10 @@ export class SSHHostDriver implements IHostDriver {
     this.sftpPromise = withChannelRetry(() => new Promise<SFTPWrapper>((resolve, reject) => {
       this.client.sftp((err: any, sftp: SFTPWrapper) => {
         if (err) return reject(err);
+        sftp.on('error', (sftpErr: any) => {
+          console.warn(`[SSHHostDriver:${this.deviceId}] SFTP stream error: ${sftpErr?.message || sftpErr}`);
+          this.sftpInstance = null;
+        });
         sftp.on('end', () => { this.sftpInstance = null; });
         sftp.on('close', () => { this.sftpInstance = null; });
         resolve(sftp);
@@ -216,7 +230,9 @@ export class SSHHostDriver implements IHostDriver {
     if (!p || p === '.' || p === '~' || p === '/~') return '.';
     if (p.startsWith('/~/')) return p.slice(3);
     if (p.startsWith('~/')) return p.slice(2);
-    if (/^[a-zA-Z]:/.test(p)) return '.';
+    // On Windows SFTP servers, absolute paths look like "C:/path" or "C:\path".
+    // Do NOT truncate them to "."! Convert backslashes to forward slashes.
+    if (/^[a-zA-Z]:[\\/]/.test(p)) return p.replace(/\\/g, '/');
     return p;
   }
 
@@ -228,9 +244,13 @@ export class SSHHostDriver implements IHostDriver {
         if (err) return reject(err);
         const entries: FileEntry[] = list.map((item) => {
           const isDir = Boolean((item.attrs.mode & 0o170000) === 0o040000);
-          const fullPath = normalized === '.'
+          let fullPath = normalized === '.'
             ? `/${item.filename}`
             : (normalized.endsWith('/') ? `${normalized}${item.filename}` : `${normalized}/${item.filename}`);
+          // If normalized started with Windows drive (e.g. C:/...), don't add leading slash
+          if (/^[a-zA-Z]:/.test(normalized) && fullPath.startsWith('/')) {
+            fullPath = fullPath.slice(1);
+          }
           return {
             name: item.filename,
             path: fullPath,
@@ -327,14 +347,25 @@ export class SSHHostDriver implements IHostDriver {
 
   private execOneShot(
     fullCommand: string,
-    opts?: { env?: Record<string, string> },
+    opts?: { env?: Record<string, string>; timeoutMs?: number },
   ): Promise<ExecResult> {
+    const timeoutMs = opts?.timeoutMs ?? 30_000;
     return withChannelRetry(() => new Promise<ExecResult>((resolve, reject) => {
       this.client.exec(fullCommand, { env: opts?.env as any }, (err: any, stream: ClientChannel) => {
         if (err) return reject(err);
 
         let stdout = '';
         let stderr = '';
+        let settled = false;
+
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            try { stream.destroy(); } catch {}
+            reject(new Error(`execOneShot timed out after ${timeoutMs}ms: ${fullCommand.slice(0, 80)}`));
+          }
+        }, timeoutMs);
+        timer.unref?.();
 
         stream.on('data', (data: Buffer) => {
           stdout += data.toString('utf8');
@@ -343,13 +374,28 @@ export class SSHHostDriver implements IHostDriver {
           stderr += data.toString('utf8');
         });
 
-        stream.on('close', (code: number) => {
-          resolve({
-            stdout,
-            stderr,
-            exitCode: code ?? 0,
-          });
+        stream.on('error', (streamErr: Error) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(streamErr);
+          }
         });
+
+        stream.on('close', (code: number) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+              stdout,
+              stderr,
+              exitCode: code ?? 0,
+            });
+          }
+        });
+
+        // Close stdin immediately so remote commands waiting for EOF don't hang
+        try { stream.end(); } catch {}
       });
     }));
   }
@@ -378,6 +424,11 @@ export class SSHHostDriver implements IHostDriver {
         args.push('--session', `"${opts.resumeSession}"`);
       }
     }
+
+    // Automatically ensure remote mesh extension is present and load it via -e
+    // Always use absolute path ~/ so it is resolved against user's home directory,
+    // not relative to cwd (which causes e.g. D:\proj\tmp\.pi\agent\... not found).
+    args.push('-e', `~/.pi/agent/mesh-agent-extension.mjs`);
 
     // The same PATH a user-installed `pi` needs: sshd hands an `exec` request
     // to a non-interactive shell that reads no rc file, so `pi` is not on PATH
@@ -423,10 +474,30 @@ export class SSHHostDriver implements IHostDriver {
           }
         });
 
+        let errBuffer = '';
         stream.stderr.on('data', (chunk: Buffer) => {
-          const errStr = chunk.toString('utf8');
-          for (const listener of errListeners) {
-            listener(new Error(errStr));
+          errBuffer += chunk.toString('utf8');
+          const lines = errBuffer.split('\n');
+          errBuffer = lines.pop() ?? '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const parsed = JSON.parse(trimmed);
+              // If it's a mesh_outbound frame sent over stderr or stdout, deliver to msgListeners!
+              if (parsed?.type === 'mesh_outbound') {
+                for (const listener of msgListeners) {
+                  listener(parsed);
+                }
+                continue;
+              }
+            } catch {
+              // Not JSON, normal stderr
+            }
+            for (const listener of errListeners) {
+              listener(new Error(trimmed));
+            }
           }
         });
 
@@ -516,6 +587,7 @@ export async function readSftpFile(
   const handle = await new Promise<Buffer>((resolve, reject) => {
     sftp.open(path, 'r', (err, opened) => (err ? reject(err) : resolve(opened)));
   });
+  let abortError: any = null;
   try {
     const stats = await new Promise<{ size: number }>((resolve, reject) => {
       sftp.fstat(handle, (err, value) => (err ? reject(err) : resolve(value)));
@@ -524,13 +596,19 @@ export async function readSftpFile(
     let next = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (abortError) return;
         const position = next;
         if (position >= stats.size) return;
         next += chunkSize;
         const length = Math.min(chunkSize, stats.size - position);
-        await new Promise<void>((resolve, reject) => {
-          sftp.read(handle, buffer, position, length, position, (err) => (err ? reject(err) : resolve()));
-        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            sftp.read(handle, buffer, position, length, position, (err) => (err ? reject(err) : resolve()));
+          });
+        } catch (err) {
+          abortError = err;
+          throw err;
+        }
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
@@ -560,17 +638,24 @@ export async function writeSftpFile(
   const handle = await new Promise<Buffer>((resolve, reject) => {
     sftp.open(path, 'w', (err, opened) => (err ? reject(err) : resolve(opened)));
   });
+  let abortError: any = null;
   try {
     let next = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (abortError) return;
         const position = next;
         if (position >= data.length) return;
         next += chunkSize;
         const length = Math.min(chunkSize, data.length - position);
-        await new Promise<void>((resolve, reject) => {
-          sftp.write(handle, data, position, length, position, (err) => (err ? reject(err) : resolve()));
-        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            sftp.write(handle, data, position, length, position, (err) => (err ? reject(err) : resolve()));
+          });
+        } catch (err) {
+          abortError = err;
+          throw err;
+        }
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));

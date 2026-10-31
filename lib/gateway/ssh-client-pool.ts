@@ -136,14 +136,21 @@ export class SSHClientPool {
         });
         if (superseded()) {
           jump.close();
+          this.connectingClients.delete(config.id);
+          try { client.destroy(); } catch {}
           return;
         }
         this.jumpSockets.get(live.id)?.close();
         this.jumpSockets.set(live.id, jump);
         connectConfig.sock = jump.sock as unknown as ConnectConfig['sock'];
       } catch (error) {
-        if (superseded()) return;
+        if (superseded()) {
+          this.connectingClients.delete(config.id);
+          try { client.destroy(); } catch {}
+          return;
+        }
         this.connectingClients.delete(config.id);
+        try { client.destroy(); } catch {}
         const existing = this.registry.get(config.id);
         if (existing && existing.info.mode === 'active_ssh') {
           this.registry.register(
@@ -254,6 +261,10 @@ export class SSHClientPool {
     try {
       client.connect(connectConfig);
     } catch {
+      this.connectingClients.delete(config.id);
+      this.jumpSockets.get(config.id)?.close();
+      this.jumpSockets.delete(config.id);
+      try { client.destroy(); } catch {}
       this.scheduleReconnect(config, retryCount);
     }
   }

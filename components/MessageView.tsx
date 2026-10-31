@@ -435,17 +435,9 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   let meshSender = meshMatch ? (meshMatch[1]?.trim() || "Remote Session") : null;
   const meshBody = meshMatch ? meshMatch[2] : null;
 
-  // Format sender for clean UI badge:
-  // If sender is "01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome", format as "01a18c40.wshome"
+  // Keep full sender identifier (e.g. "01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome")
+  // to prevent confusion or collision across sessions.
   const formattedSender = useMemo(() => {
-    if (!meshSender) return null;
-    const dotIdx = meshSender.lastIndexOf(".");
-    if (dotIdx > 0) {
-      const sess = meshSender.slice(0, dotIdx);
-      const host = meshSender.slice(dotIdx + 1);
-      const shortSess = sess.length > 8 ? sess.slice(0, 8) : sess;
-      return `${shortSess}.${host}`;
-    }
     return meshSender;
   }, [meshSender]);
 

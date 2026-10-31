@@ -109,10 +109,8 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   // Format reply instruction depending on whether target is local or remote
   const replyTarget = senderSessionId ? `${senderSessionId}.${senderDeviceId}` : senderDeviceId;
   
-  // Notice instruction: explain the native text block protocol and the tool call.
-  // The gateway intercepts :::mesh-reply[target]...::: automatically on the existing RPC channel over SSH,
-  // requiring ZERO local tools, ports, or packages!
-  const senderTag = `[From ${replyTarget}][To reply: use tool 'send_session_message', OR simply include a block in your response:\n:::mesh-reply[${replyTarget}]\nYour reply content here...\n:::]:\n`;
+  // Notice instruction: simple and clean header. Both local and remote sessions have `send_session_message` tool injected!
+  const senderTag = `[From ${replyTarget}][reply by using send_session_message]:\n`;
   const fullMessage = `${senderTag}${message}`;
 
   // 4. Case A: Target is a brand-new session
@@ -178,20 +176,14 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
         message: fullMessage,
       });
     } else {
-      // If target remote session is currently running, use followUp streaming behavior
-      const isRunning = Boolean(remote.state?.isStreaming);
-      if (isRunning) {
-        remote.channel.send({
-          type: "prompt",
-          message: fullMessage,
-          streamingBehavior: "followUp",
-        });
-      } else {
-        remote.channel.send({
-          type: "prompt",
-          message: fullMessage,
-        });
-      }
+      // Always specify streamingBehavior: "followUp" so that even if the session is currently streaming
+      // or in the middle of a tool call / thinking, pi will gracefully queue the message instead of throwing
+      // "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
+      remote.channel.send({
+        type: "prompt",
+        message: fullMessage,
+        streamingBehavior: "followUp",
+      });
     }
 
     return {
@@ -240,19 +232,12 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       }
     } else {
       // Default: followup mode
-      // If target session is running, queue it via streamingBehavior: "followUp"
-      if (existing.inner.isStreaming) {
-        await existing.send({
-          type: "prompt",
-          message: fullMessage,
-          streamingBehavior: "followUp",
-        });
-      } else {
-        await existing.send({
-          type: "prompt",
-          message: fullMessage,
-        });
-      }
+      // Always specify streamingBehavior: "followUp" to prevent rejection if agent is processing
+      await existing.send({
+        type: "prompt",
+        message: fullMessage,
+        streamingBehavior: "followUp",
+      });
     }
 
     return {

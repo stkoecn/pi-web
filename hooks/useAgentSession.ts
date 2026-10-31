@@ -2182,7 +2182,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
     let d: ModelsResponse;
     try {
-      const res = await fetch(withDeviceId(modelsUrl, deviceIdRef.current), signal ? { signal } : undefined);
+      const res = await fetch(withDeviceId(modelsUrl, deviceId), signal ? { signal } : undefined);
       if (!res.ok) {
         let detail = "";
         try {
@@ -2243,7 +2243,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         );
       }
     }
-  }, [isNew, newSessionCwd, session?.cwd]);
+  }, [deviceId, isNew, newSessionCwd, session?.cwd]);
 
   // Picking a model or reasoning level is session-scoped, as in the TUI. The
   // selectors' star is the explicit Ctrl+S equivalent: it saves the global

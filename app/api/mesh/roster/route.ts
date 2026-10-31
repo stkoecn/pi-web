@@ -101,10 +101,11 @@ export async function GET(req: Request) {
             }
           } else {
             const { listRemoteSessions, readRemoteSessionUiState } = await import("@/lib/remote-session-store");
+            // Do not force a slow full scan if cached catalog exists, reducing network latency
             const remoteUiState = await readRemoteSessionUiState(devId).catch(() => ({ projectNames: {}, sessions: {} }));
             projectRenames = remoteUiState.projectNames || {};
             const archivedSessions: Record<string, { archivedAt?: number }> = remoteUiState.sessions || {};
-            const sessions = await listRemoteSessions(devId, { force: true }).catch(() => []);
+            const sessions = await listRemoteSessions(devId).catch(() => []);
             for (const s of sessions) {
               const isArchived = Boolean(archivedSessions[s.id]?.archivedAt);
               if (isArchived) continue;

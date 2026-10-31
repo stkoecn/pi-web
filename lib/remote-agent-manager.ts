@@ -280,6 +280,9 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
     }
   };
 
+  // Deduplicate outbound frames by ID within 30 seconds
+  const seenMeshFrames = new Set<string>();
+
   // Single fan-out: activity tracking, init detection, then every listener.
   channel.onMessage((msg) => {
     sessionObj.lastActivityAt = Date.now();
@@ -302,26 +305,28 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
       }
     }
 
-    // Intercept :::mesh-reply[target]...::: from assistant messages in RPC stream over SSH tunnel
-    if (msg?.type === "message_end" && msg.message?.role === "assistant") {
-      const assistantMsg = msg.message;
-      let textContent = "";
-      if (typeof assistantMsg.content === "string") {
-        textContent = assistantMsg.content;
-      } else if (Array.isArray(assistantMsg.content)) {
-        for (const block of assistantMsg.content) {
-          if (block && block.type === "text" && typeof block.text === "string") {
-            textContent += block.text + "\n";
-          }
-        }
-      }
-      if (textContent.includes(":::mesh-reply")) {
-        import("./gateway/mesh-interceptor").then(({ interceptMeshReplyFromText }) => {
-          interceptMeshReplyFromText(textContent, sessionObj.sessionId, deviceId).catch((e) => {
-            console.error("[RemoteRpcSession] Mesh interceptor error:", e);
-          });
-        }).catch(() => {});
-      }
+    // Handle mesh_outbound frames emitted from remote session extension over SSH RPC stream
+    if (msg?.type === "mesh_outbound" && msg.target && msg.message) {
+      const frameId = msg.id || `${msg.target}_${msg.message.slice(0, 50)}`;
+      if (seenMeshFrames.has(frameId)) return;
+      seenMeshFrames.add(frameId);
+      setTimeout(() => seenMeshFrames.delete(frameId), 30000).unref?.();
+
+      import("./gateway/mesh-router").then(({ sendMeshMessage }) => {
+        sendMeshMessage({
+          target: msg.target,
+          message: msg.message,
+          mode: msg.mode || "followup",
+          currentDeviceId: deviceId,
+          senderContext: {
+            deviceId: deviceId,
+            sessionId: sessionObj.sessionId,
+            cwd: msg.sender?.cwd || cwd,
+          },
+        }).catch((err) => {
+          console.error(`[RemoteRpcSession] Failed to route outbound mesh frame from ${deviceId}:`, err);
+        });
+      }).catch(() => {});
     }
   });
 

@@ -42,6 +42,10 @@ async function readRemoteSkillContent(
   if (!skill) return NextResponse.json({ error: "Skill not found" }, { status: 404 });
 
   let target = skill.filePath;
+  // Normalize MSYS /c/Users/... or /C/Users/... paths to C:/Users/... for Windows SFTP drivers
+  if (/^\/([a-zA-Z])\//.test(target)) {
+    target = target.replace(/^\/([a-zA-Z])\//, (_, drive) => `${drive.toUpperCase()}:/`);
+  }
   if (document !== null) {
     if (path.isAbsolute(document) || /[\:]/.test(document) || document.split("/").includes("..")) {
       return NextResponse.json({ error: "Document path must stay inside the skill folder" }, { status: 400 });

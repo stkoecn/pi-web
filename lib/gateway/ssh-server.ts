@@ -213,6 +213,11 @@ export class SSHServer {
       this.activeClients.add(client);
       let tunnelUsername: string | null = null;
 
+      // Handle connection error to avoid uncaught exceptions crashing the process
+      client.on('error', (err) => {
+        console.warn(`[ReverseTunnel] Connection error from ${info.ip}:${info.port}: ${err.message}`);
+      });
+
       client.on('authentication', (ctx) => {
         // The device authenticates as itself; the gateway's own authorisation is
         // the network and the tunnel's SSH username, since this port is meant to
@@ -313,27 +318,50 @@ export class SSHServer {
     }
     const remoteAddr = sock.remoteAddress ?? '127.0.0.1';
     const remotePort = sock.remotePort ?? 0;
+
+    let aborted = false;
+    const onEarlyClose = () => { aborted = true; };
+    sock.once('close', onEarlyClose);
+    sock.once('error', onEarlyClose);
+
     client.forwardOut(tunnel.bindAddr, tunnel.boundPort, remoteAddr, remotePort, (error, channel) => {
-      if (error) {
-        console.warn(`[ReverseTunnel] channel to ${deviceId} failed: ${error.message}`);
+      sock.removeListener('close', onEarlyClose);
+      sock.removeListener('error', onEarlyClose);
+
+      if (error || aborted || sock.destroyed) {
+        if (error) console.warn(`[ReverseTunnel] channel to ${deviceId} failed: ${error.message}`);
         sock.destroy();
+        channel?.destroy();
         return;
       }
-      sock.on('error', () => channel.destroy());
-      channel.on('error', () => sock.destroy());
+
+      const cleanup = () => {
+        sock.destroy();
+        channel.destroy();
+      };
+
+      sock.on('error', cleanup);
+      sock.on('close', cleanup);
+      channel.on('error', cleanup);
+      channel.on('close', cleanup);
+
       sock.pipe(channel).pipe(sock);
     });
   }
 
   /** Forget a tunnel and everything built on it. Used on close and on a file edit. */
-  async closeTunnel(deviceId: string): Promise<void> {
+  async closeTunnel(deviceId: string, targetTunnel?: TunnelState): Promise<void> {
     const tunnel = this.tunnels.get(deviceId);
     if (!tunnel) return;
+    if (targetTunnel && tunnel !== targetTunnel) return;
+
     this.tunnels.delete(deviceId);
     try { tunnel.forwarder.close(); } catch { /* already closed */ }
     await tunnel.driver.close().catch(() => undefined);
     const entry = this.registry.get(deviceId);
-    if (entry && entry.info.mode === 'reverse_tunnel') this.registry.unregister(deviceId);
+    if (entry && entry.info.mode === 'reverse_tunnel' && entry.driver === tunnel.driver) {
+      this.registry.unregister(deviceId);
+    }
   }
 
   /** Manually disconnect a client reverse tunnel */

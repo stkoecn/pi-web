@@ -372,10 +372,46 @@ async function fetchCatalogueFromDisk(deviceId: string): Promise<RemoteModelCata
     const modelsPath = `${agentDir}/models.json`;
     const settingsPath = `${agentDir}/settings.json`;
 
-    const [modelsBuf, settingsBuf] = await Promise.all([
-      driver.readFile(modelsPath).catch(() => null),
-      driver.readFile(settingsPath).catch(() => null),
-    ]);
+    let modelsBuf: string | Buffer | null = null;
+    let settingsBuf: string | Buffer | null = null;
+
+    // Try reading via driver.readFile
+    try {
+      [modelsBuf, settingsBuf] = await Promise.all([
+        driver.readFile(modelsPath).catch(() => null),
+        driver.readFile(settingsPath).catch(() => null),
+      ]);
+    } catch {}
+
+    // Fallback: If readFile failed (e.g. Windows SFTP path quirks with /c/Users/...),
+    // execute a base64-encoded node script to avoid Windows shell quoting / escape issues
+    if (!modelsBuf || modelsBuf.length === 0) {
+      try {
+        const probeScript = `
+          const fs = require('fs');
+          const os = require('os');
+          const path = require('path');
+          const base = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent');
+          const mFile = path.join(base, 'models.json');
+          const sFile = path.join(base, 'settings.json');
+          const out = {
+            models: fs.existsSync(mFile) ? fs.readFileSync(mFile, 'utf8') : null,
+            settings: fs.existsSync(sFile) ? fs.readFileSync(sFile, 'utf8') : null
+          };
+          console.log(JSON.stringify(out));
+        `;
+        const b64 = Buffer.from(probeScript, "utf8").toString("base64");
+        const cmd = `node -e "eval(Buffer.from('${b64}','base64').toString('utf8'))"`;
+        const res = await driver.exec(cmd);
+        if (res.exitCode === 0 && res.stdout) {
+          const parsed = JSON.parse(res.stdout.trim());
+          if (parsed.models) modelsBuf = parsed.models;
+          if (parsed.settings) settingsBuf = parsed.settings;
+        }
+      } catch (err) {
+        console.warn(`[remote-models] Base64 node probe failed for ${deviceId}:`, err);
+      }
+    }
 
     if (!modelsBuf || modelsBuf.length === 0) return EMPTY_CATALOGUE;
 
