@@ -166,3 +166,88 @@ export function toggleProjectEnabledForContacts(currentProjectCwd: string, targe
   cfg.enabledProjects = filtered;
   writeProjectTeamConfig(currentProjectCwd, cfg);
 }
+
+/**
+ * Loads project team config, supporting both local filesystem and remote SSH devices.
+ */
+export async function loadProjectTeamConfig(
+  deviceId: string,
+  projectCwd: string,
+): Promise<ProjectTeamConfig> {
+  if (!projectCwd) return { version: 1, enabledProjects: [] };
+  const { isLocalHostId } = await import("./host-identity");
+  if (isLocalHostId(deviceId)) {
+    return readProjectTeamConfig(projectCwd);
+  }
+
+  // Remote SSH host read
+  try {
+    const { getGateway } = await import("./singleton");
+    const driver = await getGateway().getOrConnectDriver(deviceId);
+    const normCwd = projectCwd.split("\\").join("/");
+    const configPath = `${normCwd}/.pi/team-mesh.json`;
+    const readScript = "node -e \"const fs=require('fs'); try { console.log(Buffer.from(fs.readFileSync(" + JSON.stringify(configPath) + ")).toString('base64')); } catch {}\" 2>/dev/null";
+    const res = await driver.exec(readScript, [], { timeoutMs: 15_000 });
+    if (res.exitCode === 0 && res.stdout.trim()) {
+      const raw = Buffer.from(res.stdout.trim(), "base64").toString("utf8");
+      const data = JSON.parse(raw);
+      return {
+        version: 1,
+        enabledProjects: Array.isArray(data.enabledProjects) ? data.enabledProjects : [],
+      };
+    }
+  } catch (err) {
+    console.error(`[team-mesh] Failed to read remote project config on ${deviceId}:`, err);
+  }
+  return { version: 1, enabledProjects: [] };
+}
+
+/**
+ * Saves project team config, supporting both local filesystem and remote SSH devices.
+ */
+export async function saveProjectTeamConfig(
+  deviceId: string,
+  projectCwd: string,
+  config: ProjectTeamConfig,
+): Promise<void> {
+  if (!projectCwd) return;
+  const { isLocalHostId } = await import("./host-identity");
+  if (isLocalHostId(deviceId)) {
+    writeProjectTeamConfig(projectCwd, config);
+    return;
+  }
+
+  // Remote SSH host write
+  try {
+    const { getGateway } = await import("./singleton");
+    const driver = await getGateway().getOrConnectDriver(deviceId);
+    const normCwd = projectCwd.split("\\").join("/");
+    const configPath = `${normCwd}/.pi/team-mesh.json`;
+    const b64 = Buffer.from(JSON.stringify(config, null, 2), "utf8").toString("base64");
+    const writeScript = "node -e \"const fs=require('fs'), path=require('path'); const p = " + JSON.stringify(configPath) + "; try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from('" + b64 + "', 'base64')); } catch (e) { console.error(e); process.exit(1); }\" 2>/dev/null";
+    await driver.exec(writeScript, [], { timeoutMs: 15_000 });
+  } catch (err) {
+    console.error(`[team-mesh] Failed to write remote project config on ${deviceId}:`, err);
+  }
+}
+
+/**
+ * Toggles a project's enabled status in the specified device's project team config.
+ */
+export async function toggleProjectEnabledAsync(
+  currentDeviceId: string,
+  currentProjectCwd: string,
+  targetDeviceId: string,
+  targetProjectPath: string,
+  enabled: boolean,
+): Promise<void> {
+  const cfg = await loadProjectTeamConfig(currentDeviceId, currentProjectCwd);
+  const targetKey = makeProjectKey(targetDeviceId, targetProjectPath);
+  const normTarget = targetKey.toLowerCase();
+  const filtered = cfg.enabledProjects.filter((k) => k.toLowerCase() !== normTarget);
+  if (enabled) {
+    filtered.push(targetKey);
+  }
+  cfg.enabledProjects = filtered;
+  await saveProjectTeamConfig(currentDeviceId, currentProjectCwd, cfg);
+}

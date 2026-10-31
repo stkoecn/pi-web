@@ -633,7 +633,7 @@ export function SettingsPanel({
           {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
           {/* The gateway's host list is a property of this Pi Web, not of the selected device. */}
           {sectionHost("devices", <DevicesConfig embedded onClose={onClose} onDevicesChanged={onDevicesChanged} />)}
-          {sectionHost("team", <TeamConfig embedded cwd={cwd} onClose={onClose} />)}
+          {sectionHost("team", <TeamConfig embedded cwd={cwd} deviceId={deviceId} onClose={onClose} />)}
           {sectionHost("models", <ModelsConfig embedded cwd={cwd} deviceId={deviceId} onClose={onClose} />)}
           {/* Visited sections stay mounted, so the ones whose answer depends on trust take the page's
               status and load again in place when trusting from Settings › MCP changes it. */}

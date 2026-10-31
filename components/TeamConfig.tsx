@@ -51,7 +51,7 @@ interface RosterDevice {
   projects: RosterProject[];
 }
 
-export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: boolean; cwd?: string | null; onClose?: () => void }) {
+export function TeamConfig({ embedded = false, cwd, deviceId, onClose }: { embedded?: boolean; cwd?: string | null; deviceId?: string; onClose?: () => void }) {
   const { t } = useI18n();
   const [roster, setRoster] = useState<RosterDevice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,6 +87,7 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
     try {
       setError(null);
       const url = new URL("/api/mesh/roster", window.location.origin);
+      if (deviceId) url.searchParams.set("deviceId", deviceId);
       if (cwd) url.searchParams.set("currentCwd", cwd);
 
       const res = await fetch(url.toString());
@@ -140,8 +141,10 @@ export function TeamConfig({ embedded = false, cwd, onClose }: { embedded?: bool
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "toggle_project_enabled",
+          deviceId: deviceId || targetDevId,
+          currentDeviceId: deviceId,
           currentCwd: cwd,
-          deviceId: targetDevId,
+          targetDeviceId: targetDevId,
           projectPath,
           enabled: !currentEnabled,
         }),

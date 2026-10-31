@@ -11,7 +11,8 @@ import {
   setProjectDescription,
   setSessionDescription,
   readProjectTeamConfig,
-  toggleProjectEnabledForContacts,
+  loadProjectTeamConfig,
+  toggleProjectEnabledAsync,
   isProjectEnabledForContacts,
 } from "@/lib/gateway/team-mesh-config";
 
@@ -24,13 +25,14 @@ export async function GET(req: Request) {
 
     const gateway = getGateway();
     const globalDesc = readGlobalMeshDescriptions();
+    const canonicalLocal = getCanonicalHostId();
 
     // Read per-project team config if currentCwd is provided
-    const projectTeamCfg = currentCwd ? readProjectTeamConfig(currentCwd) : { version: 1 as const, enabledProjects: [] };
+    const queryDev = targetDevice ? (isLocalHostId(targetDevice) ? canonicalLocal : targetDevice) : canonicalLocal;
+    const projectTeamCfg = currentCwd ? await loadProjectTeamConfig(queryDev, currentCwd) : { version: 1 as const, enabledProjects: [] };
     const enabledSet = new Set(projectTeamCfg.enabledProjects.map((k) => k.toLowerCase()));
 
     // Collect devices - ensure unique deviceIds, mapped to canonical host ID for local
-    const canonicalLocal = getCanonicalHostId();
     const deviceEntries = gateway.listDevices();
     const allDeviceIds = Array.from(new Set([canonicalLocal, ...deviceEntries.map((d) => isLocalHostId(d.id) ? canonicalLocal : d.id)]));
 
@@ -199,11 +201,14 @@ export async function POST(req: Request) {
     }
 
     if (body.action === "toggle_project_enabled") {
-      if (!body.currentCwd || !body.deviceId || !body.projectPath || body.enabled === undefined) {
+      const currentDevRaw = (body as any).currentDeviceId || body.deviceId;
+      const targetDevRaw = (body as any).targetDeviceId || body.deviceId;
+      if (!body.currentCwd || !currentDevRaw || !body.projectPath || body.enabled === undefined) {
         return NextResponse.json({ error: "Missing required fields for toggle_project_enabled" }, { status: 400 });
       }
-      const targetDev = isLocalHostId(body.deviceId) ? getCanonicalHostId() : body.deviceId;
-      toggleProjectEnabledForContacts(body.currentCwd, targetDev, body.projectPath, body.enabled);
+      const currentDev = isLocalHostId(currentDevRaw) ? getCanonicalHostId() : currentDevRaw;
+      const targetDev = isLocalHostId(targetDevRaw) ? getCanonicalHostId() : targetDevRaw;
+      await toggleProjectEnabledAsync(currentDev, body.currentCwd, targetDev, body.projectPath, body.enabled);
       return NextResponse.json({ success: true });
     }
 
