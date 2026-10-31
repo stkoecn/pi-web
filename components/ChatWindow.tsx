@@ -8,7 +8,7 @@ import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { splitNoticeText } from "@/lib/notice-text";
 import { EXTENSION_DIALOG_BASE_WIDTH, fitExtensionDialogWidth } from "@/lib/extension-dialog-fit";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, hasAssistantAnswer, isHiddenCustomMessage, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, hasAssistantAnswer, isHiddenCustomMessage, isMessageGroupAnchor, isMeshOutboundMessage, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { getFinalAnswerViews, keepWrittenFiles, type FinalAnswerViews } from "@/lib/turn-views";
 import { formatTurnDuration, getTurnDurationMs } from "@/lib/turn-duration";
@@ -1247,38 +1247,79 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                 const finalViews = getFinalAnswerViews(finalAnswerViewCache, messages[finalAssistantIdx] as AssistantMessage);
                 const finalAnswerMessage = finalViews.answer;
 
-                const processViews: ReactNode[] = [];
-                // processViews also holds the notice lines of steps that show nothing else.
-                let processMessageCount = 0;
-                let processToolCount = 0;
-                let processRefIdx: number | undefined;
-                let revealProcess = false;
+                let segmentIndex = 0;
+                let currentProcessViews: ReactNode[] = [];
+                let currentProcessMessageCount = 0;
+                let currentProcessToolCount = 0;
+                let currentProcessRefIdx: number | undefined;
+                let currentRevealProcess = false;
+
+                const flushCurrentProcess = (isFinalSegment: boolean) => {
+                  if (currentProcessViews.length === 0) return;
+                  if (currentProcessMessageCount === 0) {
+                    rendered.push(...currentProcessViews);
+                  } else {
+                    const answered = isFinalSegment ? collapsesProcessDetails(finalAnswerMessage) : true;
+                    const processCacheMisses = summarizeCacheMisses(messages.slice(userIdx + 1, finalAssistantIdx + 1));
+                    rendered.push(
+                      <div
+                        key={`process-group-${messageKeys[groupStartIdx]}-${segmentIndex++}`}
+                        ref={currentProcessRefIdx === undefined ? undefined : (el) => { messageRefs.current[currentProcessRefIdx!] = el; }}
+                      >
+                        <ProcessDetailsGroup
+                          key={answered ? "answered" : "unanswered"}
+                          messageCount={currentProcessMessageCount}
+                          toolCallCount={currentProcessToolCount}
+                          durationMs={isFinalSegment ? turnDurationMs : undefined}
+                          cacheMisses={processCacheMisses}
+                          defaultExpanded={!answered}
+                          reveal={currentRevealProcess}
+                          t={t}
+                        >
+                          {currentProcessViews}
+                        </ProcessDetailsGroup>
+                      </div>,
+                    );
+                  }
+                  currentProcessViews = [];
+                  currentProcessMessageCount = 0;
+                  currentProcessToolCount = 0;
+                  currentProcessRefIdx = undefined;
+                  currentRevealProcess = false;
+                };
 
                 for (let processIdx = userIdx + 1; processIdx <= finalAssistantIdx; processIdx++) {
                   const processMessage = messages[processIdx];
                   if (processMessage.role === "custom") {
-                    // Not counted either: a turn whose only extra is a hidden message has no process details.
                     if (isHiddenCustomMessage(processMessage)) continue;
-                    revealProcess ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[processIdx]);
-                    processMessageCount += 1;
-                    processViews.push(renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }));
+                    currentRevealProcess ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[processIdx]);
+                    currentProcessMessageCount += 1;
+                    currentProcessViews.push(renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }));
                     continue;
                   }
                   if (processMessage.role !== "assistant") continue;
+
+                  // Outbound mesh communications are checkpoints: flush prior internal details into a collapsed block,
+                  // and expose the outbound message bubble directly in the timeline!
+                  if (isMeshOutboundMessage(processMessage) && processIdx !== finalAssistantIdx) {
+                    flushCurrentProcess(false);
+                    rendered.push(renderMessage(processIdx));
+                    continue;
+                  }
+
                   const message = processIdx === finalAssistantIdx ? finalViews.process : processMessage;
-                  // The final message's notices go under its answer when it has one.
                   const withNotices = processIdx !== finalAssistantIdx || !finalAnswerMessage;
                   const blocks = getDisplayableAssistantBlocks(message);
                   if (blocks.length === 0) {
                     const notices = withNotices ? getTranscriptNotices(processMessage) : [];
-                    if (notices.length > 0) processViews.push(<TranscriptNoticeLines key={`process-notices-${messageKeys[processIdx]}`} notices={notices} />);
+                    if (notices.length > 0) currentProcessViews.push(<TranscriptNoticeLines key={`process-notices-${messageKeys[processIdx]}`} notices={notices} />);
                     continue;
                   }
-                  processRefIdx ??= visibleRefIndexByMessage.get(processIdx);
-                  processToolCount += countToolCallBlocks(blocks);
-                  processMessageCount += 1;
-                  revealProcess ||= Boolean(pendingSearchScroll && entryIds[processIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
-                  processViews.push(renderMessage(processIdx, {
+                  currentProcessRefIdx ??= visibleRefIndexByMessage.get(processIdx);
+                  currentProcessToolCount += countToolCallBlocks(blocks);
+                  currentProcessMessageCount += 1;
+                  currentRevealProcess ||= Boolean(pendingSearchScroll && entryIds[processIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
+                  currentProcessViews.push(renderMessage(processIdx, {
                     attachRef: false,
                     keyPrefix: "process",
                     messageOverride: message,
@@ -1287,27 +1328,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                   }));
                 }
 
-                // Only notice lines, from steps that show nothing else: no fold for them.
-                if (processMessageCount === 0) rendered.push(...processViews);
-                else if (processViews.length > 0) {
-                  const answered = collapsesProcessDetails(finalAnswerMessage);
-                  const processCacheMisses = summarizeCacheMisses(messages.slice(userIdx + 1, finalAnswerMessage ? finalAssistantIdx : finalAssistantIdx + 1));
-                  rendered.push(
-                    <div
-                      key={`process-group-${messageKeys[groupStartIdx]}`}
-                      ref={processRefIdx === undefined ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}
-                    >
-                      {/* Re-key on answer availability: useState reads defaultExpanded only
-                          on mount, so a turn first rendered without an answer (expanded)
-                          would otherwise stay open once its answer shows up, e.g. when
-                          switching between an answered and an unanswered leaf of the same
-                          turn. Manual toggles survive every other re-render. */}
-                      <ProcessDetailsGroup key={answered ? "answered" : "unanswered"} messageCount={processMessageCount} toolCallCount={processToolCount} durationMs={turnDurationMs} cacheMisses={processCacheMisses} defaultExpanded={!answered} reveal={revealProcess} t={t}>
-                        {processViews}
-                      </ProcessDetailsGroup>
-                    </div>,
-                  );
-                }
+                flushCurrentProcess(true);
 
                 if (finalAnswerMessage) {
                   // Each tool call is stored as its own assistant entry, so the
@@ -1326,7 +1347,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                     messageOverride: finalAnswerMessage,
                     writtenFiles,
                     // Without process details the turn's time goes under the answer.
-                    turnDurationMs: processViews.length === 0 ? turnDurationMs : undefined,
+                    turnDurationMs: (segmentIndex === 0 && currentProcessViews.length === 0) ? turnDurationMs : undefined,
                     recoverTruncation: endIdx === messages.length && !isStreaming && !hasAssistantAnswer(finalAnswerMessage),
                   }));
                 }

@@ -120,7 +120,9 @@ export function hasAssistantAnswer(message: AssistantMessage): boolean {
 }
 
 function isFinalAnswerBlock(block: AssistantContentBlock): boolean {
-  return block.type === "text" || block.type === "image";
+  if (block.type === "text" || block.type === "image") return true;
+  if (block.type === "toolCall" && block.toolName === "send_session_message") return true;
+  return false;
 }
 
 export function splitFinalAssistantBlocks(
@@ -150,6 +152,16 @@ export function countToolCallBlocks(blocks: AssistantContentBlock[]): number {
  */
 export function collapsesProcessDetails(answer: AssistantMessage | null): boolean {
   return (answer?.content ?? []).some((block) => (
-    block.type === "image" || (block.type === "text" && block.text.trim().length > 0)
+    block.type === "image" ||
+    (block.type === "text" && block.text.trim().length > 0) ||
+    (block.type === "toolCall" && block.toolName === "send_session_message")
   ));
+}
+
+/** Whether this message is an assistant message containing a send_session_message tool call */
+export function isMeshOutboundMessage(message: AgentMessage | undefined | null): boolean {
+  if (!message || message.role !== "assistant") return false;
+  return (message.content ?? []).some(
+    (b) => b.type === "toolCall" && b.toolName === "send_session_message"
+  );
 }
