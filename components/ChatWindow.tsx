@@ -1244,117 +1244,115 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                 // the run brings the session file's entry (the only kind with an entry id).
                 const turnDurationMs = hasAnchor && entryIds[userIdx] ? getTurnDurationMs(messages, userIdx, endIdx) : undefined;
 
-                const finalViews = getFinalAnswerViews(finalAnswerViewCache, messages[finalAssistantIdx] as AssistantMessage);
-                const finalAnswerMessage = finalViews.answer;
+                let segStart = userIdx + 1;
+                let segCount = 0;
 
-                let segmentIndex = 0;
-                let currentProcessViews: ReactNode[] = [];
-                let currentProcessMessageCount = 0;
-                let currentProcessToolCount = 0;
-                let currentProcessRefIdx: number | undefined;
-                let currentRevealProcess = false;
+                const renderProcessBlock = (fromIdx: number, toIdx: number) => {
+                  if (fromIdx >= toIdx) return;
+                  const segViews: ReactNode[] = [];
+                  let segMsgCount = 0;
+                  let segToolCount = 0;
+                  let segRefIdx: number | undefined;
+                  let segReveal = false;
 
-                const flushCurrentProcess = (isFinalSegment: boolean) => {
-                  if (currentProcessViews.length === 0) return;
-                  if (currentProcessMessageCount === 0) {
-                    rendered.push(...currentProcessViews);
-                  } else {
-                    const answered = isFinalSegment ? collapsesProcessDetails(finalAnswerMessage) : true;
-                    const processCacheMisses = summarizeCacheMisses(messages.slice(userIdx + 1, finalAssistantIdx + 1));
+                  for (let pIdx = fromIdx; pIdx < toIdx; pIdx++) {
+                    const pMsg = messages[pIdx];
+                    if (pMsg.role === "custom") {
+                      if (isHiddenCustomMessage(pMsg)) continue;
+                      segReveal ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[pIdx]);
+                      segMsgCount += 1;
+                      segViews.push(renderMessage(pIdx, { attachRef: false, keyPrefix: "process" }));
+                      continue;
+                    }
+                    if (pMsg.role !== "assistant") continue;
+                    const blocks = getDisplayableAssistantBlocks(pMsg);
+                    if (blocks.length === 0) {
+                      const notices = getTranscriptNotices(pMsg);
+                      if (notices.length > 0) segViews.push(<TranscriptNoticeLines key={`process-notices-${messageKeys[pIdx]}`} notices={notices} />);
+                      continue;
+                    }
+                    segRefIdx ??= visibleRefIndexByMessage.get(pIdx);
+                    segToolCount += countToolCallBlocks(blocks);
+                    segMsgCount += 1;
+                    segReveal ||= Boolean(pendingSearchScroll && entryIds[pIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
+                    segViews.push(renderMessage(pIdx, {
+                      attachRef: false,
+                      keyPrefix: "process",
+                      messageOverride: pMsg,
+                      showTimestamp: false,
+                      withNotices: true,
+                    }));
+                  }
+
+                  if (segMsgCount === 0) {
+                    rendered.push(...segViews);
+                  } else if (segViews.length > 0) {
+                    const segMisses = summarizeCacheMisses(messages.slice(fromIdx, toIdx));
                     rendered.push(
                       <div
-                        key={`process-group-${messageKeys[groupStartIdx]}-${segmentIndex++}`}
-                        ref={currentProcessRefIdx === undefined ? undefined : (el) => { messageRefs.current[currentProcessRefIdx!] = el; }}
+                        key={`process-group-${messageKeys[groupStartIdx]}-${segCount++}`}
+                        ref={segRefIdx === undefined ? undefined : (el) => { messageRefs.current[segRefIdx!] = el; }}
                       >
                         <ProcessDetailsGroup
-                          key={answered ? "answered" : "unanswered"}
-                          messageCount={currentProcessMessageCount}
-                          toolCallCount={currentProcessToolCount}
-                          durationMs={isFinalSegment ? turnDurationMs : undefined}
-                          cacheMisses={processCacheMisses}
-                          defaultExpanded={!answered}
-                          reveal={currentRevealProcess}
+                          key="answered"
+                          messageCount={segMsgCount}
+                          toolCallCount={segToolCount}
+                          durationMs={undefined}
+                          cacheMisses={segMisses}
+                          defaultExpanded={false}
+                          reveal={segReveal}
                           t={t}
                         >
-                          {currentProcessViews}
+                          {segViews}
                         </ProcessDetailsGroup>
                       </div>,
                     );
                   }
-                  currentProcessViews = [];
-                  currentProcessMessageCount = 0;
-                  currentProcessToolCount = 0;
-                  currentProcessRefIdx = undefined;
-                  currentRevealProcess = false;
                 };
 
-                for (let processIdx = userIdx + 1; processIdx <= finalAssistantIdx; processIdx++) {
-                  const processMessage = messages[processIdx];
-                  if (processMessage.role === "custom") {
-                    if (isHiddenCustomMessage(processMessage)) continue;
-                    currentRevealProcess ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[processIdx]);
-                    currentProcessMessageCount += 1;
-                    currentProcessViews.push(renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }));
-                    continue;
+                // Split at every outbound mesh communication checkpoint:
+                // 1. Fold intermediate process messages prior to the checkpoint
+                // 2. Expose the outbound message prominently
+                // 3. Move the start of the next segment past this checkpoint
+                for (let i = userIdx + 1; i < endIdx; i++) {
+                  if (isMeshOutboundMessage(messages[i])) {
+                    renderProcessBlock(segStart, i);
+                    rendered.push(renderMessage(i));
+                    segStart = i + 1;
                   }
-                  if (processMessage.role !== "assistant") continue;
-
-                  // Outbound mesh communications are checkpoints: flush prior internal details into a collapsed block,
-                  // and expose the outbound message bubble directly in the timeline!
-                  if (isMeshOutboundMessage(processMessage) && processIdx !== finalAssistantIdx) {
-                    flushCurrentProcess(false);
-                    rendered.push(renderMessage(processIdx));
-                    continue;
-                  }
-
-                  const message = processIdx === finalAssistantIdx ? finalViews.process : processMessage;
-                  const withNotices = processIdx !== finalAssistantIdx || !finalAnswerMessage;
-                  const blocks = getDisplayableAssistantBlocks(message);
-                  if (blocks.length === 0) {
-                    const notices = withNotices ? getTranscriptNotices(processMessage) : [];
-                    if (notices.length > 0) currentProcessViews.push(<TranscriptNoticeLines key={`process-notices-${messageKeys[processIdx]}`} notices={notices} />);
-                    continue;
-                  }
-                  currentProcessRefIdx ??= visibleRefIndexByMessage.get(processIdx);
-                  currentProcessToolCount += countToolCallBlocks(blocks);
-                  currentProcessMessageCount += 1;
-                  currentRevealProcess ||= Boolean(pendingSearchScroll && entryIds[processIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
-                  currentProcessViews.push(renderMessage(processIdx, {
-                    attachRef: false,
-                    keyPrefix: "process",
-                    messageOverride: message,
-                    showTimestamp: false,
-                    withNotices,
-                  }));
                 }
 
-                flushCurrentProcess(true);
+                // Render the trailing segment and the final assistant answer if present
+                const trailingAssistantIdx = findFinalAssistantIndex(messages, segStart - 1, endIdx);
+                if (trailingAssistantIdx !== -1) {
+                  const finalViews = getFinalAnswerViews(finalAnswerViewCache, messages[trailingAssistantIdx] as AssistantMessage);
+                  const finalAnswerMessage = finalViews.answer;
 
-                if (finalAnswerMessage) {
-                  // Each tool call is stored as its own assistant entry, so the
-                  // final answer alone carries no record of what the turn wrote.
-                  // Gather the turn's assistant blocks and derive the file list
-                  // from the write/edit calls among them.
-                  const turnContent: AssistantContentBlock[] = [];
-                  for (let i = userIdx + 1; i <= finalAssistantIdx; i++) {
-                    const m = messages[i];
-                    if (m?.role === "assistant") {
-                      for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
+                  // Fold process details between the last checkpoint and final answer
+                  renderProcessBlock(segStart, trailingAssistantIdx);
+
+                  if (finalAnswerMessage) {
+                    const turnContent: AssistantContentBlock[] = [];
+                    for (let i = userIdx + 1; i <= trailingAssistantIdx; i++) {
+                      const m = messages[i];
+                      if (m?.role === "assistant") {
+                        for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
+                      }
                     }
+                    const writtenFiles = keepWrittenFiles(finalViews, extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd));
+                    rendered.push(renderMessage(trailingAssistantIdx, {
+                      messageOverride: finalAnswerMessage,
+                      writtenFiles,
+                      turnDurationMs,
+                      recoverTruncation: endIdx === messages.length && !isStreaming && !hasAssistantAnswer(finalAnswerMessage),
+                    }));
                   }
-                  const writtenFiles = keepWrittenFiles(finalViews, extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd));
-                  rendered.push(renderMessage(finalAssistantIdx, {
-                    messageOverride: finalAnswerMessage,
-                    writtenFiles,
-                    // Without process details the turn's time goes under the answer.
-                    turnDurationMs: (segmentIndex === 0 && currentProcessViews.length === 0) ? turnDurationMs : undefined,
-                    recoverTruncation: endIdx === messages.length && !isStreaming && !hasAssistantAnswer(finalAnswerMessage),
-                  }));
-                }
-                for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-                  rendered.push(renderMessage(renderIdx));
-                }
-                idx = endIdx;
+                  for (let renderIdx = trailingAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
+                    rendered.push(renderMessage(renderIdx));
+                  }
+                } else {
+                  renderProcessBlock(segStart, endIdx);
+                }idx = endIdx;
               }
               const { startIndex } = getVisibleRenderWindow(rendered.length, visibleCount);
               const hasMore = startIndex > 0 || hasEarlierMessages;

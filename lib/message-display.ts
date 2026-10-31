@@ -120,9 +120,7 @@ export function hasAssistantAnswer(message: AssistantMessage): boolean {
 }
 
 function isFinalAnswerBlock(block: AssistantContentBlock): boolean {
-  if (block.type === "text" || block.type === "image") return true;
-  if (block.type === "toolCall" && block.toolName === "send_session_message") return true;
-  return false;
+  return block.type === "text" || block.type === "image";
 }
 
 export function splitFinalAssistantBlocks(
@@ -152,9 +150,7 @@ export function countToolCallBlocks(blocks: AssistantContentBlock[]): number {
  */
 export function collapsesProcessDetails(answer: AssistantMessage | null): boolean {
   return (answer?.content ?? []).some((block) => (
-    block.type === "image" ||
-    (block.type === "text" && block.text.trim().length > 0) ||
-    (block.type === "toolCall" && block.toolName === "send_session_message")
+    block.type === "image" || (block.type === "text" && block.text.trim().length > 0)
   ));
 }
 
