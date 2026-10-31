@@ -37,8 +37,10 @@ function refusal(status: number, reason: SessionUiStateRefusalReason, error: str
 // If a remote device is targeted, attempts to fetch and parse the remote device's
 // `~/.pi/agent/pi-web-session-state.json`.
 export async function GET(req: Request) {
+  const { isLocalHostId } = await import("@/lib/gateway/host-identity");
   const deviceId = getRequestDeviceId(req);
-  if (isRemoteDevice(deviceId)) {
+  const isTargetRemote = Boolean(deviceId) && !isLocalHostId(deviceId);
+  if (isTargetRemote) {
     try {
       const { readRemoteSessionUiState } = await import("@/lib/remote-session-store");
       const remote = await readRemoteSessionUiState(deviceId);
@@ -65,8 +67,10 @@ export async function POST(req: Request) {
   if (!hasJsonContentType(req)) {
     return refusal(415, "content-type", "Content-Type must be application/json");
   }
+  const { isLocalHostId } = await import("@/lib/gateway/host-identity");
   const deviceId = getRequestDeviceId(req);
-  if (isRemoteDevice(deviceId)) {
+  const isTargetRemote = Boolean(deviceId) && !isLocalHostId(deviceId);
+  if (isTargetRemote) {
     let body: unknown;
     try {
       body = await req.json();

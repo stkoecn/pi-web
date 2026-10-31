@@ -114,6 +114,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   let earlyWaitPromise: Promise<string> | undefined;
   let earlyTriggerResolve: ((msg: string) => void) | undefined;
   let earlyWaitKey: string | undefined;
+  let earlyTargetCleanup: (() => void) | undefined;
   let earlyTimer: NodeJS.Timeout | undefined;
   let isEarlySettled = false;
 
@@ -254,6 +255,18 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
         cwd: resolvedCwd,
       });
       const newSessionId = created.sessionId || created.session.sessionId || "unknown";
+      if (earlyTriggerResolve) {
+        const handler = (event: any) => {
+          if (event.type === "message_end" && event.message?.role === "assistant") {
+            const replyText = extractTextFromAssistantMessage(event.message);
+            if (replyText) earlyTriggerResolve?.(replyText);
+          } else if (event.type === "agent_end") {
+            earlyTriggerResolve?.("Recipient session completed turn.");
+          }
+        };
+        created.session.listeners.add(handler);
+        earlyTargetCleanup = () => created.session.listeners.delete(handler);
+      }
       created.session.channel.send({
         type: "prompt",
         message: fullMessage,
@@ -262,6 +275,17 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     } else {
       const tempKey = `__new__mesh_${randomUUID()}`;
       const { session, realSessionId } = await startRpcSession(tempKey, "", resolvedCwd);
+      if (earlyTriggerResolve) {
+        const off = session.onEvent((event: any) => {
+          if (event.type === "message_end" && event.message?.role === "assistant") {
+            const replyText = extractTextFromAssistantMessage(event.message);
+            if (replyText) earlyTriggerResolve?.(replyText);
+          } else if (event.type === "agent_end") {
+            earlyTriggerResolve?.("Recipient session completed turn.");
+          }
+        });
+        earlyTargetCleanup = () => off();
+      }
       await session.send({
         type: "prompt",
         message: fullMessage,
@@ -289,6 +313,19 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     }
     if (!remote) {
       throw new Error(`Target remote session "${resolvedSessionId}" could not be opened on device "${deviceTarget}"`);
+    }
+
+    if (earlyTriggerResolve) {
+      const handler = (event: any) => {
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          const replyText = extractTextFromAssistantMessage(event.message);
+          if (replyText) earlyTriggerResolve?.(replyText);
+        } else if (event.type === "agent_end") {
+          earlyTriggerResolve?.("Recipient session completed turn.");
+        }
+      };
+      remote.listeners.add(handler);
+      earlyTargetCleanup = () => remote.listeners.delete(handler);
     }
 
     if (mode === "realtime" || mode === "steer") {
@@ -324,6 +361,18 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       }
       const started = await startRpcSession(resolvedSessionId, filePath, undefined);
       existing = started.session;
+    }
+
+    if (earlyTriggerResolve) {
+      const off = existing.onEvent((event: any) => {
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          const replyText = extractTextFromAssistantMessage(event.message);
+          if (replyText) earlyTriggerResolve?.(replyText);
+        } else if (event.type === "agent_end") {
+          earlyTriggerResolve?.("Recipient session completed turn.");
+        }
+      });
+      earlyTargetCleanup = () => off();
     }
 
     if (mode === "realtime" || mode === "steer") {
@@ -401,7 +450,9 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       }
     }
 
+    if (earlyWaitKey && pendingReplies.has(earlyWaitKey)) { const entry = pendingReplies.get(earlyWaitKey); if (entry) entry.cleanup = earlyTargetCleanup; }
     const replyText = await earlyWaitPromise;
+    earlyTargetCleanup?.();
     return {
       success: true,
       targetDeviceId: deviceTarget,

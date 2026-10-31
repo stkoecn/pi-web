@@ -563,7 +563,7 @@ export async function updateRemoteSessionUiState(
 	const { state: updated } = applySessionUiStateRequest(current, request, Date.now());
 	const json = JSON.stringify(updated, null, 2);
 	const b64 = Buffer.from(json, "utf8").toString("base64");
-	const writeScript = "node -e \"const fs = require('fs'); const path = require('path'); const os = require('os'); const dir = path.join(os.homedir(), '.pi', 'agent'); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'pi-web-session-state.json'), Buffer.from('" + b64 + "', 'base64'));\" 2>/dev/null || (mkdir -p \"$HOME/.pi/agent\" && echo \"" + b64 + "\" | base64 -d > \"$HOME/.pi/agent/pi-web-session-state.json\")";
+	const writeScript = `node -e \"const fs=require(\\\"fs\\\"), path=require(\\\"path\\\"), os=require(\\\"os\\\"); const dir=path.join(os.homedir(), \\\".pi\\\", \\\"agent\\\"); try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, \\\"pi-web-session-state.json\\\"), Buffer.from(\\\"${b64}\\\", \\\"base64\\\")); console.log(\\\"UI_STATE_WRITTEN\\\"); } catch (e) { process.exit(1); }\"`;
 	await runScript(driver, writeScript).catch(() => {});
 	return updated;
 }
@@ -574,18 +574,18 @@ export async function readRemoteSessionUiState(deviceId: string): Promise<{
 }> {
 	try {
 		const driver = await getDriver(deviceId);
-		const content = await runScript(
-			driver,
-			`cat "$HOME/.pi/agent/pi-web-session-state.json" 2>/dev/null || cat "$USERPROFILE/.pi/agent/pi-web-session-state.json" 2>/dev/null || true`
-		);
-		if (!content || !content.trim()) return { projectNames: {}, sessions: {} };
-		const parsed = JSON.parse(content);
-		return {
-			projectNames: (parsed && typeof parsed.projectNames === "object" && parsed.projectNames) ? parsed.projectNames : {},
-			sessions: (parsed && typeof parsed.sessions === "object" && parsed.sessions) ? parsed.sessions : {},
-		};
+		const readScript = `node -e \"const fs=require(\\\"fs\\\"), path=require(\\\"path\\\"), os=require(\\\"os\\\"); const p=path.join(os.homedir(), \\\".pi\\\", \\\"agent\\\", \\\"pi-web-session-state.json\\\"); try { console.log(Buffer.from(fs.readFileSync(p)).toString(\\\"base64\\\")); } catch {}\"`;
+		const res = await driver.exec(readScript, [], { timeoutMs: 15_000 });
+		if (res.exitCode === 0 && res.stdout.trim()) {
+			const json = Buffer.from(res.stdout.trim(), "base64").toString("utf8");
+			const parsed = JSON.parse(json);
+			return {
+				projectNames: (parsed && typeof parsed.projectNames === "object" && parsed.projectNames) ? parsed.projectNames : {},
+				sessions: (parsed && typeof parsed.sessions === "object" && parsed.sessions) ? parsed.sessions : {},
+			};
+		}
 	} catch {
-		// Ignore if file doesn't exist or remote unreachable
+		// Ignore if file does not exist or remote unreachable
 	}
 	return { projectNames: {}, sessions: {} };
 }
