@@ -24,13 +24,13 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
       pi.registerTool(defineTool({
         name: "send_session_message",
         label: "Send Session Message",
-        description: "Send a message to another session or start a new session on this host or any connected remote host. 如需对方立即响应或进行实时对话，请使用 steer 并备注尽快回复；日常排队交付或后台同步任务使用 followup。Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
+        description: "Send a message to another session or start a new session on this host or any connected remote host. 如需对方立即响应或进行实时对话，请使用 steer 并备注尽快回复；为避免消息堆积，请尽量等对方回复后再进行发送，如无需回复，请在消息中明确说明；日常排队交付或后台同步任务使用 followup。Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
         parameters: Type.Object({
           target: Type.String({
             description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
           }),
           message: Type.String({
-            description: "The instructions, context, or question to send to the target session.",
+            description: "The instructions, context, or question to send to the target session. 为避免消息堆积，请尽量等对方回复后再进行发送；如无需回复，请在消息中明确说明。如需对方立即响应请备注尽快回复。"
           }),
           mode: Type.Optional(Type.Union([
             Type.Literal("followup"),
