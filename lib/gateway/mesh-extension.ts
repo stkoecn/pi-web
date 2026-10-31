@@ -24,7 +24,7 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
       pi.registerTool(defineTool({
         name: "send_session_message",
         label: "Send Session Message",
-        description: "Send a message to another session or start a new session on this host or any connected remote host. Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
+        description: "Send a message to another session or start a new session on this host or any connected remote host. 如需对方立即响应或进行实时对话，请使用 steer 并备注尽快回复；日常排队交付或后台同步任务使用 followup。Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
         parameters: Type.Object({
           target: Type.String({
             description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
@@ -37,7 +37,7 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
             Type.Literal("steer"),
             Type.Literal("silent"),
           ], {
-            description: "Delivery mode: 'followup' (default, queues after current turn), 'steer' (interrupts agent immediately), or 'silent' (notification only).",
+            description: "Delivery mode: 'steer' (实时对话/需对方立即响应时尽量使用，立即打断并介入处理), 'followup' (默认，排队追加在当前轮次后), or 'silent' (仅通知不打断). 如需对方立即响应请使用 steer 并备注尽快回复。",
           })),
         }),
         async execute(_toolCallId, params) {
