@@ -1062,7 +1062,7 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} onOpenSubagent={onOpenSubagent} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} onOpenSubagent={onOpenSubagent} sessionId={sessionId} />;
   }
   return null;
 }
@@ -1239,12 +1239,28 @@ function MeshOutboundBubble({
   block,
   result,
   duration,
+  sessionId,
 }: {
   block: ToolCallContent;
   result?: ToolResultMessage;
   duration?: number;
+  sessionId?: string;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancelWait = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      await fetch("/api/mesh/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+    } catch (_) {}
+  };
   const input = (typeof block.input === "object" && block.input !== null) ? (block.input as Record<string, unknown>) : {};
   const target = typeof input.target === "string" ? input.target : "";
   const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
@@ -1369,7 +1385,36 @@ function MeshOutboundBubble({
                 {isError ? "✕ 发送失败" : "✓ 已送达"}
               </span>
             ) : (
-              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>发送中...</span>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                  {mode === "realtime" ? "等待回复中..." : "发送中..."}
+                </span>
+                {mode === "realtime" && (
+                  <button
+                    type="button"
+                    onClick={handleCancelWait}
+                    disabled={cancelling}
+                    style={{
+                      fontSize: 10,
+                      padding: "2px 7px",
+                      borderRadius: 4,
+                      background: "rgba(239, 68, 68, 0.12)",
+                      border: "1px solid rgba(239, 68, 68, 0.3)",
+                      color: "#ef4444",
+                      cursor: "pointer",
+                      fontFamily: "var(--font-mono)",
+                      fontWeight: 500,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 3,
+                    }}
+                    title="主动停止当前的实时等待"
+                  >
+                    <span>✕</span>
+                    <span>{cancelling ? "正在停止..." : "停止等待"}</span>
+                  </button>
+                )}
+              </div>
             )}
             {resultText && (
               <button
@@ -1425,9 +1470,9 @@ function MeshOutboundBubble({
   );
 }
 
-function ToolCallBlock({ block, result, duration, onOpenSubagent }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSubagent?: (sessionId: string, label: string) => void }) {
+function ToolCallBlock({ block, result, duration, onOpenSubagent, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSubagent?: (sessionId: string, label: string) => void; sessionId?: string }) {
   if (block.toolName === "send_session_message") {
-    return <MeshOutboundBubble block={block} result={result} duration={duration} />;
+    return <MeshOutboundBubble block={block} result={result} duration={duration} sessionId={sessionId} />;
   }
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(() => isToolCallExpanded(block.toolCallId));
