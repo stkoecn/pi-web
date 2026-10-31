@@ -40,6 +40,10 @@ export interface SendMeshMessageResult {
 
 /** Registry for tracking pending realtime replies awaiting responses across sessions. */
 interface PendingReplyEntry {
+  senderDeviceId: string;
+  senderSessionId: string;
+  targetDeviceId: string;
+  targetSessionId: string;
   resolve: (reply: string) => void;
   timer: NodeJS.Timeout;
   cleanup?: () => void;
@@ -139,13 +143,32 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     }
   }
 
-  // Intercept reply: if target session is currently waiting for a reply in realtime mode, resolve its pending promise
-  if (resolvedSessionId) {
-    const pendingKey = makePendingReplyKey(deviceTarget, resolvedSessionId);
-    const waiting = pendingReplies.get(pendingKey);
-    if (waiting) {
-      pendingReplies.delete(pendingKey);
-      waiting.resolve(message);
+  // Intercept reply: match by destination session key, OR if the current sender was targeted by an active realtime wait!
+  const callerDev = options.senderContext?.deviceId ? (isLocalHostId(options.senderContext.deviceId) ? canonicalLocal : options.senderContext.deviceId) : undefined;
+  const callerSess = options.senderContext?.sessionId;
+
+  for (const [key, entry] of pendingReplies.entries()) {
+    let matched = false;
+    // 1. Exact match on target session + device
+    if (resolvedSessionId && key === makePendingReplyKey(deviceTarget, resolvedSessionId)) {
+      matched = true;
+    }
+    // 2. Caller match: this message is originating from the target session of an active wait
+    else if (
+      callerSess &&
+      callerDev &&
+      entry.targetDeviceId.toLowerCase() === callerDev.toLowerCase() &&
+      (entry.targetSessionId === callerSess || entry.targetSessionId.startsWith(callerSess) || callerSess.startsWith(entry.targetSessionId)) &&
+      entry.senderDeviceId.toLowerCase() === deviceTarget.toLowerCase()
+    ) {
+      matched = true;
+    }
+
+    if (matched) {
+      pendingReplies.delete(key);
+      entry.cleanup?.();
+      entry.resolve(message);
+      break;
     }
   }
 
@@ -297,6 +320,10 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       timer.unref?.();
 
       pendingReplies.set(myWaitKey, {
+        senderDeviceId,
+        senderSessionId,
+        targetDeviceId: deviceTarget,
+        targetSessionId: resolvedSessionId || "",
         resolve: (text) => triggerResolve(text),
         timer,
         cleanup: () => cleanupListener?.(),
