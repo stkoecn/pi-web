@@ -431,9 +431,12 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   // Match mesh message header.
   // Supports single-line and multi-line formats:
   // [From target][reply instructions...]:\n\nmessage
-  const meshMatch = content.match(/^\[(?:From\s+([^\]]+)|Inter-Session Message)\](?:\[(?:reply by using send_session_message|To reply:[\s\S]*?)\])?:\s*([\s\S]*)$/);
+  const meshMatch = content.match(/^\[(?:From\s+([^\]]+)|Inter-Session Message)\]((?:\[[^\]]+\])*):\s*([\s\S]*)$/);
   let meshSender = meshMatch ? (meshMatch[1]?.trim() || "Remote Session") : null;
-  const meshBody = meshMatch ? meshMatch[2] : null;
+  const meshBrackets = meshMatch ? meshMatch[2] : "";
+  const meshBody = meshMatch ? meshMatch[3] : null;
+  const meshModeMatch = meshBrackets.match(/\[mode:\s*([^\]]+)\]/);
+  const meshDeliveryMode = meshModeMatch ? meshModeMatch[1].trim() : null;
 
   // Keep full sender identifier (e.g. "01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome")
   // to prevent confusion or collision across sessions.
@@ -490,7 +493,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                   }}
                   title={`完整发件地址: ${meshSender}`}
                 >
-                  MESH · 来自 {formattedSender}
+                  MESH{meshDeliveryMode ? ` · ${meshDeliveryMode.toUpperCase()}` : ""} · 来自 {formattedSender}
                 </span>
               </div>
               {imageBlocksNode}

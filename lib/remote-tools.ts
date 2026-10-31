@@ -53,7 +53,7 @@ const BASE_TOOLS: ToolEntry[] = [
   },
   {
     name: "send_session_message",
-    description: "Send a message to another session or start a new session on this host or any connected remote host. For real-time dialog or when an immediate response is needed, prefer 'steer' mode and explicitly note 'please reply promptly' in the message. To prevent message backlog, wait for the recipient's reply before sending further messages; if no reply is expected, state this explicitly. Use 'followup' for standard queued delivery or background sync tasks.",
+    description: "Send a message to another session or start a new session on this host or any connected remote host. Defaults to 'realtime' mode, which blocks execution until a reply is received from the recipient or up to 300s timeout, returning the recipient's response directly to you. Other modes: 'steer' (interrupts and prioritizes processing immediately without blocking this tool), 'followup' (queues after current tasks finish), or 'silent' (notification only, no reply expected). Each mode automatically attaches an appropriate prompt (e.g. realtime prompts 'Waiting for a reply, please process it as soon as possible').",
     active: true,
   },
   {

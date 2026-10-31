@@ -24,7 +24,7 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
       pi.registerTool(defineTool({
         name: "send_session_message",
         label: "Send Session Message",
-        description: "Send a message to another session or start a new session on this host or any connected remote host. For real-time dialog or when an immediate response is needed, prefer 'steer' mode and explicitly note 'please reply promptly' in the message. To prevent message backlog, wait for the recipient's reply before sending further messages; if no reply is expected, state this explicitly. Use 'followup' for standard queued delivery or background sync tasks. Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
+        description: "Send a message to another session or start a new session on this host or any connected remote host. Defaults to \"realtime\" mode, which blocks execution until a reply is received from the recipient or up to 300s timeout, returning the recipient's response directly to you. Other modes: \"steer\" (interrupts and prioritizes processing immediately without blocking this tool), \"followup\" (queues after current tasks finish), or \"silent\" (notification only, no reply expected). Each mode automatically attaches an appropriate prompt (e.g. realtime prompts \"Waiting for a reply, please process it as soon as possible\"). Target format: \"sessionId.host\" (e.g. \"01a18806-xxxx-xxxx.wshome\" or \"442d76a5.wsnas\", using the target specified in [From target][reply by using send_session_message]) or \"@project.host\" to start a new session.",
         parameters: Type.Object({
           target: Type.String({
             description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
@@ -33,19 +33,20 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
             description: "The instructions, context, or question to send to the target session. To prevent message backlog, please wait for the peer's reply before sending additional messages. If no response is required, explicitly state that in the text. When an immediate response is needed, kindly note 'please reply promptly'."
           }),
           mode: Type.Optional(Type.Union([
-            Type.Literal("followup"),
+            Type.Literal("realtime"),
             Type.Literal("steer"),
+            Type.Literal("followup"),
             Type.Literal("silent"),
           ], {
-            description: "Delivery mode: 'steer' (preferred for real-time conversation or when immediate response is required; interrupts and engages the agent immediately), 'followup' (default; queues after the current turn), or 'silent' (notification only without interrupting). When an immediate reply is needed, use steer and request a prompt reply.",
-          })),
+            description: "Delivery mode: \"realtime\" (default; blocks execution until the recipient replies or 300s timeout, returning the reply directly), \"steer\" (interrupts and engages the recipient immediately without blocking), \"followup\" (queues after current tasks complete), or \"silent\" (notification only, no reply required).",
+          }))
         }),
         async execute(_toolCallId, params) {
           try {
             const result = await sendMeshMessage({
               target: params.target,
               message: params.message,
-              mode: params.mode || "followup",
+              mode: params.mode || "realtime",
               currentDeviceId: hostId,
               senderContext: {
                 deviceId: hostId,
@@ -53,10 +54,16 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
                 cwd: currentCwd,
               },
             });
+            const replySection = result.reply
+              ? `
+
+[Response received from ${result.targetSessionId} on host \"${result.targetDeviceId}\"]:
+${result.reply}`
+              : "";
             return {
               content: [{
                 type: "text",
-                text: `Message successfully dispatched to ${result.targetSessionId} on host "${result.targetDeviceId}" (mode: ${result.mode}, newSession: ${result.createdNewSession}).`,
+                text: `Message successfully dispatched to ${result.targetSessionId} on host \"${result.targetDeviceId}\" (mode: ${result.mode}, newSession: ${result.createdNewSession}).${replySection}`,
               }],
               details: undefined,
             };
