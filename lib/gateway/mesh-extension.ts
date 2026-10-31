@@ -24,20 +24,20 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
       pi.registerTool(defineTool({
         name: "send_session_message",
         label: "Send Session Message",
-        description: "Send a message to another session or start a new session on this host or any connected remote host. 如需对方立即响应或进行实时对话，请使用 steer 并备注尽快回复；为避免消息堆积，请尽量等对方回复后再进行发送，如无需回复，请在消息中明确说明；日常排队交付或后台同步任务使用 followup。Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
+        description: "Send a message to another session or start a new session on this host or any connected remote host. For real-time dialog or when an immediate response is needed, prefer 'steer' mode and explicitly note 'please reply promptly' in the message. To prevent message backlog, wait for the recipient's reply before sending further messages; if no reply is expected, state this explicitly. Use 'followup' for standard queued delivery or background sync tasks. Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
         parameters: Type.Object({
           target: Type.String({
             description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
           }),
           message: Type.String({
-            description: "The instructions, context, or question to send to the target session. 为避免消息堆积，请尽量等对方回复后再进行发送；如无需回复，请在消息中明确说明。如需对方立即响应请备注尽快回复。"
+            description: "The instructions, context, or question to send to the target session. To prevent message backlog, please wait for the peer's reply before sending additional messages. If no response is required, explicitly state that in the text. When an immediate response is needed, kindly note 'please reply promptly'."
           }),
           mode: Type.Optional(Type.Union([
             Type.Literal("followup"),
             Type.Literal("steer"),
             Type.Literal("silent"),
           ], {
-            description: "Delivery mode: 'steer' (实时对话/需对方立即响应时尽量使用，立即打断并介入处理), 'followup' (默认，排队追加在当前轮次后), or 'silent' (仅通知不打断). 如需对方立即响应请使用 steer 并备注尽快回复。",
+            description: "Delivery mode: 'steer' (preferred for real-time conversation or when immediate response is required; interrupts and engages the agent immediately), 'followup' (default; queues after the current turn), or 'silent' (notification only without interrupting). When an immediate reply is needed, use steer and request a prompt reply.",
           })),
         }),
         async execute(_toolCallId, params) {

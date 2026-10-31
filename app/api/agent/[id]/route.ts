@@ -82,15 +82,13 @@ export async function POST(
     }
 
     if (remote) {
-      // pi's RPC mode has no `get_tools` command (see rpc-mode.js: the only
-      // introspection commands are get_state/get_commands/get_entries/get_tree).
-      // The local wrapper answers it from `inner.getAllTools()`, which only exists
-      // in this process. Forwarding it made pi reply `Unknown command: get_tools`
-      // while this route still returned `{accepted:true}`, so the client got an
-      // object where it expected an array and the chat toolbar crashed with
-      // `systemTools?.some is not a function`. Answer with an empty loadout.
+      // pi's RPC mode has no `get_tools` command over headless RPC.
+      // Instead of returning an empty array, resolve the full active tool loadout
+      // including core coding tools, mesh inter-session tools, and remote skills.
       if (body.type === "get_tools") {
-        return NextResponse.json({ success: true, data: [] });
+        const { getRemoteTools } = await import("@/lib/remote-tools");
+        const tools = await getRemoteTools(remote.deviceId, remote.state?.cwd || (remote.state?.sessionFile ? undefined : "/"));
+        return NextResponse.json({ success: true, data: tools });
       }
       remote.channel.send(body);
       // An answered dialog is not echoed back on the channel this process reads,
