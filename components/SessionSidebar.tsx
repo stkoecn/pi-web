@@ -1524,24 +1524,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   );
   const effectiveUiState = useMemo(() => {
     if (!isRemote) return uiState;
-    // Only folders that actually hold a session become groups. The device's home
-    // used to be pushed in unconditionally (it is the default `selectedCwd`), which
-    // pinned an empty "project" to the top of the sidebar on every remote device.
-    // The catalogue already groups by `projectKey` (see buildSessionTree), so the
-    // group list has to be keyed the same way: a plain path would create a second
-    // group for the same folder and hide its sessions.
-    const remoteProjects = new Map<string, { root: string; key: string; pinnedAt: number }>();
-    for (const session of allSessions) {
-      const root = session.projectRoot || session.cwd;
-      if (!root) continue;
-      const key = session.projectKey || root;
-      if (!remoteProjects.has(key)) remoteProjects.set(key, { root, key, pinnedAt: 0 });
+    // Only genuinely pinned projects should be in uiState.projects.
+    // Mapping all remote projects into `projects` falsely caused buildSessionTree
+    // to treat every remote project as pinned!
+    const remoteRoots = Array.from(new Set(
+      allSessions.map((s) => s.projectKey || s.projectRoot || s.cwd).filter(Boolean) as string[]
+    ));
+    const realPinnedProjects: Record<string, { root: string; pinnedAt: number }> = {};
+    if (uiState.projects) {
+      for (const [k, v] of Object.entries(uiState.projects)) {
+        if (v && typeof v.pinnedAt === "number" && v.pinnedAt > 0) {
+          realPinnedProjects[k] = v;
+        }
+      }
     }
-    const remoteRoots = Array.from(remoteProjects.keys());
     return {
       ...uiState,
-      projectOrder: remoteRoots,
-      projects: Object.fromEntries(remoteProjects),
+      projectOrder: uiState.projectOrder?.length ? uiState.projectOrder : remoteRoots,
+      projects: realPinnedProjects,
     };
   }, [uiState, isRemote, allSessions]);
 
