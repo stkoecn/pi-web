@@ -114,7 +114,7 @@ export function setupMeshReverseBridge(
               const result = await sendMeshMessage({
                 target: payload.target,
                 message: payload.message,
-                mode: payload.mode || "followup",
+                mode: payload.mode || "realtime",
                 currentDeviceId: deviceId,
                 senderContext: {
                   deviceId: payload.senderContext?.deviceId || deviceId,
