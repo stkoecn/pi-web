@@ -46,11 +46,17 @@ export class LocalHostDriver implements IHostDriver {
       for (const l of exitListeners) l(code ?? 0);
     });
 
+    let alive = true;
+
     return {
       sessionId,
       write: (data: string | Buffer) => {
-        if (!proc.stdin.destroyed) {
-          proc.stdin.write(data);
+        if (alive && !proc.stdin.destroyed) {
+          try {
+            proc.stdin.write(data);
+          } catch {
+            alive = false;
+          }
         }
       },
       resize: () => {},
@@ -63,8 +69,13 @@ export class LocalHostDriver implements IHostDriver {
         return () => exitListeners.delete(cb);
       },
       close: () => {
-        proc.kill();
+        alive = false;
+        try {
+          proc.kill();
+        } catch {}
       },
+      isAlive: () => alive && !proc.killed && proc.exitCode === null,
+      reconnect: async () => false,
     };
   }
 

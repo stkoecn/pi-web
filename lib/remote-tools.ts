@@ -53,7 +53,7 @@ const BASE_TOOLS: ToolEntry[] = [
   },
   {
     name: "send_session_message",
-    description: "Send a message to another session or start a new session on this host or any connected remote host. Defaults to 'realtime' mode, which blocks execution until a reply is received from the recipient or up to 300s timeout, returning the recipient's response directly to you. Other modes: 'steer' (interrupts and prioritizes processing immediately without blocking this tool), 'followup' (queues after current tasks finish), or 'silent' (notification only, no reply expected). Each mode automatically attaches an appropriate prompt (e.g. realtime prompts 'Waiting for a reply, please process it as soon as possible').",
+    description: "Send a message to another session or start a new session on this host or any connected remote host. In 'realtime' mode (default), the sender is blocked waiting for the recipient's reply via send_session_message (unblocking on reply or timeout). Recipient MUST reply using send_session_message, not direct text output. Other modes: 'steer' (sender not blocked; interrupts immediately), 'followup' (sender not blocked; queues), 'silent' (notification only, no reply).",
     active: true,
   },
   {

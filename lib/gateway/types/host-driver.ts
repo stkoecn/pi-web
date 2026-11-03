@@ -4,6 +4,8 @@ export interface TerminalOptions {
   rows?: number;
   initialCmd?: string;
   env?: Record<string, string>;
+  timeoutMs?: number;
+  autoReconnect?: boolean;
 }
 
 export interface TerminalSession {
@@ -13,6 +15,8 @@ export interface TerminalSession {
   onData(callback: (data: Buffer) => void): () => void;
   onExit(callback: (exitCode: number) => void): () => void;
   close(): void;
+  isAlive?(): boolean;
+  reconnect?(): Promise<boolean>;
 }
 
 export interface FileEntry {

@@ -874,7 +874,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     if (prevDeviceIdRef.current === deviceId) return;
     prevDeviceIdRef.current = deviceId;
     const isRemote = deviceId && deviceId !== "localhost";
-    setSelectedCwd(isRemote ? deviceHomeOrRoot(deviceId) : (selectedCwdProp ?? null));
+    setSelectedCwd(isRemote ? deviceHomeOrRoot(deviceId) : null);
     // Resolve the new device's home, then move the workspace there if the
     // placeholder `/` is still what we are showing.
     if (isRemote) {
@@ -1170,6 +1170,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     if (!selectedCwdProp) {
       lastSyncedCwdPropRef.current = null;
+      setSelectedCwd(null);
       return;
     }
     if (selectedCwdProp !== lastSyncedCwdPropRef.current) {

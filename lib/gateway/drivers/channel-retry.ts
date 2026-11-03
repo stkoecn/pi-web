@@ -34,6 +34,8 @@ export interface ChannelRetryOptions {
   attempts?: number;
   /** Wait before the first retry; doubles on each further one. */
   baseDelayMs?: number;
+  /** Optional callback invoked when a channel open failure occurs before retrying (e.g. to evict idle pool channels). */
+  onRetry?: (error: unknown, attempt: number) => void | Promise<void>;
 }
 
 /** `open` again while the server is refusing channels, then let the error out. */
@@ -50,6 +52,13 @@ export async function withChannelRetry<T>(
     } catch (error) {
       lastError = error;
       if (!isChannelOpenFailure(error) || attempt === attempts - 1) throw error;
+      if (options.onRetry) {
+        try {
+          await options.onRetry(error, attempt);
+        } catch {
+          // Failure in retry handler shouldn't block channel retry loop
+        }
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, baseDelayMs * 2 ** attempt));
     }
   }

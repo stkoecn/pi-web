@@ -1317,6 +1317,7 @@ function TextFileViewer({
 
     try {
       const params = new URLSearchParams({ cwd, path: targetPath });
+      if (deviceId && deviceId !== "localhost") params.set("deviceId", deviceId);
       const response = await fetch(`/api/git/diff?${params.toString()}`);
       const next = await response.json() as GitFileDiffResponse & { error?: string };
       if (requestId !== gitDiffRequestRef.current) return;
@@ -1329,7 +1330,7 @@ function TextFileViewer({
         setGitDiffResolved(true);
       }
     }
-  }, [cwd]);
+  }, [cwd, deviceId]);
 
   // Reset and load the file itself when its identity changes. Live watching is
   // managed separately so pausing it never clears the displayed content.

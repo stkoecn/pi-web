@@ -24,13 +24,13 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
       pi.registerTool(defineTool({
         name: "send_session_message",
         label: "Send Session Message",
-        description: "Send a message to another session or start a new session on this host or any connected remote host. Defaults to \"realtime\" mode, which blocks execution until a reply is received from the recipient or up to 300s timeout, returning the recipient's response directly to you. Other modes: \"steer\" (interrupts and prioritizes processing immediately without blocking this tool), \"followup\" (queues after current tasks finish), or \"silent\" (notification only, no reply expected). Each mode automatically attaches an appropriate prompt (e.g. realtime prompts \"Waiting for a reply, please process it as soon as possible\"). Target format: \"sessionId.host\" (e.g. \"01a18806-xxxx-xxxx.wshome\" or \"442d76a5.wsnas\", using the target specified in [From target][reply by using send_session_message]) or \"@project.host\" to start a new session.",
+        description: "Send a message to another session or start a new session on this host or any connected remote host. In 'realtime' mode (default), the CALLER/SENDER is blocked waiting for the recipient's reply. The sender unblocks as soon as any message arrives from the recipient (or user) or upon timeout (300s), and the reply is returned directly as the tool result. NOTE: The recipient MUST reply by calling send_session_message back to the sender; simply outputting text will NOT be received by the sender. Other delivery modes: 'steer' (interrupts and prioritizes processing immediately without blocking the sender), 'followup' (queues after current tasks finish without blocking the sender), or 'silent' (notification only, no reply expected). Each mode automatically attaches an explicit header informing the recipient of the blocking state and reply protocol.",
         parameters: Type.Object({
           target: Type.String({
-            description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
+            description: "Destination target: either 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas', as shown in the [From replyTarget] prompt header) to message an existing session, or 'host:absolutePath' (e.g. 'wsnas:/home/user/myproject' or 'wshome:D:/proj/myproject') to start a new session.",
           }),
           message: Type.String({
-            description: "The instructions, context, or question to send to the target session. To prevent message backlog, please wait for the peer's reply before sending additional messages. If no response is required, explicitly state that in the text. When an immediate response is needed, kindly note 'please reply promptly'."
+            description: "The instructions, context, or question to send to the target session. When replying to an incoming cross-session message, you MUST call this tool with your reply text instead of merely outputting assistant text.",
           }),
           mode: Type.Optional(Type.Union([
             Type.Literal("realtime"),
@@ -38,7 +38,7 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
             Type.Literal("followup"),
             Type.Literal("silent"),
           ], {
-            description: "Delivery mode: \"realtime\" (default; blocks execution until the recipient replies or 300s timeout, returning the reply directly), \"steer\" (interrupts and engages the recipient immediately without blocking), \"followup\" (queues after current tasks complete), or \"silent\" (notification only, no reply required).",
+            description: "Delivery mode: 'realtime' (default; sender is blocked waiting for recipient to reply via send_session_message, unblocking on any reply or timeout), 'steer' (sender is NOT blocked; interrupts recipient immediately), 'followup' (sender is NOT blocked; queues after recipient finishes current task), or 'silent' (notification only, no reply expected).",
           }))
         }),
         async execute(_toolCallId, params) {
@@ -52,12 +52,16 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
                 deviceId: hostId,
                 sessionId: currentSessionId,
                 cwd: currentCwd,
+                isToolCall: true,
               },
             });
+            const replySection = result.reply
+              ? `\n\n[Response received from ${result.targetSessionId} on host "${result.targetDeviceId}"]:\n${result.reply}`
+              : "";
             return {
               content: [{
                 type: "text",
-                text: `Message successfully dispatched to ${result.targetSessionId} on host \"${result.targetDeviceId}\" (mode: ${result.mode}, newSession: ${result.createdNewSession}).`,
+                text: `Message successfully dispatched to ${result.targetSessionId} on host "${result.targetDeviceId}" (mode: ${result.mode}, newSession: ${result.createdNewSession}).${replySection}`,
               }],
               details: undefined,
             };

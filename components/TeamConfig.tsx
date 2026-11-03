@@ -305,13 +305,24 @@ export function TeamConfig({ embedded = false, cwd, deviceId, onClose }: { embed
                               </span>
                               {/* Direct inline toggle button in sidebar */}
                               {cwd && (
-                                <button
-                                  type="button"
+                                <span
+                                  role="button"
+                                  tabIndex={0}
                                   title={proj.enabled ? "点击在当前项目中关闭此项目联络" : "点击在当前项目中开启此项目联络"}
-                                  disabled={isToggling}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleToggleProject(dev.deviceId, proj.path, proj.enabled);
+                                    if (!isToggling) {
+                                      handleToggleProject(dev.deviceId, proj.path, proj.enabled);
+                                    }
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      if (!isToggling) {
+                                        handleToggleProject(dev.deviceId, proj.path, proj.enabled);
+                                      }
+                                    }
                                   }}
                                   style={{
                                     border: "none",
@@ -330,7 +341,7 @@ export function TeamConfig({ embedded = false, cwd, deviceId, onClose }: { embed
                                   }}
                                 >
                                   {isToggling ? "..." : proj.enabled ? "关闭" : "开启"}
-                                </button>
+                                </span>
                               )}
                             </ConfigSidebarItem>
                           );

@@ -263,15 +263,12 @@ export class PersistentShellPool {
     // connection's lifetime, and every open remote session holds an `exec`
     // channel for its `pi --mode rpc` process. So the pool must leave room.
     //
-    // Six rather than four: measured on the same 282 ms-RTT VPS, eight
-    // concurrent commands took 1451 ms on four channels and 871 ms on six, and
-    // twelve took 1870 ms against 897 ms. Eight channels were no better than
-    // six at those widths (1134 / 620 ms) and cost two more of the ten slots,
-    // which is the trade the earlier comment was right to worry about: a
-    // refused channel is now retried rather than failing the request, but a
-    // retry is still a round trip. Six leaves four slots for SFTP plus three
-    // open sessions, and one spare.
-    private readonly size = 6,
+    // Two rather than six: sshd's default `MaxSessions 10` is a strict limit
+    // for the ENTIRE connection. If the shell pool hoards 6 channels, plus 1 for
+    // SFTP, there are only 3 channels left for terminals and `pi --mode rpc` sessions!
+    // When users open multiple terminals or sessions, channel open immediately fails.
+    // Keeping pool size at 2 leaves plenty of channels (7+) for terminals and RPC sessions.
+    private readonly size = 2,
   ) {
     // Open the first channel immediately rather than on the first command: a
     // channel open costs a full round trip (250 ms on a WAN device) and the
@@ -369,6 +366,24 @@ export class PersistentShellPool {
       shell.busy = false;
       this.releaseWaiter();
     }
+  }
+
+  /**
+   * Evict idle shells from the pool to release channels for other consumers
+   * (e.g. terminals or pi RPC sessions when SSH MaxSessions is reached).
+   * Returns the number of shells successfully evicted and closed.
+   */
+  evictIdleShells(count = 1): number {
+    let evicted = 0;
+    for (let i = this.shells.length - 1; i >= 0 && evicted < count; i--) {
+      const shell = this.shells[i];
+      if (!shell.busy) {
+        this.shells.splice(i, 1);
+        shell.dispose();
+        evicted++;
+      }
+    }
+    return evicted;
   }
 
   dispose() {

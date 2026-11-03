@@ -42,6 +42,29 @@ declare global {
 // ponytail: bounded replay; use terminal serialization if full-screen snapshots become necessary.
 const MAX_BACKLOG = 128 * 1024;
 export const TERMINAL_RECONNECT_MS = 120_000;
+/** Max detached remote terminals allowed per device to prevent SSH channel exhaustion */
+export const MAX_DETACHED_REMOTE_TERMINALS = 3;
+
+/**
+ * Reclaim old detached (unsubscribed) remote terminals for a device if limit exceeded,
+ * to prevent exhausting SSH channels (sshd MaxSessions).
+ */
+function evictDetachedRemoteTerminals(deviceId: string, maxAllowed = MAX_DETACHED_REMOTE_TERMINALS): void {
+  const reg = registry();
+  const detached: string[] = [];
+  for (const [tid, rec] of reg.entries()) {
+    if (rec.deviceId === deviceId && rec.listeners.size === 0 && !rec.exited) {
+      detached.push(tid);
+    }
+  }
+  // If we have at least maxAllowed detached terminals, kill the oldest ones to free SSH channels
+  while (detached.length >= maxAllowed) {
+    const oldest = detached.shift();
+    if (oldest) {
+      killTerminal(oldest, true);
+    }
+  }
+}
 
 function registry(): Map<string, TerminalRecord> {
   if (!globalThis.__piWebTerminals) {
@@ -150,6 +173,9 @@ export async function createTerminal(
 
   // Handle remote device through Gateway driver
   if (deviceId && deviceId !== "localhost") {
+    // Proactively reclaim any orphaned/detached remote terminals for this device
+    evictDetachedRemoteTerminals(deviceId);
+
     const { getGateway } = await import("./gateway/singleton");
     const driver = await getGateway().getOrConnectDriver(deviceId);
     const session = await driver.createTerminal({

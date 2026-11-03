@@ -151,79 +151,137 @@ export class SSHHostDriver implements IHostDriver {
     const cols = opts.cols ?? 80;
     const rows = opts.rows ?? 24;
     const sessionId = randomUUID();
+    let currentStream: ClientChannel | null = null;
+    let closed = false;
 
-    return withChannelRetry(() => new Promise<TerminalSession>((resolve, reject) => {
-      const ptyOptions = {
-        term: 'xterm-256color',
-        cols,
-        rows,
-      };
+    const dataListeners = new Set<(data: Buffer) => void>();
+    const exitListeners = new Set<(code: number) => void>();
 
-      const handleStream = (stream: ClientChannel) => {
-        const dataListeners = new Set<(data: Buffer) => void>();
-        const exitListeners = new Set<(code: number) => void>();
-
-        stream.on('data', (chunk: Buffer) => {
-          for (const listener of dataListeners) {
-            listener(chunk);
-          }
-        });
-
-        stream.on('close', (code: number) => {
-          for (const listener of exitListeners) {
-            listener(code ?? 0);
-          }
-        });
-
-        const session: TerminalSession = {
-          sessionId,
-          write: (data: string | Buffer) => {
-            if (!stream.destroyed) {
-              stream.write(data);
-            }
-          },
-          resize: (newCols: number, newRows: number) => {
-            if (!stream.destroyed && (stream as any).setWindow) {
-              (stream as any).setWindow(newRows, newCols, 0, 0);
-            }
-          },
-          onData: (cb) => {
-            dataListeners.add(cb);
-            return () => dataListeners.delete(cb);
-          },
-          onExit: (cb) => {
-            exitListeners.add(cb);
-            return () => exitListeners.delete(cb);
-          },
-          close: () => {
-            if (!stream.destroyed) {
-              stream.close();
-            }
-          },
+    const openChannel = async (): Promise<ClientChannel> => {
+      if (closed || !this.alive) throw new Error(`Device ${this.deviceId} is disconnected`);
+      return withChannelRetry(() => new Promise<ClientChannel>((resolve, reject) => {
+        const ptyOptions = {
+          term: 'xterm-256color',
+          cols,
+          rows,
         };
 
-        resolve(session);
-      };
-
-      if (opts.initialCmd) {
-        this.client.exec(opts.initialCmd, { pty: ptyOptions, env: opts.env as any }, (err: any, stream: ClientChannel) => {
-          if (err) return reject(err);
-          handleStream(stream);
-        });
-      } else {
-        this.client.shell(ptyOptions, (err: any, stream: ClientChannel) => {
-          if (err) return reject(err);
-          if (opts.cwd && opts.cwd !== "~" && opts.cwd !== "") {
-            if (opts.cwd.startsWith("~/")) {
-              stream.write(`cd ~/"${opts.cwd.slice(2).replace(/"/g, '\\"')}"\n`);
-            } else {
-              stream.write(`cd "${opts.cwd.replace(/"/g, '\\"')}"\n`);
+        const attachListeners = (stream: ClientChannel) => {
+          currentStream = stream;
+          stream.on('data', (chunk: Buffer) => {
+            for (const listener of dataListeners) {
+              try { listener(chunk); } catch {}
             }
+          });
+
+          stream.on('close', (code: number) => {
+            if (currentStream === stream) {
+              currentStream = null;
+            }
+            if (!closed) {
+              for (const listener of exitListeners) {
+                try { listener(code ?? 0); } catch {}
+              }
+            }
+          });
+
+          stream.on('error', (err: any) => {
+            console.warn(`[SSHHostDriver:${this.deviceId}] Terminal stream error: ${err?.message || err}`);
+          });
+
+          resolve(stream);
+        };
+
+        if (opts.initialCmd) {
+          this.client.exec(opts.initialCmd, { pty: ptyOptions, env: opts.env as any }, (err: any, stream: ClientChannel) => {
+            if (err) return reject(err);
+            attachListeners(stream);
+          });
+        } else {
+          this.client.shell(ptyOptions, (err: any, stream: ClientChannel) => {
+            if (err) return reject(err);
+            if (opts.cwd && opts.cwd !== "~" && opts.cwd !== "") {
+              if (opts.cwd.startsWith("~/")) {
+                stream.write(`cd ~/"${opts.cwd.slice(2).replace(/"/g, '\\"')}"\n`);
+              } else {
+                stream.write(`cd "${opts.cwd.replace(/"/g, '\\"')}"\n`);
+              }
+            }
+            attachListeners(stream);
+          });
+        }
+      }), {
+        onRetry: (_err, attempt) => {
+          // On channel open failure, evict idle shells from the persistent pool to yield channels
+          const evicted = this.shellPool?.evictIdleShells(1) ?? 0;
+          if (evicted > 0) {
+            console.info(`[SSHHostDriver:${this.deviceId}] Evicted ${evicted} idle shell(s) from pool to free channel for terminal (attempt ${attempt + 1})`);
           }
-          handleStream(stream);
-        });
-      }
-    }));
+        },
+      });
+    };
+
+    await openChannel();
+
+    const session: TerminalSession = {
+      sessionId,
+      write: (data: string | Buffer) => {
+        if (!closed && currentStream && !currentStream.destroyed) {
+          try {
+            currentStream.write(data);
+          } catch {
+            // Channel write failure
+          }
+        }
+      },
+      resize: (newCols: number, newRows: number) => {
+        if (!closed && currentStream && !currentStream.destroyed && (currentStream as any).setWindow) {
+          try {
+            (currentStream as any).setWindow(newRows, newCols, 0, 0);
+          } catch {}
+        }
+      },
+      onData: (cb) => {
+        dataListeners.add(cb);
+        return () => dataListeners.delete(cb);
+      },
+      onExit: (cb) => {
+        exitListeners.add(cb);
+        return () => exitListeners.delete(cb);
+      },
+      close: () => {
+        closed = true;
+        if (currentStream && !currentStream.destroyed) {
+          try {
+            currentStream.write('\x03\x04exit\n');
+          } catch {}
+          try {
+            currentStream.close();
+            currentStream.destroy();
+          } catch {}
+        }
+        currentStream = null;
+        dataListeners.clear();
+        exitListeners.clear();
+      },
+      isAlive: () => {
+        return !closed && !!currentStream && !currentStream.destroyed;
+      },
+      reconnect: async () => {
+        if (closed) return false;
+        try {
+          if (currentStream && !currentStream.destroyed) {
+            try { currentStream.destroy(); } catch {}
+          }
+          await openChannel();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    };
+
+    return session;
   }
 
   private normalizeRemotePath(p: string): string {
@@ -397,7 +455,14 @@ export class SSHHostDriver implements IHostDriver {
         // Close stdin immediately so remote commands waiting for EOF don't hang
         try { stream.end(); } catch {}
       });
-    }));
+    }), {
+      onRetry: (_err, attempt) => {
+        const evicted = this.shellPool?.evictIdleShells(1) ?? 0;
+        if (evicted > 0) {
+          console.info(`[SSHHostDriver:${this.deviceId}] Evicted ${evicted} idle shell(s) from pool to free channel for execOneShot (attempt ${attempt + 1})`);
+        }
+      },
+    });
   }
 
   async spawnPiRpc(opts: {
@@ -501,7 +566,8 @@ export class SSHHostDriver implements IHostDriver {
             try {
               const parsed = JSON.parse(trimmed);
               // If it's a mesh_outbound frame sent over stderr or stdout, deliver to msgListeners!
-              if (parsed?.type === 'mesh_outbound') {
+              const isMesh = parsed?.type === 'mesh_outbound' || (parsed?.data && parsed.data.type === 'mesh_outbound');
+              if (isMesh) {
                 for (const listener of msgListeners) {
                   listener(parsed);
                 }
@@ -562,7 +628,14 @@ export class SSHHostDriver implements IHostDriver {
 
         resolve(channel);
       });
-    }));
+    }), {
+      onRetry: (_err, attempt) => {
+        const evicted = this.shellPool?.evictIdleShells(1) ?? 0;
+        if (evicted > 0) {
+          console.info(`[SSHHostDriver:${this.deviceId}] Evicted ${evicted} idle shell(s) from pool to free channel for RPC (attempt ${attempt + 1})`);
+        }
+      },
+    });
   }
 
   async close(): Promise<void> {

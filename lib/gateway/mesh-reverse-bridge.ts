@@ -134,6 +134,7 @@ export function setupMeshReverseBridge(
                   deviceId: senderDev,
                   sessionId: senderSessionId,
                   cwd: senderCwd,
+                  isToolCall: p.senderContext?.isToolCall ?? true,
                 },
               });
 
