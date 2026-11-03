@@ -2,7 +2,10 @@ import { LOCAL_DEVICE_ID } from "../device-context";
 import { isLocalHostId } from "../gateway/host-identity";
 import { readDevicesFile } from "../gateway/device-config-file";
 import { LocalDeviceRuntime } from "./local-runtime";
-import { SshRemoteDeviceRuntime } from "./ssh-remote-runtime";
+// SshRemoteDeviceRuntime imports remote-session-delete and remote-settings,
+// which are server-side SSH drivers. Dynamically imported so importing registry
+// does not eagerly require server-only files in test runners.
+type SshRemoteDeviceRuntime = import("./ssh-remote-runtime").SshRemoteDeviceRuntime;
 import type { IDeviceRuntime } from "./types";
 
 export type RemoteRuntimeResolver = (deviceId: string) => Promise<IDeviceRuntime>;
@@ -95,6 +98,7 @@ export class DeviceRuntimeRegistry {
     const devices = readDevicesFile();
     const matched = normalizedId ? devices.configs.find((c) => c.id.toLowerCase() === normalizedId) : undefined;
     if (matched && normalizedId) {
+      const { SshRemoteDeviceRuntime } = await import("./ssh-remote-runtime");
       const remoteRuntime = new SshRemoteDeviceRuntime(matched.id);
       this.remoteRuntimes.set(normalizedId, remoteRuntime);
       return remoteRuntime;

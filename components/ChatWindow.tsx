@@ -1,5 +1,6 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
+import { isHiddenRelation, SIDE_BOUNDARY_MESSAGE_TYPE } from "@/lib/session-family";
 import Image from "next/image";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -67,6 +68,10 @@ interface Props {
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
   onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
   onSessionForked?: (newSessionId: string) => void;
+  /** A subagent's or side chat's tab beside the main chat: the page's global shortcuts stay with the main chat. */
+  panel?: boolean;
+  /** `/side`: a side chat was forked from this session; open its tab. */
+  onSideSession?: (session: SessionInfo, prompt: string | null) => void;
   modelsRefreshKey?: number;
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void, locked: boolean) => void;
@@ -250,10 +255,10 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMis
   );
 }
 
-export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
+export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
-  const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
+  const completionNotificationsEnabled = !isHiddenRelation(session?.relation);
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -265,8 +270,8 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
   soundEnabledRef.current = soundEnabled;
   const extensionDialogShownRef = useRef(false);
   const wrappedOnAgentEnd = useCallback((end: AgentEndInfo) => {
-    // A run someone stopped did not finish anything.
-    if (completionNotificationsEnabled && soundEnabledRef.current && !end.aborted) {
+    // A run someone stopped did not finish anything, and one whose subagents still work did not finish the task.
+    if (completionNotificationsEnabled && soundEnabledRef.current && !end.aborted && !end.subagentsActive) {
       playDoneSoundRef.current();
     }
     onAgentEnd?.(end);
@@ -281,7 +286,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
   const {
     loading, error, offline, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
-    agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, isModelScopeActive, allModelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
@@ -296,15 +301,15 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
     showScrollToBottom,
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, promptAnchorActive,
-    handleSend, handleAbort, handleFork, handleEditContent, cancelEdit, handleModelChange,
+    handleSend, handleAbort, startSideChat, handleFork, handleEditContent, cancelEdit, handleModelChange,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     dismissCompactError,
     handleRecallQueue,
     handleBuiltinSlashCommand,
-    handleToolPresetChange, handleThinkingLevelChange, handleSetDefaultModel, handleSetDefaultThinkingLevel, loadSlashCommands, scrollUserMsgToTop,
+    handleToolPresetChange, handleThinkingLevelChange, handleSetDefaultModel, handleSetDefaultThinkingLevel, loadSlashCommands, loadAllModels, scrollUserMsgToTop,
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
   } = useAgentSession({
-    session, deviceId, sessionRunning, newSessionCwd, newSessionDraftKey, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd: wrappedOnAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, deviceId, sessionRunning, newSessionCwd, newSessionDraftKey, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd: wrappedOnAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, onSideSession,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
     onOpenSettings,
     deferInitialScroll: Boolean(pendingScrollRestore),
@@ -328,6 +333,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
     sourceEntryId?: string;
   } | null>(null);
   const [quoteInputOpen, setQuoteInputOpen] = useState(false);
+  const [quoteInputMode, setQuoteInputMode] = useState<"side" | "newChat">("side");
   const [quoteSubmitting, setQuoteSubmitting] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const quotePopoverRef = useRef<HTMLDivElement | null>(null);
@@ -379,12 +385,8 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
   useEffect(() => {
     if (!quoteInputOpen || !quotedSelection) return;
-    quoteChatInputRef.current?.insertIfEmpty(buildQuotedSelection(
-      quotedSelection.text,
-      t("chat.quoteIntro"),
-      t("chat.quoteQuestion"),
-    ));
-  }, [quoteInputOpen, quotedSelection, t]);
+    quoteChatInputRef.current?.insertIfEmpty(buildQuotedSelection(quotedSelection.text));
+  }, [quoteInputOpen, quotedSelection]);
 
   useLayoutEffect(() => {
     const popover = quotePopoverRef.current;
@@ -432,17 +434,46 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
   const askSelectionHere = useCallback(() => {
     if (!quotedSelection) return;
-    chatInputRef?.current?.insertText(buildQuotedSelection(
-      quotedSelection.text,
-      t("chat.quoteIntro"),
-      t("chat.quoteQuestion"),
-    ));
+    chatInputRef?.current?.insertQuote(buildQuotedSelection(quotedSelection.text));
     // No `removeAllRanges()` here: inserting focuses the composer, and that
     // focus already collapses the page's selection. Calling it afterwards also
     // clears the composer's own selection and drops its caret to offset 0
     // (#1319), so the quote would be typed in front of instead of after.
     closeQuotedSelection();
-  }, [chatInputRef, quotedSelection, closeQuotedSelection, t]);
+  }, [chatInputRef, quotedSelection, closeQuotedSelection]);
+
+  const askSelectionInSideChat = useCallback(async (prompt: string) => {
+    if (quoteSubmitting || !prompt.trim() || !quotedSelection) return;
+    setQuoteSubmitting(true);
+    setQuoteError(null);
+    try {
+      const refusal = await startSideChat(prompt, quotedSelection.text);
+      if (!refusal) {
+        closeQuotedSelection();
+        return;
+      }
+      quoteChatInputRef.current?.restoreSubmission(prompt);
+      setQuoteError(refusal);
+    } catch (error) {
+      quoteChatInputRef.current?.restoreSubmission(prompt);
+      setQuoteError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQuoteSubmitting(false);
+    }
+  }, [quotedSelection, quoteSubmitting, closeQuotedSelection, startSideChat]);
+
+  // The composer's Side chat button: its draft goes back on a refusal, as a failed send's does.
+  const askInSideChat = useCallback(async (message: string) => {
+    let refusal: string | null;
+    try {
+      refusal = await startSideChat(message);
+    } catch (error) {
+      refusal = error instanceof Error ? error.message : String(error);
+    }
+    if (!refusal) return;
+    chatInputRef?.current?.restoreSubmission(message);
+    addNotice({ type: "error", message: refusal });
+  }, [addNotice, chatInputRef, startSideChat]);
 
   const askSelectionInNewChat = useCallback(async (prompt: string) => {
     const sourceSessionId = sessionIdRef.current ?? session?.id;
@@ -484,8 +515,8 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
   // Register the abort handler for the global Esc shortcut
   useEffect(() => {
-    registerAbortHandler(sessionBusy ? handleAbort : null);
-  }, [sessionBusy, handleAbort]);
+    if (!panel) registerAbortHandler(sessionBusy ? handleAbort : null);
+  }, [panel, sessionBusy, handleAbort]);
 
   // --- Lazy-load historical messages ---
   // Only render the last N messages initially. When the user scrolls to the
@@ -958,6 +989,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
       ref={chatInputRef}
       onSend={handleSend}
       onAbort={handleAbort}
+      onSideChat={onSideSession && !isHiddenRelation(session?.relation) ? askInSideChat : undefined}
       onSteer={agentRunning ? handleSteer : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
       onPromptWithStreamingBehavior={agentRunning ? handlePromptWithStreamingBehavior : undefined}
@@ -968,6 +1000,8 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
       modelList={modelList}
       modelError={modelError}
       modelScopeWarnings={modelScopeWarnings}
+      allModelList={allModelList}
+      onLoadAllModels={isModelScopeActive ? loadAllModels : undefined}
       onModelChange={handleModelChange}
       modelSwitching={modelSwitching}
       defaultModel={defaultModel}
@@ -979,7 +1013,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
       onDismissCompactError={dismissCompactError}
       compactResult={compactResult}
       toolPreset={toolPreset}
-      onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
+      onToolPresetChange={(session && !isHiddenRelation(session.relation)) || isNew ? handleToolPresetChange : undefined}
       thinkingLevel={thinkingLevel}
       isAutoThinkingSelection={isAutoThinkingSelection}
       onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
@@ -1140,6 +1174,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
               const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; recoverTruncation?: boolean; turnDurationMs?: number; withNotices?: boolean } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
+                if (msg.role === "custom" && msg.customType === SIDE_BOUNDARY_MESSAGE_TYPE) return <SideChatDivider key="side-chat-divider" />;
                 if (isHiddenCustomMessage(msg)) return null;
                 // pi's showCacheMissNotices (#1265): read from the stored message, not a turn view's copy.
                 const notices = options.withNotices === false ? [] : getTranscriptNotices(messages[idx]);
@@ -1244,91 +1279,114 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                 // the run brings the session file's entry (the only kind with an entry id).
                 const turnDurationMs = hasAnchor && entryIds[userIdx] ? getTurnDurationMs(messages, userIdx, endIdx) : undefined;
 
-                const processViews: ReactNode[] = [];
-                let processMessageCount = 0;
-                let processToolCount = 0;
-                let processRefIndex: number | undefined;
-                let processReveal = false;
+                let segStart = userIdx + 1;
+                let segCount = 0;
 
-                const finalViews = getFinalAnswerViews(finalAnswerViewCache, messages[finalAssistantIdx] as AssistantMessage);
-                const finalAnswerMessage = finalViews.answer;
+                const renderProcessBlock = (fromIdx: number, toIdx: number) => {
+                  if (fromIdx >= toIdx) return;
+                  const segViews: ReactNode[] = [];
+                  let segMsgCount = 0;
+                  let segToolCount = 0;
+                  let segRefIdx: number | undefined;
+                  let segReveal = false;
 
-                for (let processIdx = userIdx + 1; processIdx <= finalAssistantIdx; processIdx++) {
-                  const processMsg = messages[processIdx];
-                  if (processMsg.role === "custom") {
-                    if (isHiddenCustomMessage(processMsg)) continue;
-                    processReveal ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[processIdx]);
-                    processMessageCount += 1;
-                    processViews.push(renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }));
-                    continue;
-                  }
-                  if (processMsg.role !== "assistant") continue;
-
-                  const isFinal = processIdx === finalAssistantIdx;
-                  const blocks = isFinal ? (finalViews.process.content ?? []) : getDisplayableAssistantBlocks(processMsg);
-                  if (blocks.length === 0) {
-                    const notices = getTranscriptNotices(processMsg);
-                    if (notices.length > 0) processViews.push(<TranscriptNoticeLines key={`process-notices-${messageKeys[processIdx]}`} notices={notices} />);
-                    continue;
-                  }
-
-                  processRefIndex ??= visibleRefIndexByMessage.get(processIdx);
-                  processToolCount += countToolCallBlocks(blocks);
-                  processMessageCount += 1;
-                  processReveal ||= Boolean(pendingSearchScroll && entryIds[processIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
-                  processViews.push(renderMessage(processIdx, {
-                    attachRef: false,
-                    keyPrefix: "process",
-                    messageOverride: { ...processMsg, content: blocks },
-                    showTimestamp: false,
-                    withNotices: !isFinal,
-                  }));
-                }
-
-                if (processMessageCount === 0) {
-                  rendered.push(...processViews);
-                } else if (processViews.length > 0) {
-                  const misses = summarizeCacheMisses(messages.slice(userIdx + 1, finalAssistantIdx + 1));
-                  rendered.push(
-                    <div
-                      key={`process-group-${messageKeys[groupStartIdx]}`}
-                      ref={processRefIndex === undefined ? undefined : (el) => { messageRefs.current[processRefIndex!] = el; }}
-                    >
-                      <ProcessDetailsGroup
-                        key="answered"
-                        messageCount={processMessageCount}
-                        toolCallCount={processToolCount}
-                        durationMs={undefined}
-                        cacheMisses={misses}
-                        defaultExpanded={false}
-                        reveal={processReveal}
-                        t={t}
-                      >
-                        {processViews}
-                      </ProcessDetailsGroup>
-                    </div>,
-                  );
-                }
-
-                if (finalAnswerMessage) {
-                  const turnContent: AssistantContentBlock[] = [];
-                  for (let i = userIdx + 1; i <= finalAssistantIdx; i++) {
-                    const m = messages[i];
-                    if (m?.role === "assistant") {
-                      for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
+                  for (let pIdx = fromIdx; pIdx < toIdx; pIdx++) {
+                    const pMsg = messages[pIdx];
+                    if (pMsg.role === "custom") {
+                      if (isHiddenCustomMessage(pMsg)) continue;
+                      segReveal ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[pIdx]);
+                      segMsgCount += 1;
+                      segViews.push(renderMessage(pIdx, { attachRef: false, keyPrefix: "process" }));
+                      continue;
                     }
+                    if (pMsg.role !== "assistant") continue;
+                    const blocks = getDisplayableAssistantBlocks(pMsg);
+                    if (blocks.length === 0) {
+                      const notices = getTranscriptNotices(pMsg);
+                      if (notices.length > 0) segViews.push(<TranscriptNoticeLines key={`process-notices-${messageKeys[pIdx]}`} notices={notices} />);
+                      continue;
+                    }
+                    segRefIdx ??= visibleRefIndexByMessage.get(pIdx);
+                    segToolCount += countToolCallBlocks(blocks);
+                    segMsgCount += 1;
+                    segReveal ||= Boolean(pendingSearchScroll && entryIds[pIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
+                    segViews.push(renderMessage(pIdx, {
+                      attachRef: false,
+                      keyPrefix: "process",
+                      messageOverride: pMsg,
+                      showTimestamp: false,
+                      withNotices: true,
+                    }));
                   }
-                  const writtenFiles = keepWrittenFiles(finalViews, extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd));
-                  rendered.push(renderMessage(finalAssistantIdx, {
-                    messageOverride: finalAnswerMessage,
-                    writtenFiles,
-                    turnDurationMs,
-                    recoverTruncation: endIdx === messages.length && !isStreaming && !hasAssistantAnswer(finalAnswerMessage),
-                  }));
+
+                  if (segMsgCount === 0) {
+                    rendered.push(...segViews);
+                  } else if (segViews.length > 0) {
+                    const segMisses = summarizeCacheMisses(messages.slice(fromIdx, toIdx));
+                    rendered.push(
+                      <div
+                        key={`process-group-${messageKeys[groupStartIdx]}-${segCount++}`}
+                        ref={segRefIdx === undefined ? undefined : (el) => { messageRefs.current[segRefIdx!] = el; }}
+                      >
+                        <ProcessDetailsGroup
+                          key="answered"
+                          messageCount={segMsgCount}
+                          toolCallCount={segToolCount}
+                          durationMs={undefined}
+                          cacheMisses={segMisses}
+                          defaultExpanded={false}
+                          reveal={segReveal}
+                          t={t}
+                        >
+                          {segViews}
+                        </ProcessDetailsGroup>
+                      </div>,
+                    );
+                  }
+                };
+
+                // Split at every outbound mesh communication checkpoint:
+                // 1. Fold intermediate process messages prior to the checkpoint
+                // 2. Expose the outbound message prominently
+                // 3. Move the start of the next segment past this checkpoint
+                for (let i = userIdx + 1; i < endIdx; i++) {
+                  if (isMeshOutboundMessage(messages[i])) {
+                    renderProcessBlock(segStart, i);
+                    rendered.push(renderMessage(i));
+                    segStart = i + 1;
+                  }
                 }
 
-                for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-                  rendered.push(renderMessage(renderIdx));
+                // Render the trailing segment and the final assistant answer if present
+                const trailingAssistantIdx = findFinalAssistantIndex(messages, segStart - 1, endIdx);
+                if (trailingAssistantIdx !== -1) {
+                  const finalViews = getFinalAnswerViews(finalAnswerViewCache, messages[trailingAssistantIdx] as AssistantMessage);
+                  const finalAnswerMessage = finalViews.answer;
+
+                  // Fold process details between the last checkpoint and final answer
+                  renderProcessBlock(segStart, trailingAssistantIdx);
+
+                  if (finalAnswerMessage) {
+                    const turnContent: AssistantContentBlock[] = [];
+                    for (let i = userIdx + 1; i <= trailingAssistantIdx; i++) {
+                      const m = messages[i];
+                      if (m?.role === "assistant") {
+                        for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
+                      }
+                    }
+                    const writtenFiles = keepWrittenFiles(finalViews, extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd));
+                    rendered.push(renderMessage(trailingAssistantIdx, {
+                      messageOverride: finalAnswerMessage,
+                      writtenFiles,
+                      turnDurationMs,
+                      recoverTruncation: endIdx === messages.length && !isStreaming && !hasAssistantAnswer(finalAnswerMessage),
+                    }));
+                  }
+                  for (let renderIdx = trailingAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
+                    rendered.push(renderMessage(renderIdx));
+                  }
+                } else {
+                  renderProcessBlock(segStart, endIdx);
                 }
                 idx = endIdx;
               }
@@ -1349,9 +1407,9 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
               <StreamingReply store={streamingStore} onCommit={updatePromptAnchor} toolResults={toolResultsMap} modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} />
             )}
 
-            {agentRunning && !hasStreamingContent && (agentPhase || isCompacting) && (
+            {(agentRunning || isCompacting) && !hasStreamingContent && (agentPhase || isCompacting) && (
               <div className="break-words py-2 text-[13px] text-text-muted">
-                <span className="animate-[pulse_1.5s_infinite]">{phaseLabel(agentPhase, t, isCompacting)}</span>
+                <span className="animate-[pulse_1.5s_infinite]">{phaseLabel(agentPhase, t, isCompacting, (queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0))}</span>
               </div>
             )}
 
@@ -1395,7 +1453,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
         <div
           ref={quotePopoverRef}
           role={quoteInputOpen ? "dialog" : "toolbar"}
-          aria-label={t(quoteInputOpen ? "chat.newQuoteChat" : "chat.askSelection")}
+          aria-label={t(quoteInputOpen ? "chat.newQuoteChat" : "chat.selectionActions")}
           style={{
             position: "fixed",
             top: quotedSelection.top,
@@ -1422,7 +1480,9 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
               style={{ width: "100%", minWidth: 0, margin: 0, padding: 0, border: "none", display: "flex", flexDirection: "column", gap: 10 }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>{t("chat.askInNewChat")}</span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>
+                  {t(quoteInputMode === "side" ? "chat.askInSideChat" : "chat.askInNewChat")}
+                </span>
                 <button type="button" className="file-viewer-icon-button" title={t("i18n.close")} aria-label={t("i18n.close")} disabled={quoteSubmitting} onClick={closeQuotedSelection} style={{ border: "none" }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
                 </button>
@@ -1430,7 +1490,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
               <ChatInput
                 ref={quoteChatInputRef}
                 compact
-                onSend={askSelectionInNewChat}
+                onSend={quoteInputMode === "side" ? askSelectionInSideChat : askSelectionInNewChat}
                 onAbort={closeQuotedSelection}
                 isStreaming={false}
               />
@@ -1440,15 +1500,34 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
           <button
             type="button"
             className="file-viewer-icon-button"
-            title={t("chat.askInCurrent")}
-            aria-label={t("chat.askInCurrent")}
+            title={t("chat.quoteSelection")}
+            aria-label={t("chat.quoteSelection")}
             onPointerDown={(event) => event.preventDefault()}
             onClick={askSelectionHere}
             style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
           >
-            <span aria-hidden="true" style={{ fontSize: 15 }}>@</span>
-            <span>{t("chat.askInCurrent")}</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z" />
+              <path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z" />
+            </svg>
+            <span>{t("chat.quoteSelection")}</span>
           </button>
+          {onSideSession && !isHiddenRelation(session?.relation) && (
+            <button
+              type="button"
+              className="file-viewer-icon-button"
+              title={t("chat.askInSideChat")}
+              aria-label={t("chat.askInSideChat")}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => { setQuoteInputMode("side"); setQuoteInputOpen(true); window.getSelection()?.removeAllRanges(); }}
+              style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 12a8 8 0 0 1-8 8H5.5a2 2 0 0 1-1.4-3.4A8 8 0 1 1 21 12z" />
+              </svg>
+              <span>{t("chat.askInSideChat")}</span>
+            </button>
+          )}
           {onAskInNewChat && quotedSelection.sourceEntryId && !bashRunning && (
             <button
               type="button"
@@ -1456,7 +1535,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
               title={t("chat.askInNewChat")}
               aria-label={t("chat.askInNewChat")}
               onPointerDown={(event) => event.preventDefault()}
-              onClick={() => { setQuoteInputOpen(true); window.getSelection()?.removeAllRanges(); }}
+              onClick={() => { setQuoteInputMode("newChat"); setQuoteInputOpen(true); window.getSelection()?.removeAllRanges(); }}
               style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1531,6 +1610,17 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
         />
       </div>
       {isEmptyNew && <div className="min-h-0 flex-1" />}
+    </div>
+  );
+}
+
+function SideChatDivider() {
+  const { t } = useI18n();
+  return (
+    <div role="separator" className="my-4 flex items-center gap-3 text-xs" style={{ color: "var(--text-dim)" }}>
+      <span className="h-px flex-1" style={{ background: "var(--border)" }} />
+      <span>{t("sideChat.divider")}</span>
+      <span className="h-px flex-1" style={{ background: "var(--border)" }} />
     </div>
   );
 }

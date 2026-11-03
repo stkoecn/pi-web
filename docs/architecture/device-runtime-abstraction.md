@@ -178,3 +178,42 @@ if (isRemoteDevice(deviceId)) {
    - `silent` 模式剥离 `[reply by using send_session_message]`，固定为 `[From ${replyTarget}][mode: silent][Notification only, do NOT reply]:`；
    - `realtime` / `steer` / `followup` 清晰引导通过 `send_session_message` 工具回复，跨设备交互模型认知统一。
 
+---
+
+## 八、上游 v0.14.2 版本合并纪实与演进对比 (Upstream v0.14.2 Merge Record)
+
+### 1. 合并背景与上游核心演进
+本次升级将代码库从官方上游 `v0.13.0` (`fa9e1af`) 平滑同步至最新 `v0.14.2` (`5644bcf`)，包含 36 次核心提交，涉及 162 个文件（新增 6,008 行，精简 1,477 行）。上游核心演化特征包括：
+1. **Side Sessions (侧聊 / 衍生会话)**：基于 ADR 0007 架构，支持通过 `/side` 命令或选中文本弹窗创建只读分支会话，在独立标签页中并行探索，不污染主会话历史；
+2. **Favicon Attention Badge**：支持页面非活动/后台标签页时的动态未读与完成提醒（favicon.svg canvas 动态合成红点）；
+3. **Git Changes Tree/List View**：在文件面板的文件变动区新增平铺列表与目录树双重视图切换；
+4. **Scope All Models Switch**：模型选择器支持在已配置作用域模型（`enabledModels`）与全量可用模型之间平滑切换与搜索；
+5. **Mobile Navigation 3-Level Stack**：设置面板与侧边栏针对移动端提供清晰的 `home` / `section` / `detail` 三级滑动导航栈；
+6. **Subagent 架构收敛**：废弃了独立的 `SubagentViewer` 模态窗口，子代理统一收敛到主标签页与侧聊体系中管理。
+
+### 2. 异同点与冲突解决设计
+
+| 维度 / 模块 | 官方上游 v0.14.2 实现 | 本地多设备网关 (Device Runtime) 融合实现 | 决策与架构理由 |
+| :--- | :--- | :--- | :--- |
+| **会话与标签管理** (`AppShell.tsx`, `TabBar.tsx`) | 引入 `sideTabs` 状态数组与 `activeSideTabId`，管理主会话与衍生侧聊的分屏切换。 | 完整保留 `selectedDeviceId` 状态与双向 URL 绑定，确保在任何 Side Tab 切换、新建侧聊或关闭标签时，`deviceId` 上下文绝不丢失。 | 防止多设备并发操作时上下文混乱，侧聊继承父会话所在设备。 |
+| **RPC 调度器** (`lib/rpc-manager.ts`) | 新增 `isSideChat` 识别，工具列表收敛为只读工具，`extensionUiTheme` 替换假类，`resolveActiveToolNames` 保持 CLI carry 顺序提升 prompt cache。 | 在合入上游 Side Chat 与 Theme 优化的同时，完整保留底层 `IDeviceRuntime` 派发、`resolveRemoteSession` 与 `:::mesh-reply:::` 解析。 | 既拥有上游全部最新特性与缓存加速，又保留跨设备通信能力。 |
+| **文件浏览器** (`FileExplorer.tsx`, `FileViewer.tsx`) | 新增 Git 变更目录树与折行包裹设置。 | 合入 Git 变动视图的同时，严格保持所有 API 请求带上 `withDeviceId`，并在前端保留 `isPathCompatibleWithDevice` 路径安全守卫。 | 避免在跨 Windows/Linux 设备切换时因异构路径分隔符导致的 403 越权或乱码。 |
+| **聊天输入与窗口** (`ChatInput.tsx`, `ChatWindow.tsx`, `MessageView.tsx`) | 新增选中文本 quote-to-side-chat 操作、SVG usage 标签对齐、粘贴恢复。 | 严格保留 Team Mesh OUT / IN 徽标、机器人对端头像及跨设备快捷选人组件。 | 保障多智能体协同交互体验与上游新交互体验双向兼容。 |
+| **设置与配置面板** (`SettingsPanel.tsx`, `SettingsUi.tsx`) | 采用三级导航栈优化移动端体验。 | 保留三级导航栈的同时，保留“设备管理 (Devices)”与“Team Mesh”专属面板入口。 | 保持系统管理功能的完备性。 |
+
+### 3. 测试验收与端口铁律验证
+1. **端口守则**：全程严禁触碰或重启 9566 端口（PID 8564 持续稳定运行）；
+2. **9564 验证端口**：dev server 成功在 0.0.0.0:9564 编译并运行；
+3. **单元测试与集成测试**：
+   - Gateway 套件：`node --test lib/gateway/*.test.mjs` **58/58 通过**；
+   - Device Runtime 套件：`node --test lib/device-runtime/*.test.mjs` **26/26 通过**；
+   - Side Session 套件：`node --test lib/side-session.test.mjs` **12/12 通过**；
+   - AppShell 组件套件：`node --test components/AppShell.*.test.mjs` **23/23 通过**；
+   - Chat/Terminal/Subagents 套件：**309/309 全部通过**；
+   - TypeScript 全局检查：`tsc --noEmit` **0 错误**；
+4. **远程机（wsnas）端到端测试**：
+   - `test-remote-wsnas-e2e.mjs` 覆盖远程终端 SSE 通信、远程会话创建与 18 个工具解析、高并发压力测试（3 终端 + 1 会话并行），**4/4 全部通过**；
+5. **Playwright 真实浏览器端到端**：
+   - `verify-upstream-v0.14.2-browser.mjs` 在无头 Chrome 下完整执行 localhost 与 wsnas 设备双向切换、页面渲染与交互，控制台错误数为 0，网络 4xx/5xx 请求数为 0。
+
+

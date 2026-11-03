@@ -1,5 +1,4 @@
 import { scanSessionsWithNode, unlinkRemoteFilesWithNode } from "./remote-session-delete-node";
-import "server-only";
 import { getGateway } from "@/lib/gateway/singleton";
 import type { IHostDriver } from "@/lib/gateway/types/host-driver";
 import { getRemoteAgentDir } from "@/lib/remote-settings";

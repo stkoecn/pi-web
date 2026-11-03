@@ -499,7 +499,7 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
 
   private async loadModelsInternal(cwd: string): Promise<ModelsData> {
     const nameMap = new Map<string, string>();
-    let modelList: { id: string; name: string; provider: string; input?: string[] }[] = [];
+    let modelList: { id: string; name: string; provider: string; providerName: string; input?: string[] }[] = [];
     let defaultModel: { provider: string; modelId: string } | null = null;
     const thinkingLevels: Record<string, string[]> = {};
     const thinkingLevelMaps: Record<string, Record<string, string | null>> = {};
@@ -523,6 +523,7 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
       id: m.id,
       name: m.name,
       provider: m.provider,
+      providerName: services.modelRuntime.getProvider(m.provider)?.name ?? m.provider,
       input: m.input,
     }));
     for (const m of visible) {

@@ -11,6 +11,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 
 const agentDir = await mkdtemp(join(tmpdir(), "pi-web-rename-agent-"));
@@ -18,7 +19,10 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
 const jiti = createJiti(import.meta.url, {
-  alias: { "@": process.cwd() },
+  alias: {
+    "@": process.cwd(),
+    "server-only": fileURLToPath(new URL("../../../test/fixtures/server-only-stub.mjs", import.meta.url)),
+  },
   interopDefault: true,
   moduleCache: false,
 });

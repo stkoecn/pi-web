@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
-import { existsSync } from "fs";
-import { homedir, platform } from "os";
+import { homedir } from "os";
 import type { IPty } from "node-pty";
+import { getPowerShellConfig } from "@earendil-works/pi-coding-agent";
 import { samePath } from "./paths";
 import type { DebugServerGlobal } from "./debug-types";
 
@@ -83,8 +83,7 @@ function shellEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     // The browser login password guards this server, not the shells it starts.
-    const isWin = platform() === "win32";
-    const comparableKey = isWin ? key.toUpperCase() : key;
+    const comparableKey = process.platform === "win32" ? key.toUpperCase() : key;
     if (value !== undefined && comparableKey !== "PI_WEB_PASSWORD") env[key] = value;
   }
   env.TERM = "xterm-256color";
@@ -93,6 +92,19 @@ function shellEnvironment(): Record<string, string> {
   // system ANSI codepage (e.g. GBK on zh-CN) and mangle non-ASCII filenames.
   if (!process.env.LANG && !process.env.LC_ALL && !process.env.LC_CTYPE) env.LANG = "C.UTF-8";
   return env;
+}
+
+/**
+ * A new terminal's shell. Windows: PowerShell as pi's `powershell` tool resolves it (PowerShell 7,
+ * then Windows PowerShell; `where` keeps a Store install's WindowsApps alias), else ComSpec / cmd.
+ */
+function terminalShell(): { file: string; args: string[] } {
+  if (process.platform !== "win32") return { file: process.env.SHELL || "/bin/sh", args: ["-l"] };
+  try {
+    return { file: getPowerShellConfig().shell, args: [] };
+  } catch {
+    return { file: process.env.ComSpec ?? "cmd.exe", args: [] };
+  }
 }
 
 function emit(record: TerminalRecord, event: TerminalEvent): void {
@@ -106,51 +118,6 @@ function scheduleCleanup(id: string, record: TerminalRecord): void {
   record.cleanupTimer.unref?.();
 }
 
-function resolveShellAndArgs(): { shell: string; args: string[] } {
-  // Use platform() from "os" instead of process.platform so Next.js / Turbopack SWC
-  // does not statically dead-code-eliminate or inline the build host platform into the bundle.
-  if (platform() === "win32") {
-    return {
-      shell: process.env.ComSpec ?? "cmd.exe",
-      args: [],
-    };
-  }
-
-  const envShell = process.env.SHELL;
-  if (envShell && existsSync(envShell)) {
-    const isBourneOnly = envShell.endsWith("/sh") || envShell.endsWith("/ash");
-    return {
-      shell: envShell,
-      args: isBourneOnly ? [] : ["-l"],
-    };
-  }
-
-  const candidates = [
-    "/bin/bash",
-    "/usr/bin/bash",
-    "/usr/local/bin/bash",
-    "/bin/zsh",
-    "/usr/bin/zsh",
-    "/bin/ash",
-    "/bin/sh",
-    "/usr/bin/sh",
-  ];
-
-  for (const cand of candidates) {
-    if (existsSync(cand)) {
-      const isBourneOnly = cand.endsWith("/sh") || cand.endsWith("/ash");
-      return {
-        shell: cand,
-        args: isBourneOnly ? [] : ["-l"],
-      };
-    }
-  }
-
-  return {
-    shell: "/bin/sh",
-    args: [],
-  };
-}
 
 function dimension(value: number, fallback: number): number {
   return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
@@ -198,6 +165,7 @@ export async function createTerminal(
       exited: false,
       exitCode: null,
       cleanupTimer: null,
+      cleanupAt: null,
     };
     registry().set(id, record);
     scheduleCleanup(id, record);
@@ -212,6 +180,7 @@ export async function createTerminal(
     session.onExit((exitCode: number) => {
       if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
       record.cleanupTimer = null;
+      record.cleanupAt = null;
       record.exited = true;
       record.exitCode = exitCode;
       emit(record, { type: "exit", exitCode });
@@ -236,36 +205,8 @@ export async function createTerminal(
       { cause: error },
     );
   }
-  const isWin = platform() === "win32";
-  let shell = isWin ? (process.env.ComSpec ?? "cmd.exe") : (process.env.SHELL || "/bin/sh");
-  let args = isWin ? [] : ["-l"];
-
-  if (!isWin) {
-    if (existsSync(shell)) {
-      const isBourneOnly = shell.endsWith("/sh") || shell.endsWith("/ash");
-      args = isBourneOnly ? [] : ["-l"];
-    } else {
-      const candidates = [
-        "/bin/bash",
-        "/usr/bin/bash",
-        "/usr/local/bin/bash",
-        "/bin/zsh",
-        "/usr/bin/zsh",
-        "/bin/ash",
-        "/bin/sh",
-        "/usr/bin/sh",
-      ];
-      for (const cand of candidates) {
-        if (existsSync(cand)) {
-          shell = cand;
-          const isBourneOnly = cand.endsWith("/sh") || cand.endsWith("/ash");
-          args = isBourneOnly ? [] : ["-l"];
-          break;
-        }
-      }
-    }
-  }
-  const pty = spawn(shell, args, {
+  const shell = terminalShell();
+  const pty = spawn(shell.file, shell.args, {
     name: "xterm-256color",
     cols: dimension(cols, 80),
     rows: dimension(rows, 24),
@@ -281,6 +222,7 @@ export async function createTerminal(
     exited: false,
     exitCode: null,
     cleanupTimer: null,
+    cleanupAt: null,
   };
   registry().set(id, record);
   // Includes creations whose response or initial SSE connection never arrives.
@@ -294,6 +236,7 @@ export async function createTerminal(
   pty.onExit(({ exitCode }) => {
     if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
     record.cleanupTimer = null;
+    record.cleanupAt = null;
     record.exited = true;
     record.exitCode = exitCode;
     emit(record, { type: "exit", exitCode });

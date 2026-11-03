@@ -4,11 +4,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 
 const routeSource = await readFile(new URL("./[id]/fork/route.ts", import.meta.url), "utf8");
 const jiti = createJiti(import.meta.url, {
-  alias: { "@": process.cwd() },
+  alias: {
+    "@": process.cwd(),
+    "server-only": fileURLToPath(new URL("../../../test/fixtures/server-only-stub.mjs", import.meta.url)),
+  },
   interopDefault: true,
   moduleCache: false,
 });

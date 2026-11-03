@@ -773,7 +773,7 @@ function RenameInput({
   );
 }
 
-function DeleteConfirm({
+export function DeleteConfirm({
   label,
   deleteLabel,
   cancelLabel,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useReducer } from "react";
+import { stripAnsi } from "@/lib/ansi";
 import type {
   AgentMessage,
   BlockingExtensionUiRequest,
@@ -16,6 +17,7 @@ import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { agentStatusUrl, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { LOCAL_DEVICE_ID, isRemoteDevice, withDeviceId } from "@/lib/device-context";
+import { createSideChat, SIDE_REFUSAL_MESSAGES } from "@/lib/side-chat-client";
 import {
   deleteSessionViewSnapshot,
   getSessionViewSnapshot,
@@ -27,6 +29,7 @@ import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-prese
 import { CONFIGURED_TOOL_PRESET, getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
+import { formatSessionSummary } from "@/lib/session-stats-format";
 import { userMessageKey } from "@/lib/prompt-recovery";
 import { carryMessageKeys, messageRenderKeys } from "@/lib/message-keys";
 import {
@@ -175,12 +178,17 @@ export interface SlashCommandInfo {
 
 export type BuiltinSlashCommandResult =
   | { handled: false }
-  | { handled: true; message?: string; error?: string; action?: "openSessionStats" | "openSettings" };
+  | { handled: true; message?: string; error?: string; action?: "openSessionStats" | "openSettings" | "compact" | "openSideChat" };
 
 /** How a run ended, for the completion sound and notifications. */
 export interface AgentEndInfo {
   /** The run was stopped (Esc, Stop, another client's abort), not finished: nothing to announce. */
   aborted: boolean;
+  /**
+   * Subagents of this session are still at work and will report back with a run of their own:
+   * the task is not done yet, so nothing to announce either (#1434).
+   */
+  subagentsActive?: boolean;
 }
 
 export interface UseAgentSessionOptions {
@@ -200,6 +208,9 @@ export interface UseAgentSessionOptions {
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
   onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
   onSessionForked?: (newSessionId: string) => void;
+  /** `/side`: a side chat was forked from this session; open its tab. The
+   *  prompt argument, if any, seeds the new chat's composer. */
+  onSideSession?: (session: SessionInfo, prompt: string | null) => void;
   modelsRefreshKey?: number;
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void, locked: boolean) => void;
@@ -357,6 +368,7 @@ type ModelsResponse = {
   thinkingLevelPins?: Record<string, string>;
   modelError?: string;
   modelScopeWarnings?: string[];
+  isScoped?: boolean;
 };
 
 type SlashCommandsResponse = {
@@ -365,7 +377,7 @@ type SlashCommandsResponse = {
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const {
-    session, newSessionCwd, newSessionDraftKey, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, newSessionCwd, newSessionDraftKey, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, onSideSession,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
     onOpenSettings,
   } = opts;
@@ -398,6 +410,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [modelList, setModelList] = useState<ModelEntry[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelScopeWarnings, setModelScopeWarnings] = useState<string[]>([]);
+  const [isModelScopeActive, setIsModelScopeActive] = useState(false);
+  const [allModelList, setAllModelList] = useState<ModelEntry[] | null>(null);
+  const allModelsLoadRef = useRef<object | null>(null);
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
   const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(() => initialChoices?.model ?? null);
@@ -1300,7 +1315,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "notify": {
         addNotice({
           id: request.id,
-          message: request.message,
+          message: stripAnsi(request.message),
           type: request.notifyType ?? "info",
         });
         break;
@@ -1322,10 +1337,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ));
         break;
       case "setTitle":
-        if (request.title) document.title = request.title;
+        if (request.title) document.title = stripAnsi(request.title);
         break;
       case "set_editor_text":
-        opts.chatInputRef?.current?.insertText(request.text);
+        opts.chatInputRef?.current?.insertText(stripAnsi(request.text));
         break;
       case "custom":
         setExtensionCustomUis((queue) => request.closed
@@ -2213,6 +2228,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setModelNames(d.models);
     setModelError(d.modelError ?? null);
     setModelScopeWarnings(d.modelScopeWarnings ?? []);
+    setIsModelScopeActive(Boolean(d.isScoped));
+    // The maps below replace the ones loadAllModels merged into: load that list again.
+    setAllModelList(null);
+    allModelsLoadRef.current = null;
     setModelThinkingLevels(d.thinkingLevels ?? {});
     setModelThinkingLevelMaps(d.thinkingLevelMaps ?? {});
     const nextModelList = d.modelList ?? [];
@@ -2230,9 +2249,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // A picked model this folder does not offer (one carried over from the
       // composer this one replaced, or since scoped out) goes back to automatic.
       // An empty list offers nothing to compare with (a failed load answers
-      // with one): the pick stays.
+      // with one): the pick stays. An active scope does not wipe out an
+      // intentionally selected unscoped model.
       const picked = newSessionModelOverrideRef.current;
       const kept = picked && (nextModelList.length === 0
+        || Boolean(d.isScoped)
         || nextModelList.some((m) => m.provider === picked.provider && m.id === picked.modelId));
       if (picked && !kept) {
         newSessionModelOverrideRef.current = null;
@@ -2250,6 +2271,36 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     }
   }, [deviceId, isNew, newSessionCwd, session?.cwd]);
+
+  // pi's /model "all" scope: names and reasoning levels of models outside
+  // `enabledModels` join the maps, so a picked unscoped model shows them too.
+  const loadAllModels = useCallback(() => {
+    if (allModelsLoadRef.current) return;
+    const load = {};
+    allModelsLoadRef.current = load;
+    const modelCwd = newSessionCwd ?? session?.cwd ?? "";
+    fetch(withDeviceId(`/api/models?scope=all${modelCwd ? `&cwd=${encodeURIComponent(modelCwd)}` : ""}`, deviceIdRef.current))
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Failed to load models (HTTP ${res.status})`);
+        const d = await res.json() as ModelsResponse;
+        if (allModelsLoadRef.current !== load) return;
+        setModelNames((prev) => ({ ...d.models, ...prev }));
+        setModelThinkingLevels((prev) => ({ ...d.thinkingLevels, ...prev }));
+        setModelThinkingLevelMaps((prev) => ({ ...d.thinkingLevelMaps, ...prev }));
+        setAllModelList(d.modelList ?? []);
+      })
+      .catch((e) => {
+        if (allModelsLoadRef.current !== load) return;
+        allModelsLoadRef.current = null;
+        addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
+      });
+  }, [addNotice, newSessionCwd, session?.cwd]);
+
+  useEffect(() => {
+    if (!isModelScopeActive || !displayModel || allModelList) return;
+    if (modelList.some((m) => m.provider === displayModel.provider && m.id === displayModel.modelId)) return;
+    loadAllModels();
+  }, [allModelList, displayModel, isModelScopeActive, loadAllModels, modelList]);
 
   // Picking a model or reasoning level is session-scoped, as in the TUI. The
   // selectors' star is the explicit Ctrl+S equivalent: it saves the global
@@ -2293,6 +2344,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     reloadModelsQuietly();
   }, [addNotice, displayModel, handleModelChange, reloadModelsQuietly, saveDefaultPreferences]);
+
+  /**
+   * Fork this session into a side chat and open its tab: `/side` and the selected-text
+   * action. The child inherits history up to this point and starts with sideChatTools
+   * (ADR 0007).
+   */
+  const startSideChat = useCallback(async (prompt: string | null = null, name?: string): Promise<string | null> => {
+    const sid = sessionIdRef.current ?? await ensureNewSession();
+    if (!sid) return "No active session to branch from";
+    const res = await createSideChat(sid, (key) => key, name);
+    if ("error" in res) return res.error;
+    onSideSession?.(res.session, prompt);
+    return null;
+  }, [ensureNewSession, onSideSession]);
 
   const handleBuiltinSlashCommand = useCallback(async (text: string): Promise<BuiltinSlashCommandResult> => {
     if (!text.startsWith("/")) return { handled: false };
@@ -2370,6 +2435,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         case "session": {
           if (!sid) return complete({ handled: true, error: "No active session" });
+          if (!onSessionStatsPanelOpen) return complete({ handled: true, message: formatSessionSummary(sessionStats) });
           const stats = await sendAgentCommand<SessionStatsInfo>(sid, { type: "get_session_stats" }, deviceIdRef.current);
           if (stats) {
             setSessionStatsOverride(stats);
@@ -2418,6 +2484,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           return completed;
         }
 
+        case "side": {
+          const error = await startSideChat(args || null);
+          return complete(error ? { handled: true, error } : { handled: true, action: "openSideChat" });
+        }
+
         default:
           return { handled: false };
       }
@@ -2426,7 +2497,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       if (commandName === "compact") setIsCompacting(false);
     }
-  }, [activeLeafId, addNotice, ensureNewSession, isCompacting, loadModels, loadSession, loadSlashCommands, loadTools, promoteNewSession, onOpenSettings, onSessionForked, onSessionStatsPanelOpen, slashCommandsForMcp]);
+  }, [activeLeafId, addNotice, ensureNewSession, isCompacting, loadModels, loadSession, loadSlashCommands, loadTools, promoteNewSession, onOpenSettings, onSessionForked, onSessionStatsPanelOpen, sessionStats, slashCommandsForMcp, startSideChat]);
 
   // Let AgentSession.prompt decide atomically whether to queue against the
   // current run or start a new turn if it settled while the request was in
@@ -2975,7 +3046,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, offline, activeLeafId, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
-    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
+    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, isModelScopeActive, allModelList, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats, autoCompactionEnabled,
     slashCommands, slashCommandsLoading, queuedMessages,
@@ -2993,7 +3064,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, pendingScrollToUserRef, initialScrollDoneRef,
     // Actions
-    handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
+    handleSend, handleAbort, startSideChat, handleFork, handleNavigate, handleModelChange,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     dismissCompactError,
     handleRecallQueue,
@@ -3003,7 +3074,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     cancelEdit: editEntryId ? cancelEdit : undefined,
     addNotice,
     setNoticePaused: setPausedNoticeId,
-    handleToolPresetChange, handleThinkingLevelChange, handleSetDefaultModel, handleSetDefaultThinkingLevel, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages, loadContext,
+    handleToolPresetChange, handleThinkingLevelChange, handleSetDefaultModel, handleSetDefaultThinkingLevel, loadTools, loadSlashCommands, loadAllModels, setActiveLeafId, setData, setMessages, loadContext,
     scrollToBottom, scrollUserMsgToTop, scrollToMessage,
     dispatch, setAgentRunning, setForkingEntryId,
     bashRunning, pendingBash,
