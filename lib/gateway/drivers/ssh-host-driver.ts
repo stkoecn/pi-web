@@ -508,16 +508,29 @@ export class SSHHostDriver implements IHostDriver {
     if (candidateSessionId) {
       envVars.push(`PI_SESSION_ID="${candidateSessionId}"`);
     }
-    const envPrefix = envVars.join(" ");
-
     // The same PATH a user-installed `pi` needs: sshd hands an `exec` request
     // to a non-interactive shell that reads no rc file, so `pi` is not on PATH
     // when it was installed under `$HOME/.local/node/bin`.
-    let command = `${envPrefix} ${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
-    if (opts.cwd) {
-      // Normalize backslashes to forward slashes to prevent shell escape stripping (e.g. D:\proj\helper -> D:projhelper)
-      const normalizedCwd = opts.cwd.replace(/\\/g, '/');
-      command = `cd "${normalizedCwd.replace(/"/g, '\\"')}" && ${command}`;
+    const isWin = await this.isWindows();
+    let command: string;
+    if (isWin) {
+      // Windows OpenSSH cmd.exe does not support POSIX `VAR=val cmd` syntax
+      const envCmds = envVars.map(v => `set ${v}`).join(' & ');
+      const baseCmd = `${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
+      if (opts.cwd) {
+        const winCwd = opts.cwd.replace(/\//g, '\\');
+        command = `${envCmds} & cd /d "${winCwd.replace(/"/g, '""')}" & ${baseCmd}`;
+      } else {
+        command = `${envCmds} & ${baseCmd}`;
+      }
+    } else {
+      const envPrefix = envVars.join(" ");
+      command = `${envPrefix} ${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
+      if (opts.cwd) {
+        // Normalize backslashes to forward slashes to prevent shell escape stripping (e.g. D:\proj\helper -> D:projhelper)
+        const normalizedCwd = opts.cwd.replace(/\\/g, '/');
+        command = `cd "${normalizedCwd.replace(/"/g, '\\"')}" && ${command}`;
+      }
     }
 
     return withChannelRetry(() => new Promise<RPCChannel>((resolve, reject) => {

@@ -22,13 +22,22 @@ export async function POST(req: Request) {
     }
 
     if (!isRemote) {
-      cwd = resolve(cwd);
-      if (!(await stat(cwd)).isDirectory()) {
-        return NextResponse.json({ error: "cwd must be a directory" }, { status: 400 });
+      let validDir = false;
+      try {
+        const candidate = resolve(cwd);
+        const s = await stat(candidate);
+        if (s.isDirectory()) {
+          const roots = await getAllowedFileRoots();
+          if (isExistingFilePathAllowed(candidate, roots)) {
+            cwd = candidate;
+            validDir = true;
+          }
+        }
+      } catch {
+        // Path does not exist (e.g. leftover Linux path on Windows host)
       }
-      const roots = await getAllowedFileRoots();
-      if (!isExistingFilePathAllowed(cwd, roots)) {
-        return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      if (!validDir) {
+        cwd = process.cwd();
       }
     }
 

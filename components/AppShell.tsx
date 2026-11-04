@@ -682,7 +682,7 @@ export function AppShell() {
     if (!terminalsRestored) return;
     try {
       window.sessionStorage.setItem(TERMINAL_TABS_KEY, JSON.stringify({
-        tabs: terminalTabs.map(({ id, cwd }) => ({ id, cwd })),
+        tabs: terminalTabs.map(({ id, cwd, deviceId }) => ({ id, cwd, deviceId })),
         activeId: activeFileTabId,
         open: rightPanelOpen,
       }));
@@ -1422,6 +1422,11 @@ export function AppShell() {
     // its home (already cached when the sidebar listed it, `/` until
     // the lookup lands) and correct the workspace once it resolves.
     const nextCwd = isRemote ? deviceHomeOrRoot(id) : null;
+    const targetProject = nextCwd ?? id;
+    if (activeProjectKeyRef.current !== targetProject) {
+      changeFileWorkspace(activeProjectKeyRef.current, targetProject);
+      activeProjectKeyRef.current = targetProject;
+    }
     setActiveCwd(nextCwd);
     setSelectedSession(null);
     setNewSessionCwd(nextCwd);
@@ -1447,7 +1452,7 @@ export function AppShell() {
     } else {
       router.replace(deviceHref(null, "/"), { scroll: false });
     }
-  }, [deviceHref, isMobile, router]);
+  }, [changeFileWorkspace, deviceHref, isMobile, router]);
 
   const handleOpenTerminal = useCallback((cwd: string, targetDeviceId?: string) => {
     const devId = targetDeviceId ?? selectedDeviceId;

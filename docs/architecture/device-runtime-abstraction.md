@@ -216,4 +216,48 @@ if (isRemoteDevice(deviceId)) {
 5. **Playwright 真实浏览器端到端**：
    - `verify-upstream-v0.14.2-browser.mjs` 在无头 Chrome 下完整执行 localhost 与 wsnas 设备双向切换、页面渲染与交互，控制台错误数为 0，网络 4xx/5xx 请求数为 0。
 
+---
+
+## 九、异构环境与跨平台部署避坑指南 (Cross-Platform Pitfalls & Resilient Patterns)
+
+在多设备网关演进和跨系统（Windows 宿主开发机 ↔ Linux 远程 NAS/服务器）长期迭代过程中，多次暴露了以下底层陷阱。特此固化记录为标准设计模式与避坑铁律：
+
+### 1. 打包器跨平台编译时的“常量折叠”（Constant Folding）陷阱
+- **现象**：在 Windows 开发机执行 `next build` 打包后，部署到 Linux (`wsnas`) 生产环境，终端启动报错 `execvp(3) failed: No such file or directory`。
+- **根因**：Next.js / Turbopack / Webpack 在构建打包时，会对静态的 `process.platform !== "win32"` 进行条件分支折叠（Constant Folding），将 Windows 机器的构建期环境当作永久运行时常量，直接移除了 Linux 的 POSIX 分支代码，导致编译出来的 JavaScript 在 Linux 上依然执行 `cmd.exe`。
+- **治理规则**：
+  - 严禁在跨平台运行的核心库中使用可被打包器静态折叠的字面量判断；
+  - 必须采用**运行时环境探测**与动态探测：
+    ```ts
+    // 采用 node:os 的 platform() 并在运行时结合根路径特征，规避静态编译折叠
+    import { platform } from "node:os";
+    import { existsSync } from "node:fs";
+
+    const isNonWindowsRuntime = !existsSync("C:\\") && (Boolean(process.env.SHELL) || platform() !== "win32");
+    ```
+  - **跨系统原生编译优先原则**：目标机器（如 Linux）若具备 Node 环境，生产构建必须在目标机环境执行原生构建（`npx next build --turbopack`），从根本上杜绝架构与平台环境异构带来的二进制或平台代码误编译。
+
+### 2. OpenSSH 跨系统（Windows ↔ Linux）命令行与环境变量语法异构
+- **现象**：从 Linux 发起 SSH 连接至 Windows 机器时，后台报错 `'PI_WEB_DEVICE_ID' 不是内部或外部命令，也不是可运行的程序或批处理文件`。
+- **根因**：OpenSSH 在 Windows 上的默认 Shell 通常为 `cmd.exe` 或 PowerShell，不支持 POSIX 风格的单行行内环境变量前缀语法（如 `VAR=val command`）。
+- **治理规则**：
+  - 在 `SSHHostDriver` 中抽象 `isWindows()` 异步探测机制（通过 `uname -s || echo %OS%` 检测）；
+  - 针对 Windows 目标端，环境变量必须采用链式命令：`set "VAR=val" & set "VAR2=val2" & cd /d "<dir>" & <cmd>`；
+  - 针对 Linux/POSIX 目标端，保持 `VAR=val ... <cmd>` 原生语法。
+
+### 3. 多设备工作区隔离与路径跨端泄漏防线（Path Leak Prevention）
+- **现象**：切换设备后，文件面板或终端报 `403 Access denied`。
+- **根因**：用户在设备 A（Linux）打开了 `/home/user/file`，切换到设备 B（Windows 本地）时，若前端未清空或隔离工作区，旧标签页会向设备 B 的 `/api/files` 请求该 Linux 路径，触发 Windows 下的安全边界检查导致拒绝；同理，未持久化 `deviceId` 的终端也会混用本地路径。
+- **治理规则**：
+  - **设备切换时的工作区隔离**：`handleSelectDevice` 必须触发 `changeFileWorkspace(prevProject, nextProject)`，并在切换时重置选中的路径与会话；
+  - **标签与存储的设备绑定**：终端标签（`terminalTabs`）在持久化到 `sessionStorage` 时，必须序列化 `deviceId`；
+  - **路径合法性守卫**：前端在请求前通过 `isPathCompatibleWithDevice(path, deviceId)` 进行防御性阻断，API 端对跨平台非法路径提供安全回退。
+
+### 4. 远程/后端服务重启后的会话过期自愈（Session Self-Healing）
+- **现象**：服务部署升级或 NAS 重启后，浏览器刷新时终端报 `404 Terminal session not found`，页面卡死。
+- **根因**：终端 PTY 属于内存驻留进程，服务重启后原有 ID 自然失效。若前端仅做简单的 `GET /api/terminal/:id` 校验，在 404 时抛出异常，会导致用户无法使用。
+- **治理规则**：
+  - 在 `TerminalPanel.tsx` 中实施**容错自愈策略**：当检查到旧终端 404（已过期或被后端重启回收）时，立即自动以相同的 `cwd`、`cols`、`rows` 和 `deviceId` 发起 `POST /api/terminal` 重新唤起有效 Shell，实现用户端无感刷新与自动恢复。
+
+
 

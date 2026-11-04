@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
+import { homedir, platform } from "os";
+import { existsSync } from "fs";
 import type { IPty } from "node-pty";
 import { getPowerShellConfig } from "@earendil-works/pi-coding-agent";
 import { samePath } from "./paths";
@@ -99,7 +100,10 @@ function shellEnvironment(): Record<string, string> {
  * then Windows PowerShell; `where` keeps a Store install's WindowsApps alias), else ComSpec / cmd.
  */
 function terminalShell(): { file: string; args: string[] } {
-  if (process.platform !== "win32") return { file: process.env.SHELL || "/bin/sh", args: ["-l"] };
+  // Use runtime OS check to prevent Turbopack from constant-folding process.platform
+  // when compiled on a Windows build host and deployed to Linux.
+  const isPosix = !existsSync("C:\\") && (Boolean(process.env.SHELL) || platform() !== "win32");
+  if (isPosix) return { file: process.env.SHELL || "/bin/bash", args: ["-l"] };
   try {
     return { file: getPowerShellConfig().shell, args: [] };
   } catch {

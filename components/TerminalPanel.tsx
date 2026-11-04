@@ -188,8 +188,17 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
     startRef.current = (async () => {
       fitAndResize();
       if (restored || reconnectKey > 0) {
-        // Restoring a tab must never silently launch a replacement shell.
-        await terminalRequest(`/api/terminal/${encodeURIComponent(id)}`);
+        // Restoring a tab checks existing terminal; if expired or restarted, recreates it
+        try {
+          await terminalRequest(`/api/terminal/${encodeURIComponent(id)}`);
+        } catch (cause: any) {
+          // If terminal expired or server restarted (404), seamlessly relaunch shell
+          await terminalRequest("/api/terminal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows, deviceId: tab.deviceId }),
+          });
+        }
       } else {
         await terminalRequest("/api/terminal", {
           method: "POST",
