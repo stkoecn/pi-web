@@ -18,9 +18,12 @@ Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
 - Never fall back to `next dev --webpack`: the dev graph can fail on `undici` imports such as `node:console`. Development uses Turbopack.
 - `next dev` may append a generated `BEGIN:nextjs-agent-rules` block to `AGENTS.md`. It is tooling output: check `git status` and keep it out of unrelated commits.
 
-### Upgrading pi
+### Remote Node Deployment Rules (wsnas, etc.)
 
-pi's packages up to 1.2.0 depend on each other with `^` ranges (1.3.0 pins them exactly), and the published pi-web's dependencies resolve afresh on install (no lockfile ships). Install every `@earendil-works/*` package the tree holds, the SDK's own dependencies included (`pi-codemode`, `pi-mcp`, `pi-telemetry`, …), with `npm install --save-exact`, so npm reuses those exact versions for the SDK's ranges. `lib/pi-packages.test.mjs` fails on any pi package that is not pinned that way; pi-web 0.12.0 pinned four, and installs after pi 1.2.0 paired pi-coding-agent 1.1.0 with pi-codemode 1.2.0.
+- **STRICT PROHIBITION (铁律)**: **禁止在 wsnas 当中进行编译，只准部署运行编译好的服务！**
+  - 严禁在 `wsnas` 等远程生产机器上直接运行 `next build` 或 `next dev` 进行在线编译（NAS CPU/内存受限，不仅编译极慢极易超时，还会引起 CPU/内存飙升、缺失二进制环境导致的 PostCSS 产物损坏等不可控问题）。
+  - **唯一正确的部署规范**：必须在本地开发机完成完整编译与测试后，仅将编译产物（`.next` 目录）、静态资源及应用代码打包归档同步至远程节点。
+  - 远程节点的服务必须以生产模式运行（通过 systemd 执行 `node bin/pi-web.js -p 9564 -H 0.0.0.0 --no-open`），严禁将 systemd 服务改为 `next dev`。
 
 ---
 

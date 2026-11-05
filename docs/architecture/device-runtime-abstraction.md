@@ -222,7 +222,7 @@ if (isRemoteDevice(deviceId)) {
 
 在多设备网关演进和跨系统（Windows 宿主开发机 ↔ Linux 远程 NAS/服务器）长期迭代过程中，多次暴露了以下底层陷阱。特此固化记录为标准设计模式与避坑铁律：
 
-### 1. 打包器跨平台编译时的“常量折叠”（Constant Folding）陷阱
+### 1. 打包器跨平台编译时的“常量折叠”（Constant Folding）陷阱与远程编译铁律
 - **现象**：在 Windows 开发机执行 `next build` 打包后，部署到 Linux (`wsnas`) 生产环境，终端启动报错 `execvp(3) failed: No such file or directory`。
 - **根因**：Next.js / Turbopack / Webpack 在构建打包时，会对静态的 `process.platform !== "win32"` 进行条件分支折叠（Constant Folding），将 Windows 机器的构建期环境当作永久运行时常量，直接移除了 Linux 的 POSIX 分支代码，导致编译出来的 JavaScript 在 Linux 上依然执行 `cmd.exe`。
 - **治理规则**：
@@ -235,7 +235,10 @@ if (isRemoteDevice(deviceId)) {
 
     const isNonWindowsRuntime = !existsSync("C:\\") && (Boolean(process.env.SHELL) || platform() !== "win32");
     ```
-  - **跨系统原生编译优先原则**：目标机器（如 Linux）若具备 Node 环境，生产构建必须在目标机环境执行原生构建（`npx next build --turbopack`），从根本上杜绝架构与平台环境异构带来的二进制或平台代码误编译。
+- **禁止在远程生产节点（如 wsnas）进行编译（铁律）**：
+  - **严禁在 wsnas 等弱算力远程生产节点上直接执行 `next build` 或 `next dev` 在线编译**！
+  - 远程 NAS/边缘节点的 CPU、内存与网络（如连不上 Google Fonts）受限，不仅编译极度缓慢（动辄几分钟超时）、占用数 GB 内存引发系统卡死，还极其容易因缺少构建依赖导致产物损坏；
+  - 远程节点只准部署预先在开发机/CI流水线编译好的完整生产产物，直接通过生产入口（`node bin/pi-web.js -p 9564 ...`）启动运行。
 
 ### 2. OpenSSH 跨系统（Windows ↔ Linux）命令行与环境变量语法异构
 - **现象**：从 Linux 发起 SSH 连接至 Windows 机器时，后台报错 `'PI_WEB_DEVICE_ID' 不是内部或外部命令，也不是可运行的程序或批处理文件`。
