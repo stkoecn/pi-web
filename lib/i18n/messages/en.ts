@@ -23,7 +23,7 @@ export const enLocale: LocalePlugin = {
     "settings.uiFontFamily": "Interface font",
     "settings.monoFontFamily": "Monospace font",
     "settings.uiFontPlaceholder": "System default",
-    "settings.monoFontPlaceholder": "Default: Noto Sans Mono",
+    "settings.monoFontPlaceholder": "Default: Cascadia Code / Menlo / Consolas",
     "settings.resetUiFont": "Reset interface font",
     "settings.resetMonoFont": "Reset monospace font",
     "settings.fontDescription": "Names of fonts installed on this device, comma-separated; leave blank for the default. The monospace font is used for code and the terminal. Saved in this browser only.",

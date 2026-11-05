@@ -23,7 +23,7 @@ export const zhCNLocale: LocalePlugin = {
     "settings.uiFontFamily": "界面字体",
     "settings.monoFontFamily": "等宽字体",
     "settings.uiFontPlaceholder": "系统默认",
-    "settings.monoFontPlaceholder": "默认 Noto Sans Mono",
+    "settings.monoFontPlaceholder": "默认 Cascadia Code / Menlo / Consolas",
     "settings.resetUiFont": "重置界面字体",
     "settings.resetMonoFont": "重置等宽字体",
     "settings.fontDescription": "填写本机已安装的字体名，多个用逗号分隔，留空使用默认。等宽字体用于代码和终端。仅保存在当前浏览器。",
