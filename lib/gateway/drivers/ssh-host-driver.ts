@@ -27,7 +27,35 @@ export class SSHHostDriver implements IHostDriver {
    */
   private shellPool: PersistentShellPool | null = null;
   private isWindowsTarget: boolean | null = null;
+  private isCmdExeTarget: boolean | null = null;
   private targetProbePromise: Promise<boolean> | null = null;
+
+  private inFlightExecs = 0;
+  private execQueue: (() => void)[] = [];
+  private static readonly MAX_CONCURRENT_EXECS = 4;
+
+  private acquireExecSlot(): Promise<() => void> {
+    return new Promise((resolve) => {
+      const enter = () => {
+        this.inFlightExecs += 1;
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          this.inFlightExecs -= 1;
+          const next = this.execQueue.shift();
+          if (next) next();
+        };
+        resolve(release);
+      };
+
+      if (this.inFlightExecs < SSHHostDriver.MAX_CONCURRENT_EXECS) {
+        enter();
+      } else {
+        this.execQueue.push(enter);
+      }
+    });
+  }
 
   constructor(deviceId: string, client: Client) {
     this.deviceId = deviceId;
@@ -57,6 +85,27 @@ export class SSHHostDriver implements IHostDriver {
   }
 
   /**
+   * Probe whether the remote shell is native Windows cmd.exe (as opposed to POSIX bash/sh).
+   * In cmd.exe, `uname` fails, so `uname -s 2>/dev/null || echo %OS%` yields `Windows_NT`.
+   * On Linux, macOS, or Git Bash / MSYS2 / MINGW64 on Windows, `uname -s` succeeds and
+   * yields e.g. `Linux`, `Darwin`, `MINGW64...`, `MSYS...`. Those targets use POSIX syntax!
+   */
+  private async isCmdExe(): Promise<boolean> {
+    if (this.isCmdExeTarget !== null) return this.isCmdExeTarget;
+    try {
+      const res = await this.execOneShot('uname -s 2>/dev/null || echo %OS%');
+      const out = (res.stdout || '').trim();
+      const lower = out.toLowerCase();
+      const isCmd = lower === 'windows_nt' || (lower.includes('windows_nt') && !lower.includes('mingw') && !lower.includes('msys') && !lower.includes('cygwin'));
+      this.isCmdExeTarget = isCmd;
+      this.isWindowsTarget = isCmd || lower.includes('mingw') || lower.includes('msys') || lower.includes('cygwin') || lower.includes('windows');
+      return isCmd;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Probe whether the remote device is Windows (e.g. MINGW, MSYS, Windows_NT).
    * On Windows OpenSSH, persistent non-interactive shells holding an open stdin
    * cause MSYS2 bash/sh to busy-spin on Win32 named pipes, consuming 100% CPU.
@@ -69,11 +118,8 @@ export class SSHHostDriver implements IHostDriver {
 
     this.targetProbePromise = (async () => {
       try {
-        const res = await this.execOneShot('uname -s 2>/dev/null || echo %OS%');
-        const out = (res.stdout || '').toLowerCase();
-        const win = out.includes('mingw') || out.includes('msys') || out.includes('cygwin') || out.includes('windows');
-        this.isWindowsTarget = win;
-        return win;
+        await this.isCmdExe();
+        return this.isWindowsTarget ?? false;
       } catch {
         return false;
       } finally {
@@ -382,10 +428,17 @@ export class SSHHostDriver implements IHostDriver {
 
     const command = [cmd, ...args.map(a => `"${a.replace(/"/g, '\\"')}"`)].join(' ');
 
+    const isCmd = await this.isCmdExe();
+    if (isCmd) {
+      const winCwd = opts?.cwd ? opts.cwd.replace(/\//g, '\\') : '';
+      return this.execOneShot(winCwd ? `cd /d "${winCwd.replace(/"/g, '""')}" & ${command}` : command, opts);
+    }
+
     const isWin = await this.isWindows();
     if (isWin) {
-      // Windows targets must never use persistent shell pools to prevent MSYS2 pipe spinning
-      return this.execOneShot(opts?.cwd ? `cd "${opts.cwd.replace(/"/g, '\\"')}" && ${command}` : command, opts);
+      // Windows targets running Git Bash / MSYS2 must avoid persistent shell pool pipe spinning, but use POSIX shell syntax
+      const normalizedCwd = opts?.cwd ? opts.cwd.replace(/\\/g, '/') : '';
+      return this.execOneShot(normalizedCwd ? `cd "${normalizedCwd.replace(/"/g, '\\"')}" && ${command}` : command, opts);
     }
 
     try {
@@ -403,66 +456,73 @@ export class SSHHostDriver implements IHostDriver {
     }
   }
 
-  private execOneShot(
+  private async execOneShot(
     fullCommand: string,
     opts?: { env?: Record<string, string>; timeoutMs?: number },
   ): Promise<ExecResult> {
     const timeoutMs = opts?.timeoutMs ?? 30_000;
-    return withChannelRetry(() => new Promise<ExecResult>((resolve, reject) => {
-      this.client.exec(fullCommand, { env: opts?.env as any }, (err: any, stream: ClientChannel) => {
-        if (err) return reject(err);
+    const release = await this.acquireExecSlot();
+    try {
+      return await withChannelRetry(() => new Promise<ExecResult>((resolve, reject) => {
+        this.client.exec(fullCommand, { env: opts?.env as any }, (err: any, stream: ClientChannel) => {
+          if (err) return reject(err);
 
-        let stdout = '';
-        let stderr = '';
-        let settled = false;
+          let stdout = '';
+          let stderr = '';
+          let settled = false;
 
-        const timer = setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            try { stream.destroy(); } catch {}
-            reject(new Error(`execOneShot timed out after ${timeoutMs}ms: ${fullCommand.slice(0, 80)}`));
+          const timer = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              try { stream.destroy(); } catch {}
+              reject(new Error(`execOneShot timed out after ${timeoutMs}ms: ${fullCommand.slice(0, 80)}`));
+            }
+          }, timeoutMs);
+          timer.unref?.();
+
+          stream.on('data', (data: Buffer) => {
+            stdout += data.toString('utf8');
+          });
+          stream.stderr.on('data', (data: Buffer) => {
+            stderr += data.toString('utf8');
+          });
+
+          stream.on('error', (streamErr: Error) => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              reject(streamErr);
+            }
+          });
+
+          stream.on('close', (code: number) => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              resolve({
+                stdout,
+                stderr,
+                exitCode: code ?? 0,
+              });
+            }
+          });
+
+          // Close stdin immediately so remote commands waiting for EOF don't hang
+          try { stream.end(); } catch {}
+        });
+      }), {
+        attempts: 5,
+        baseDelayMs: 200,
+        onRetry: (_err, attempt) => {
+          const evicted = this.shellPool?.evictIdleShells(1) ?? 0;
+          if (evicted > 0) {
+            console.info(`[SSHHostDriver:${this.deviceId}] Evicted ${evicted} idle shell(s) from pool to free channel for execOneShot (attempt ${attempt + 1})`);
           }
-        }, timeoutMs);
-        timer.unref?.();
-
-        stream.on('data', (data: Buffer) => {
-          stdout += data.toString('utf8');
-        });
-        stream.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString('utf8');
-        });
-
-        stream.on('error', (streamErr: Error) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            reject(streamErr);
-          }
-        });
-
-        stream.on('close', (code: number) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            resolve({
-              stdout,
-              stderr,
-              exitCode: code ?? 0,
-            });
-          }
-        });
-
-        // Close stdin immediately so remote commands waiting for EOF don't hang
-        try { stream.end(); } catch {}
+        },
       });
-    }), {
-      onRetry: (_err, attempt) => {
-        const evicted = this.shellPool?.evictIdleShells(1) ?? 0;
-        if (evicted > 0) {
-          console.info(`[SSHHostDriver:${this.deviceId}] Evicted ${evicted} idle shell(s) from pool to free channel for execOneShot (attempt ${attempt + 1})`);
-        }
-      },
-    });
+    } finally {
+      release();
+    }
   }
 
   async spawnPiRpc(opts: {
@@ -511,12 +571,12 @@ export class SSHHostDriver implements IHostDriver {
     // The same PATH a user-installed `pi` needs: sshd hands an `exec` request
     // to a non-interactive shell that reads no rc file, so `pi` is not on PATH
     // when it was installed under `$HOME/.local/node/bin`.
-    const isWin = await this.isWindows();
+    const isCmd = await this.isCmdExe();
     let command: string;
-    if (isWin) {
+    if (isCmd) {
       // Windows OpenSSH cmd.exe does not support POSIX `VAR=val cmd` syntax
       const envCmds = envVars.map(v => `set ${v}`).join(' & ');
-      const baseCmd = `${REMOTE_PATH_PREFIX} pi ${args.join(' ')}`;
+      const baseCmd = `pi ${args.join(' ')}`;
       if (opts.cwd) {
         const winCwd = opts.cwd.replace(/\//g, '\\');
         command = `${envCmds} & cd /d "${winCwd.replace(/"/g, '""')}" & ${baseCmd}`;
