@@ -941,7 +941,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         ? "sidebar.openInExplorer"
         : "sidebar.openInFileManager",
   );
-  const fileManagerUnavailable = fileManager?.supported === false;
+  const isRemoteDevice = Boolean(deviceId && deviceId !== "localhost");
+  const fileManagerUnavailable = fileManager?.supported === false || isRemoteDevice;
+  const fileManagerTooltip = isRemoteDevice
+    ? (t("sidebar.openInExplorerRemoteOnly") || "Open in file manager is only available on the host machine")
+    : fileManagerUnavailable
+      ? t(fileManager?.reason === "remote" ? "sidebar.openInExplorerRemoteOnly" : "sidebar.openInExplorerUnsupported")
+      : fileManagerLabel;
   const fileManagerErrorMessage = fileManagerError
     ? t(FILE_MANAGER_ERROR_KEYS[fileManagerError] ?? fileManagerError)
     : null;
@@ -2868,9 +2874,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         });
       }}
       disabled={!explorerCwd || fileManagerUnavailable}
-      title={fileManagerUnavailable
-        ? t(fileManager?.reason === "remote" ? "sidebar.openInExplorerRemoteOnly" : "sidebar.openInExplorerUnsupported")
-        : fileManagerLabel}
+      title={fileManagerTooltip}
     >
       <FolderIcon size={keyIconSize} />
     </ToolbarIconButton>

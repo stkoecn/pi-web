@@ -69,8 +69,10 @@ export async function drainRemoteMeshOutbox(driver: SSHHostDriver): Promise<numb
           drained++;
         }
 
-        // Delete delivered message from outbox
-        await driver.exec(`rm -f "${filePath}" 2>/dev/null || true`).catch(() => {});
+        // Delete delivered message from outbox using native unlink first
+        await driver.unlink?.(filePath).catch(async () => {
+          await driver.exec(`rm -f "${filePath}" 2>/dev/null || true`).catch(() => {});
+        });
       } catch (e) {
         console.error(`[MeshOutbox] Failed to drain message file ${filePath}:`, e);
       }
