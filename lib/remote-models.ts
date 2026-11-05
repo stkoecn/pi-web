@@ -28,6 +28,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { IHostDriver, RPCChannel } from "@/lib/gateway/types/host-driver";
 import { deviceHomeOrDefault } from "@/lib/device-home";
+import type { ModelsData } from "@/lib/models-cache";
 
 /** One model as the remote device reports it, normalised to what the UI needs. */
 export interface RemoteModelInfo {
@@ -522,3 +523,41 @@ export async function loadRemoteModels(
   inFlight.set(deviceId, load);
   return load;
 }
+
+export function remoteCatalogueToModelsData(catalogue: RemoteModelCatalogue): ModelsData {
+  const models: Record<string, string> = {};
+  const modelList: ModelsData["modelList"] = [];
+  const thinkingLevels: Record<string, string[]> = {};
+  const thinkingLevelMaps: Record<string, Record<string, string | null>> = {};
+
+  for (const model of catalogue.models) {
+    const key = `${model.provider}:${model.id}`;
+    const name = model.name || model.id;
+    models[key] = name;
+    modelList.push({
+      id: model.id,
+      name,
+      provider: model.provider,
+      providerName: model.provider,
+      ...(Array.isArray(model.input) ? { input: model.input } : {}),
+    });
+    thinkingLevels[key] = model.thinkingLevels ?? ["off"];
+    if (model.thinkingLevelMap) thinkingLevelMaps[key] = model.thinkingLevelMap;
+  }
+
+  const thinkingLevel = catalogue.thinkingLevel ?? null;
+  return {
+    models,
+    modelList,
+    defaultModel: catalogue.defaultModel
+      ? { provider: catalogue.defaultModel.provider, modelId: catalogue.defaultModel.id }
+      : null,
+    defaultThinkingLevel: thinkingLevel,
+    savedDefaultThinkingLevel: thinkingLevel,
+    thinkingLevels,
+    thinkingLevelMaps,
+    thinkingLevelPins: {},
+    isScoped: false,
+  };
+}
+

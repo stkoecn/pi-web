@@ -29,6 +29,10 @@ export class OfflineHostDriver implements IHostDriver {
     throw new Error(`[${this.deviceId}] ${this.message}`);
   }
 
+  async unlink(_filePath: string): Promise<void> {
+    throw new Error(`[${this.deviceId}] ${this.message}`);
+  }
+
   async stat(_targetPath: string): Promise<FileEntry> {
     throw new Error(`[${this.deviceId}] ${this.message}`);
   }

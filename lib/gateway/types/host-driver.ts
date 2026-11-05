@@ -53,6 +53,7 @@ export interface IHostDriver {
   readFile(filePath: string): Promise<Buffer>;
   writeFile(filePath: string, content: Buffer | string): Promise<void>;
   stat(targetPath: string): Promise<FileEntry>;
+  unlink?(filePath: string): Promise<void>;
 
   // 3. Execution (Git, utilities, tools)
   exec(cmd: string, args?: string[], opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<ExecResult>;

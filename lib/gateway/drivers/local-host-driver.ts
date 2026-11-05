@@ -114,6 +114,10 @@ export class LocalHostDriver implements IHostDriver {
     await fs.writeFile(filePath, content);
   }
 
+  async unlink(filePath: string): Promise<void> {
+    await fs.unlink(filePath);
+  }
+
   async stat(targetPath: string): Promise<FileEntry> {
     const s = await fs.stat(targetPath);
     return {

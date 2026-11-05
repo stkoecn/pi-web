@@ -14,6 +14,7 @@ import { withDeferredProviderModels } from "@/lib/deferred-provider-models";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { getDeviceRuntime } from "@/lib/device-runtime";
 import { loadRemoteModels } from "@/lib/remote-models";
 import { DeviceOfflineError } from "@/lib/gateway/singleton";
 
@@ -54,15 +55,12 @@ export async function GET(req: Request) {
   if (!isRemoteDevice(deviceId)) {
     return Response.json({ error: "Expected a remote deviceId" }, { status: 400 });
   }
-  const catalogue = await loadRemoteModels(deviceId);
-  const { readRemoteDefaultPreferences } = await import("@/lib/remote-default-preferences");
-  const saved = await readRemoteDefaultPreferences(deviceId).catch(() => null);
-  const provider = saved?.defaultProvider ?? catalogue.defaultModel?.provider ?? null;
-  const modelId = saved?.defaultModel ?? catalogue.defaultModel?.id ?? null;
+  const runtime = await getDeviceRuntime(deviceId);
+  const def = await runtime.getDefaultModel();
   return Response.json({
-    defaultModel: provider && modelId ? { provider, modelId } : null,
-    defaultThinkingLevel: saved?.defaultThinkingLevel ?? catalogue.thinkingLevel ?? null,
-    settingsPath: saved?.settingsPath ?? null,
+    defaultModel: def.provider && def.modelId ? { provider: def.provider, modelId: def.modelId } : null,
+    defaultThinkingLevel: def.thinkingLevel ?? null,
+    settingsPath: def.settingsPath ?? null,
   });
 }
 

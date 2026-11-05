@@ -16,7 +16,7 @@ import { providerDisplayNames, rememberProviderModels, withDeferredProviderModel
 import { inferRemovedWorktree } from "@/lib/worktree";
 import { cwdMissingBody } from "@/lib/missing-cwd";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
-import { loadRemoteModels, type RemoteModelCatalogue } from "@/lib/remote-models";
+import { getDeviceRuntime } from "@/lib/device-runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -110,61 +110,12 @@ const EMPTY_MODELS: ModelsData = {
   isScoped: false,
 };
 
-/**
- * Map a remote device's catalogue into the exact payload the local branch
- * returns, so the model selector needs no second code path.
- *
- * What the device cannot tell us over RPC (pi's `enabledModels` scope, its saved
- * default thinking level) is left at its neutral value: no pins, no warnings, and
- * the level the device's live session reports as both resolved and saved.
- */
-function remoteCatalogueToModelsData(catalogue: RemoteModelCatalogue): ModelsData {
-  const models: Record<string, string> = {};
-  const modelList: ModelsData["modelList"] = [];
-  const thinkingLevels: Record<string, string[]> = {};
-  const thinkingLevelMaps: Record<string, Record<string, string | null>> = {};
-
-  for (const model of catalogue.models) {
-    const key = `${model.provider}:${model.id}`;
-    const name = model.name || model.id;
-    models[key] = name;
-    modelList.push({
-      id: model.id,
-      name,
-      provider: model.provider,
-      providerName: model.provider,
-      ...(Array.isArray(model.input) ? { input: model.input } : {}),
-    });
-    thinkingLevels[key] = model.thinkingLevels ?? ["off"];
-    if (model.thinkingLevelMap) thinkingLevelMaps[key] = model.thinkingLevelMap;
-  }
-
-  const thinkingLevel = catalogue.thinkingLevel ?? null;
-  return {
-    models,
-    modelList,
-    defaultModel: catalogue.defaultModel
-      ? { provider: catalogue.defaultModel.provider, modelId: catalogue.defaultModel.id }
-      : null,
-    defaultThinkingLevel: thinkingLevel,
-    // The device reports one level, not "resolved vs saved": treat it as both so
-    // the reasoning selector's star does not claim a different saved value.
-    savedDefaultThinkingLevel: thinkingLevel,
-    thinkingLevels,
-    thinkingLevelMaps,
-    thinkingLevelPins: {},
-    isScoped: false,
-  };
-}
-
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const deviceId = getRequestDeviceId(req, url.searchParams);
   if (isRemoteDevice(deviceId)) {
-    // The catalogue is built by the device's own `pi` over RPC or read from its
-    // models.json on disk (see lib/remote-models.ts).
-    const catalogue = await loadRemoteModels(deviceId);
-    const data = remoteCatalogueToModelsData(catalogue);
+    const runtime = await getDeviceRuntime(deviceId);
+    const data = await runtime.getAvailableModels();
     if (data.modelList.length === 0) {
       return Response.json({
         ...data,

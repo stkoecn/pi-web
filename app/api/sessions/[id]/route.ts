@@ -23,6 +23,7 @@ import { jsonResponse } from "@/lib/json-response";
 import { deleteSessions } from "@/lib/session-delete";
 import { attachTranscriptNotices, readSessionTranscriptNotices } from "@/lib/transcript-notices-server";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
+import { getDeviceRuntime } from "@/lib/device-runtime";
 import { invalidateRemoteSession, openRemoteSessionManager } from "@/lib/remote-session-store";
 import { deviceHomeOrDefault } from "@/lib/device-home";
 import { DeviceOfflineError } from "@/lib/gateway/singleton";
@@ -442,35 +443,20 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  // Deleting here would remove a local session the user never pointed at:
-  // delete it on the device instead.
-  if (isRemoteDevice(getRequestDeviceId(req))) {
-    const deviceId = getRequestDeviceId(req);
-    try {
-      const { deleteRemoteSessions } = await import("@/lib/remote-session-delete");
-      const { missing } = await deleteRemoteSessions(deviceId, [id]);
-      if (missing.length > 0) {
-        return NextResponse.json({ error: "Session not found" }, { status: 404 });
-      }
-      return NextResponse.json({ ok: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      // A device that is offline is a state the user can act on, not a server
-      // fault: say so, and say it at once (see getOnlineDriver).
-      const offline = message.includes("is not connected or offline");
-      return NextResponse.json(
-        { error: offline ? "The device is offline. Reconnect it, then delete again." : message, code: offline ? "device-offline" : undefined },
-        { status: offline ? 503 : 500 },
-      );
-    }
-  }
+  const deviceId = getRequestDeviceId(req);
   try {
-    const { missing } = await deleteSessions([id]);
+    const runtime = await getDeviceRuntime(deviceId);
+    const { missing } = await runtime.deleteSessions([id]);
     if (missing.length > 0) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
     return NextResponse.json({ ok: true });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+    const offline = message.includes("is not connected or offline") || message.includes("device-offline");
+    return NextResponse.json(
+      { error: offline ? "The device is offline. Reconnect it, then delete again." : message, code: offline ? "device-offline" : undefined },
+      { status: offline ? 503 : 500 },
+    );
   }
 }

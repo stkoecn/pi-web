@@ -423,6 +423,17 @@ export class SSHHostDriver implements IHostDriver {
     });
   }
 
+  async unlink(filePath: string): Promise<void> {
+    const sftp = await this.getSFTP();
+    const normalized = this.normalizeRemotePath(filePath);
+    return new Promise<void>((resolve, reject) => {
+      sftp.unlink(normalized, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+  }
+
   async exec(cmd: string, args: string[] = [], opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number }): Promise<ExecResult> {
     if (!this.alive) throw new Error(`Device ${this.deviceId} is not connected`);
 

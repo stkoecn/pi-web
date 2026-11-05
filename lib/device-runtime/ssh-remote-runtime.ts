@@ -49,7 +49,8 @@ import {
 import { deleteRemoteSessions } from "../remote-session-delete";
 import { forkRemoteSession } from "../remote-session-fork";
 import { getRemoteTools } from "../remote-tools";
-import { loadRemoteModels } from "../remote-models";
+import { loadRemoteModels, remoteCatalogueToModelsData } from "../remote-models";
+import type { ModelsData } from "../models-cache";
 import {
   readRemoteDefaultPreferences,
   writeRemoteDefaultPreferences,
@@ -58,6 +59,10 @@ import {
   readRemoteEnabledModels,
   writeRemoteEnabledModels,
 } from "../remote-enabled-models";
+import {
+  readRemoteModelsConfig,
+  writeRemoteModelsConfig,
+} from "../remote-models-config";
 import { listRemoteDirectory, readRemoteBuffer } from "../remote-files";
 import { deviceHomeOrDefault } from "../device-home";
 import { getGateway } from "../gateway/singleton";
@@ -342,6 +347,7 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
   async listSessions(options?: ListSessionsOptions): Promise<SessionSummary[]> {
     let summaries = await listRemoteSessions(this.deviceId, {
       force: options?.force,
+      deferDetails: options?.summary,
     });
     if (options?.cwd) {
       summaries = summaries.filter((s) => s.cwd === options.cwd);
@@ -413,6 +419,7 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
         tail,
         excludeLeaf: Boolean(before),
         sessionId,
+        deviceId: this.deviceId,
       }),
       transcriptNotices,
     );
@@ -422,6 +429,10 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
 
   async deleteSession(sessionId: string, _sessionFile?: string): Promise<void> {
     await deleteRemoteSessions(this.deviceId, [sessionId]);
+  }
+
+  async deleteSessions(sessionIds: readonly string[], options?: { keepRunning?: boolean }) {
+    return deleteRemoteSessions(this.deviceId, sessionIds, options);
   }
 
   async forkSession(
@@ -551,17 +562,22 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
 
   // 3. Models & Settings
 
-  async getAvailableModels(cwd?: string): Promise<any> {
+  async getAvailableModels(cwd?: string): Promise<ModelsData> {
     const catalogue = await loadRemoteModels(this.deviceId);
-    return catalogue;
+    return remoteCatalogueToModelsData(catalogue);
   }
 
   async getDefaultModel(cwd?: string): Promise<DefaultModelConfig> {
-    const prefs = await readRemoteDefaultPreferences(this.deviceId);
+    const prefs = await readRemoteDefaultPreferences(this.deviceId).catch(() => null);
+    const catalogue = await loadRemoteModels(this.deviceId);
+    const provider = prefs?.defaultProvider ?? catalogue.defaultModel?.provider ?? undefined;
+    const modelId = prefs?.defaultModel ?? catalogue.defaultModel?.id ?? undefined;
+    const thinkingLevel = prefs?.defaultThinkingLevel ?? catalogue.thinkingLevel ?? undefined;
     return {
-      provider: prefs?.defaultProvider ?? undefined,
-      modelId: prefs?.defaultModel ?? undefined,
-      thinkingLevel: prefs?.defaultThinkingLevel ?? undefined,
+      provider,
+      modelId,
+      thinkingLevel,
+      settingsPath: prefs?.settingsPath ?? null,
     };
   }
 
@@ -583,6 +599,14 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
 
   async setEnabledModels(models: string[], cwd?: string): Promise<void> {
     await writeRemoteEnabledModels(this.deviceId, models, { cwd });
+  }
+
+  async getModelsConfig(): Promise<Record<string, unknown>> {
+    return readRemoteModelsConfig(this.deviceId);
+  }
+
+  async setModelsConfig(config: Record<string, unknown>): Promise<void> {
+    await writeRemoteModelsConfig(this.deviceId, config);
   }
 
   // 4. Filesystem & Terminal
@@ -617,6 +641,23 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
 
     const parentPath = target === "/" ? null : target.slice(0, target.lastIndexOf("/")) || "/";
     return { path: target, parentPath, directories };
+  }
+
+  async createDir(parentPath: string, name: string): Promise<string> {
+    if (!name || name === "." || name === ".." || /[\/]/.test(name)) {
+      throw new Error("Directory name must be a single folder name");
+    }
+    const driver = await this.getDriver();
+    const parentStat = await driver.stat(parentPath).catch(() => null);
+    if (!parentStat?.isDirectory) {
+      throw new Error("Parent path is not a directory");
+    }
+    const createdPath = parentPath === "/" ? `/${name}` : `${parentPath}/${name}`;
+    const res = await driver.exec(`mkdir -p -- ${JSON.stringify(createdPath)}`);
+    if (res.exitCode !== 0) {
+      throw new Error(res.stderr.trim() || "Failed to create directory");
+    }
+    return createdPath;
   }
 
   async readFile(filePath: string): Promise<Buffer> {

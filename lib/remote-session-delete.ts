@@ -51,7 +51,8 @@ function sessionIdOfPath(path: string): string {
  */
 async function runScript(driver: IHostDriver, script: string): Promise<string> {
   const encoded = Buffer.from(script, "utf8").toString("base64");
-  const res = await driver.exec(`printf %s ${encoded} | base64 -d | sh`);
+  const decodeCmd = "(base64 -d 2>/dev/null || base64 -D 2>/dev/null || openssl base64 -d -A 2>/dev/null || python3 -m base64 -d 2>/dev/null || python -m base64 -d 2>/dev/null)";
+  const res = await driver.exec(`printf %s ${encoded} | ${decodeCmd} | sh`);
   if (res.exitCode !== 0 && !res.stdout) {
     throw new Error(res.stderr.trim() || `remote script failed (exit ${res.exitCode})`);
   }
@@ -74,7 +75,13 @@ find "$__dir" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r path; do
   grep -m 1 '"customType":"pi-web:subagent"' "$path" 2>/dev/null | cut -c1-2000 | sed 's/^/@@S /'
 done
 `;
-  const result = await driver.exec(script, [], { timeoutMs: 120_000 });
+  let stdout = "";
+  try {
+    stdout = await runScript(driver, script);
+  } catch {
+    const result = await driver.exec(script, [], { timeoutMs: 120_000 }).catch(() => ({ stdout: "", stderr: "", exitCode: 1 }));
+    stdout = result.stdout;
+  }
   const files: DeviceSessionFile[] = [];
   let current: DeviceSessionFile | null = null;
 
@@ -87,7 +94,7 @@ done
     }
   };
 
-  for (const rawLine of result.stdout.split("\n")) {
+  for (const rawLine of stdout.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
     if (line.startsWith("@@P ")) {
       const path = line.slice(4);
@@ -234,23 +241,50 @@ export async function deleteRemoteSessions(
   }
 
   const removed = [...doomed.keys()];
-  const b64Removed = Buffer.from(JSON.stringify(removed), "utf8").toString("base64");
-  const delScript = [
-    "if command -v node >/dev/null 2>&1; then",
-    "  node -e '",
-    "    const fs = require(\"fs\");",
-    "    const files = JSON.parse(Buffer.from(\"" + b64Removed + "\", \"base64\").toString(\"utf8\"));",
-    "    for (const f of files) {",
-    "      try { fs.unlinkSync(f); } catch (e) {}",
-    "    }",
-    "  '",
-    "  exit 0",
-    "fi",
-    "for f in " + removed.map(shellQuote).join(" ") + "; do rm -f -- \"$f\"; done; true",
-  ].join("\n");
-  await runScript(driver, delScript).catch(async () => {
-    await driver.exec(`for f in ${removed.map(shellQuote).join(" ")}; do rm -f -- "$f"; done; true`, [], { timeoutMs: 60_000 });
-  });
+  const remainingToRemove = new Set(removed);
+
+  // 1. Primary deletion: Native SFTP unlink (fast, reliable, immune to shell syntax, ARG_MAX, or PATH issues)
+  if (typeof driver.unlink === "function") {
+    const queue = [...removed];
+    const unlinkBatch = async (batch: string[]) => {
+      await Promise.all(
+        batch.map(async (filePath) => {
+          try {
+            await driver.unlink!(filePath);
+            remainingToRemove.delete(filePath);
+          } catch {
+            // Keep in remainingToRemove for shell fallback
+          }
+        }),
+      );
+    };
+    const BATCH_SIZE = 16;
+    for (let i = 0; i < queue.length; i += BATCH_SIZE) {
+      await unlinkBatch(queue.slice(i, i + BATCH_SIZE));
+    }
+  }
+
+  // 2. Secondary fallback: Shell removal if SFTP unlink was unavailable or partially failed
+  if (remainingToRemove.size > 0) {
+    const fallbackList = [...remainingToRemove];
+    const b64Removed = Buffer.from(JSON.stringify(fallbackList), "utf8").toString("base64");
+    const delScript = [
+      "if command -v node >/dev/null 2>&1; then",
+      "  node -e '",
+      "    const fs = require(\"fs\");",
+      "    const files = JSON.parse(Buffer.from(\"" + b64Removed + "\", \"base64\").toString(\"utf8\"));",
+      "    for (const f of files) {",
+      "      try { fs.unlinkSync(f); } catch (e) {}",
+      "    }",
+      "  '",
+      "  exit 0",
+      "fi",
+      "for f in " + fallbackList.map(shellQuote).join(" ") + "; do rm -f -- \"$f\"; done; true",
+    ].join("\n");
+    await runScript(driver, delScript).catch(async () => {
+      await driver.exec(`for f in ${fallbackList.map(shellQuote).join(" ")}; do rm -f -- "$f"; done; true`, [], { timeoutMs: 60_000 }).catch(() => {});
+    });
+  }
 
   for (const { path, parent } of reparented) {
     try {
@@ -269,5 +303,13 @@ export async function deleteRemoteSessions(
   }
 
   invalidateRemoteSessionCache(deviceId);
-  return { deleted: [...doomed.values()].map((file) => file.sessionId), missing, running };
+  const deletedSessionIds = [...doomed.values()].map((file) => file.sessionId);
+  try {
+    const { forgetRemoteSessionUiState, bumpRemoteSessionListVersion } = await import("./remote-session-store");
+    await forgetRemoteSessionUiState(deviceId, deletedSessionIds);
+    bumpRemoteSessionListVersion(deviceId);
+  } catch (error) {
+    console.warn(`[pi-web] could not clear remote sidebar state of deleted sessions: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { deleted: deletedSessionIds, missing, running };
 }

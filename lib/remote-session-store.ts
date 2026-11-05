@@ -112,6 +112,13 @@ export function getRemoteSessionListVersion(deviceId: string): number {
 	return catalogueVersions.get(deviceId) ?? 0;
 }
 
+export function bumpRemoteSessionListVersion(deviceId: string): number {
+	const next = (catalogueVersions.get(deviceId) ?? 0) + 1;
+	catalogueVersions.set(deviceId, next);
+	catalogueFingerprints.delete(deviceId);
+	return next;
+}
+
 function noteCatalogue(deviceId: string, entries: CatalogueEntry[]): void {
 	const fingerprint = entries
 		.map((entry) => `${entry.file.path}:${entry.file.size}:${entry.file.mtimeMs}`)
@@ -169,7 +176,8 @@ async function getDriver(deviceId: string): Promise<IHostDriver> {
  */
 async function runScript(driver: IHostDriver, script: string): Promise<string> {
 	const encoded = Buffer.from(script, "utf8").toString("base64");
-	const res = await driver.exec(`printf %s ${encoded} | base64 -d | sh`);
+	const decodeCmd = "(base64 -d 2>/dev/null || base64 -D 2>/dev/null || openssl base64 -d -A 2>/dev/null || python3 -m base64 -d 2>/dev/null || python -m base64 -d 2>/dev/null)";
+	const res = await driver.exec(`printf %s ${encoded} | ${decodeCmd} | sh`);
 	if (res.exitCode !== 0 && !res.stdout) {
 		throw new Error(res.stderr.trim() || `remote script failed (exit ${res.exitCode})`);
 	}
@@ -562,10 +570,48 @@ export async function updateRemoteSessionUiState(
 	};
 	const { state: updated } = applySessionUiStateRequest(current, request, Date.now());
 	const json = JSON.stringify(updated, null, 2);
-	const b64 = Buffer.from(json, "utf8").toString("base64");
-	const writeScript = `node -e \"const fs=require(\\\"fs\\\"), path=require(\\\"path\\\"), os=require(\\\"os\\\"); const dir=path.join(os.homedir(), \\\".pi\\\", \\\"agent\\\"); try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, \\\"pi-web-session-state.json\\\"), Buffer.from(\\\"${b64}\\\", \\\"base64\\\")); console.log(\\\"UI_STATE_WRITTEN\\\"); } catch (e) { process.exit(1); }\"`;
-	await runScript(driver, writeScript).catch(() => {});
+	try {
+		const { getRemoteAgentDir } = await import("./remote-settings");
+		const agentDir = await getRemoteAgentDir(deviceId);
+		const p = `${agentDir}/pi-web-session-state.json`;
+		await driver.writeFile(p, json);
+	} catch {
+		const b64 = Buffer.from(json, "utf8").toString("base64");
+		const writeScript = `node -e \"const fs=require(\\\"fs\\\"), path=require(\\\"path\\\"), os=require(\\\"os\\\"); const dir=path.join(os.homedir(), \\\".pi\\\", \\\"agent\\\"); try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, \\\"pi-web-session-state.json\\\"), Buffer.from(\\\"${b64}\\\", \\\"base64\\\")); console.log(\\\"UI_STATE_WRITTEN\\\"); } catch (e) { process.exit(1); }\"`;
+		await runScript(driver, writeScript).catch(() => {});
+	}
 	return updated;
+}
+
+export async function forgetRemoteSessionUiState(
+	deviceId: string,
+	sessionIds: Iterable<string>,
+): Promise<void> {
+	const ids = new Set(sessionIds);
+	if (ids.size === 0) return;
+	const remote = await readRemoteSessionUiState(deviceId);
+	let changed = false;
+	const sessions = { ...(remote.sessions || {}) };
+	for (const id of ids) {
+		if (id in sessions) {
+			delete sessions[id];
+			changed = true;
+		}
+	}
+	if (!changed) return;
+	const current: SessionUiState = {
+		...emptySessionUiState(),
+		projectNames: remote.projectNames || {},
+		sessions: sessions as any,
+	};
+	const json = JSON.stringify(current, null, 2);
+	try {
+		const { getRemoteAgentDir } = await import("./remote-settings");
+		const agentDir = await getRemoteAgentDir(deviceId);
+		const p = `${agentDir}/pi-web-session-state.json`;
+		const driver = await getDriver(deviceId);
+		await driver.writeFile(p, json);
+	} catch {}
 }
 
 export async function readRemoteSessionUiState(deviceId: string): Promise<{
@@ -574,11 +620,18 @@ export async function readRemoteSessionUiState(deviceId: string): Promise<{
 }> {
 	try {
 		const driver = await getDriver(deviceId);
-		const readScript = `node -e \"const fs=require(\\\"fs\\\"), path=require(\\\"path\\\"), os=require(\\\"os\\\"); const p=path.join(os.homedir(), \\\".pi\\\", \\\"agent\\\", \\\"pi-web-session-state.json\\\"); try { console.log(Buffer.from(fs.readFileSync(p)).toString(\\\"base64\\\")); } catch {}\"`;
-		const res = await driver.exec(readScript, [], { timeoutMs: 15_000 });
-		if (res.exitCode === 0 && res.stdout.trim()) {
-			const json = Buffer.from(res.stdout.trim(), "base64").toString("utf8");
-			const parsed = JSON.parse(json);
+		const { getRemoteAgentDir } = await import("./remote-settings");
+		const agentDir = await getRemoteAgentDir(deviceId);
+		const p = `${agentDir}/pi-web-session-state.json`;
+		let text = "";
+		try {
+			const buf = await driver.readFile(p);
+			text = buf.toString("utf8");
+		} catch {
+			text = await readRemoteTextFile(driver, p).catch(() => "");
+		}
+		if (text) {
+			const parsed = JSON.parse(text);
 			return {
 				projectNames: (parsed && typeof parsed.projectNames === "object" && parsed.projectNames) ? parsed.projectNames : {},
 				sessions: (parsed && typeof parsed.sessions === "object" && parsed.sessions) ? parsed.sessions : {},

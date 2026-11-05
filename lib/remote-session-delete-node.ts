@@ -73,7 +73,7 @@ console.log(JSON.stringify(out));
 
   try {
     const b64 = Buffer.from(nodeScript, "utf8").toString("base64");
-    const cmd = `node -e "eval(Buffer.from('${b64}','base64').toString('utf8'))" 2>/dev/null`;
+    const cmd = `PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node 2>/dev/null | tail -n 1)/bin" node -e "eval(Buffer.from('${b64}','base64').toString('utf8'))" 2>/dev/null`;
     const res = await driver.exec(cmd, [], { timeoutMs: 15_000 });
     if (res.exitCode === 0 && res.stdout.trim().startsWith("[")) {
       return JSON.parse(res.stdout.trim()) as NodeScannedSession[];

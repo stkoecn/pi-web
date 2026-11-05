@@ -44,6 +44,7 @@ import {
   isThinkingLevel,
   type DefaultPreferencesEdit,
 } from "../default-preferences";
+import { readModelsConfig, writeModelsConfig } from "../models-config-store";
 import { writeEnabledModels } from "../enabled-models-runtime";
 import {
   orderSelectorModels,
@@ -56,6 +57,7 @@ import {
 } from "../deferred-provider-models";
 import { projectTrustReloadOptions } from "../project-trust";
 import {
+  createDirectory,
   getBrowseStartDirectory,
   resolveDirectory,
   listDirectories,
@@ -328,6 +330,10 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
 
   async deleteSession(sessionId: string, _sessionFile?: string): Promise<void> {
     await deleteSessions([sessionId]);
+  }
+
+  async deleteSessions(sessionIds: readonly string[], options?: { keepRunning?: boolean }) {
+    return deleteSessions(sessionIds, options);
   }
 
   async forkSession(
@@ -625,6 +631,14 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
     invalidateModelsCache();
   }
 
+  async getModelsConfig(): Promise<Record<string, unknown>> {
+    return readModelsConfig();
+  }
+
+  async setModelsConfig(config: Record<string, unknown>): Promise<void> {
+    writeModelsConfig(config);
+  }
+
   // 4. Filesystem & Terminal
 
   async getHomeDir(): Promise<string> {
@@ -652,6 +666,10 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
       parentPath: getParentDirectory(resolved),
       directories,
     };
+  }
+
+  async createDir(parentPath: string, name: string): Promise<string> {
+    return createDirectory(parentPath, name);
   }
 
   async readFile(filePath: string): Promise<Buffer> {

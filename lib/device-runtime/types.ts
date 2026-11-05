@@ -4,6 +4,7 @@ import type {
   SessionHeader,
   SessionContext,
 } from "../types";
+import type { SessionDeleteResult } from "../session-delete";
 import type {
   SessionUiState,
   SessionUiStateRequest,
@@ -160,6 +161,7 @@ export interface DefaultModelConfig {
   provider?: string;
   modelId?: string;
   thinkingLevel?: string;
+  settingsPath?: string | null;
 }
 
 export interface DirectoryBrowseResult {
@@ -201,6 +203,7 @@ export interface IDeviceRuntime {
   readSessionTranscript(sessionId: string, sessionFile?: string): Promise<SessionTranscript>;
   readSessionContext(sessionId: string, sessionFile?: string, options?: ReadSessionContextOptions): Promise<SessionContextResult>;
   deleteSession(sessionId: string, sessionFile?: string): Promise<void>;
+  deleteSessions(sessionIds: readonly string[], options?: { keepRunning?: boolean }): Promise<SessionDeleteResult>;
   forkSession(sessionId: string, targetEntryId?: string, options?: ForkSessionOptions): Promise<ForkSessionResult>;
   setSessionTools(sessionId: string, tools?: string[]): Promise<SetToolsResult>;
   getTools(sessionId?: string, cwd?: string): Promise<ToolDefinition[]>;
@@ -218,10 +221,13 @@ export interface IDeviceRuntime {
   setDefaultModel(config: DefaultModelConfig, cwd?: string): Promise<void>;
   getEnabledModels(cwd?: string): Promise<string[]>;
   setEnabledModels(models: string[], cwd?: string): Promise<void>;
+  getModelsConfig(): Promise<Record<string, unknown>>;
+  setModelsConfig(config: Record<string, unknown>): Promise<void>;
 
   // 4. Filesystem & Terminal
   getHomeDir(): Promise<string>;
   browseDir(dirPath?: string): Promise<DirectoryBrowseResult>;
+  createDir(parentPath: string, name: string): Promise<string>;
   readFile(filePath: string): Promise<Buffer>;
   writeFile(filePath: string, content: Buffer | string): Promise<void>;
   exec(cmd: string, args?: string[], opts?: ExecOptions): Promise<ExecResult>;
@@ -235,6 +241,7 @@ export interface IDeviceRuntime {
 export type {
   SessionUiState,
   SessionUiStateRequest,
+  SessionDeleteResult,
   ModelsData,
   TerminalOptions,
   TerminalSession,
