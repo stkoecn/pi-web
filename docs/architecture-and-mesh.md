@@ -164,5 +164,21 @@ git merge upstream-main
 - 验证通过后提交 Merge Commit，并推送到咱们的 GitHub 仓库：
   ```bash
   git push origin dev
-  git push origin upstream-main
+  git push origin main
   ```
+
+---
+
+## 五、 跨端对等会话路由与错误透传加固
+
+针对在复杂网络拓扑（如网关运行在 Linux，多会话运行在内网 Windows 客户端）下发现的痛点，完成了针对性加固：
+
+1. **杜绝假成功（Zero False-Success）**：
+   - 在 `lib/gateway/mesh-agent-extension.mjs` 中，严格检查 Reverse Bridge 的 HTTP 状态码与响应体 `success` 字段。
+   - 当网关返回 500、400 或 `{ success: false, error: ... }` 时，强制向模型返回 `Failed to deliver mesh message to "<target>": <error>`，坚决杜绝静默吞错。
+2. **多源运行时解析（Multi-Source Runtime Discovery）**：
+   - `DeviceRuntimeRegistry` 不仅查验静态 `devices.json`，更动态联合检索：
+     - `gateway.registry` 中已连接的驱动实例；
+     - `gateway.listTunnels()` 中动态连入的反向隧道设备；
+     - `gateway.discoverSshHosts()` 中从 `~/.ssh/config` 解析的免配置主机。
+   - 只要设备在网关建立过通信或持有反向桥接，即刻自动注册对应 `SshRemoteDeviceRuntime`，实现对等端互发 100% 连通。
