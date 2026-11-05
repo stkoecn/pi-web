@@ -3,6 +3,7 @@ import { resolve } from "path";
 import { NextResponse } from "next/server";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { createTerminal } from "@/lib/terminal-manager";
+import { isLocalHostId } from "@/lib/gateway/host-identity";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,8 +14,9 @@ export async function POST(req: Request) {
     if (body.id !== undefined && (typeof body.id !== "string" || !/^[a-f0-9]{32}$/.test(body.id))) {
       return NextResponse.json({ error: "Invalid terminal id" }, { status: 400 });
     }
-    const deviceId = typeof body.deviceId === "string" ? body.deviceId : undefined;
-    const isRemote = deviceId && deviceId !== "localhost";
+    const rawDeviceId = typeof body.deviceId === "string" ? body.deviceId.trim() : undefined;
+    const isRemote = Boolean(rawDeviceId) && !isLocalHostId(rawDeviceId);
+    const deviceId = isRemote ? rawDeviceId : undefined;
 
     let cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
     if (!cwd) {
