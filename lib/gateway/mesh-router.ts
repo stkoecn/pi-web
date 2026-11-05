@@ -173,6 +173,10 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   } catch (err) {
     return {
       success: false,
+      targetDeviceId: deviceTarget,
+      targetSessionId: sessionTarget || "",
+      createdNewSession: isNewSession,
+      mode,
       error: `Cannot reach target device "${deviceTarget}": ${err instanceof Error ? err.message : String(err)}`,
     };
   }
