@@ -56,6 +56,17 @@ export async function resolvePatternMatches(
       // resolves to every provider offering it, pi 1.3.)
       scopedModels = [];
     }
+
+    // Polyfill pi 1.3 multi-provider resolution for ambiguous bare ids when SDK resolves to only one
+    const barePattern = pattern.split(":")[0];
+    if (!barePattern.includes("/") && !barePattern.includes("*")) {
+      const allMatching = models.filter((m) => m.id === barePattern);
+      if (allMatching.length > scopedModels.length) {
+        const pin = scopedModels.find((scoped) => scoped.thinkingLevel)?.thinkingLevel;
+        scopedModels = allMatching.map((model) => ({ model, thinkingLevel: pin }));
+      }
+    }
+
     const pin = scopedModels.find((scoped) => scoped.thinkingLevel)?.thinkingLevel;
     resolutions.push({
       pattern,
@@ -102,30 +113,15 @@ export async function resolveProviderGlobs(
   return globs;
 }
 
-/**
- * `catalog` is every model the runtime knows (`getModels()`), available or not.
- * An entry matching none of `models` but one of the catalog belongs to a
- * provider without a usable credential: it is marked `known`, so the panel
- * neither counts it stale nor lets `prune` delete it before the user signs
- * back in.
- */
 export async function buildEnabledModelsInput(
   patterns: string[] | undefined,
   models: readonly Model<Api>[],
-  options: { withProviderGlobs?: boolean; catalog?: readonly Model<Api>[] } = {},
+  options: { withProviderGlobs?: boolean } = {},
 ): Promise<EnabledModelsInput> {
-  const resolutions = await resolvePatternMatches(patterns ?? [], models);
-  const unmatched = resolutions.filter((resolution) => resolution.matched.length === 0);
-  if (options.catalog && unmatched.length > 0) {
-    const inCatalog = await resolvePatternMatches(unmatched.map((resolution) => resolution.pattern), options.catalog);
-    unmatched.forEach((resolution, index) => {
-      if (inCatalog[index].matched.length > 0) resolution.known = true;
-    });
-  }
   return {
     patterns,
     availableRefs: models.map(modelRef),
-    resolutions,
+    resolutions: await resolvePatternMatches(patterns ?? [], models),
     // Only an edit needs them; the read-only view never writes a pattern.
     ...(options.withProviderGlobs ? { providerGlobs: await resolveProviderGlobs(models) } : {}),
   };
