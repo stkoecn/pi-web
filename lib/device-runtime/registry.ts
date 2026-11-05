@@ -104,6 +104,23 @@ export class DeviceRuntimeRegistry {
       return remoteRuntime;
     }
 
+    // Check if the device is known to gateway (active in registry, reverse tunnel, or discovered in ~/.ssh/config)
+    try {
+      const { getGateway } = await import("../gateway/singleton");
+      const gateway = getGateway();
+      const inRegistry = normalizedId ? gateway.registry.get(normalizedId) : undefined;
+      const inTunnels = normalizedId ? gateway.listTunnels().find((t) => t.deviceId.toLowerCase() === normalizedId) : undefined;
+      const inDiscovered = normalizedId ? gateway.discoverSshHosts().find((c) => c.id.toLowerCase() === normalizedId) : undefined;
+      const resolvedId = inRegistry ? normalizedId : (inTunnels?.deviceId || inDiscovered?.id);
+
+      if (resolvedId && normalizedId) {
+        const { SshRemoteDeviceRuntime } = await import("./ssh-remote-runtime");
+        const remoteRuntime = new SshRemoteDeviceRuntime(resolvedId);
+        this.remoteRuntimes.set(normalizedId, remoteRuntime);
+        return remoteRuntime;
+      }
+    } catch (_) {}
+
     throw new Error(`Device runtime not found for device: ${deviceId}`);
   }
 }

@@ -176,6 +176,13 @@ export function setupMeshReverseBridge(
           } else {
             activeBridgePort = port2;
             activeBridgePorts.set(deviceId.toLowerCase(), port2);
+            void (async () => {
+              try {
+                const { DeviceRuntimeRegistry } = await import("../device-runtime/registry");
+                const { SshRemoteDeviceRuntime } = await import("../device-runtime/ssh-remote-runtime");
+                DeviceRuntimeRegistry.getInstance().registerRuntime(deviceId, new SshRemoteDeviceRuntime(deviceId));
+              } catch (_) {}
+            })();
             console.log(`[MeshReverseBridge:${deviceId}] Bridge active on remote 127.0.0.1:${port2} via SSH reverse tunnel`);
             resolve(port2);
           }
@@ -184,6 +191,13 @@ export function setupMeshReverseBridge(
         const bound = port || requestedPort;
         activeBridgePort = bound;
         activeBridgePorts.set(deviceId.toLowerCase(), bound);
+        void (async () => {
+          try {
+            const { DeviceRuntimeRegistry } = await import("../device-runtime/registry");
+            const { SshRemoteDeviceRuntime } = await import("../device-runtime/ssh-remote-runtime");
+            DeviceRuntimeRegistry.getInstance().registerRuntime(deviceId, new SshRemoteDeviceRuntime(deviceId));
+          } catch (_) {}
+        })();
         console.log(`[MeshReverseBridge:${deviceId}] Bridge active on remote 127.0.0.1:${bound} via SSH reverse tunnel`);
         resolve(bound);
       }
