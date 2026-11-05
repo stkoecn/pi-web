@@ -748,14 +748,7 @@ function ChangeRow({
   );
 }
 
-function isPathCompatibleWithDevice(path: string, deviceId?: string): boolean {
-  if (!path) return false;
-  const isRemote = deviceId && deviceId !== "localhost";
-  if (!isRemote) {
-    if (/^\/(home|root|var|etc|usr|opt)(\/|$)/.test(path)) return false;
-  }
-  return true;
-}
+// FileExplorer component for browsing directory trees.
 
 export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileExplorer({
   cwd,
@@ -1106,11 +1099,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setRoots([]);
       setRootsKey("");
     }
-    if (!isPathCompatibleWithDevice(cwd, deviceId)) {
-      setRoots([]);
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError(null);
     let cancelled = false;
@@ -1130,11 +1118,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   }, []);
 
   useEffect(() => {
-    if (!isPathCompatibleWithDevice(cwd, deviceId)) {
-      setGitFiles([]);
-      setGitLineStats({ additions: 0, deletions: 0 });
-      return;
-    }
     let cancelled = false;
     fetchGitStatus(cwd, deviceId)
       .then((status) => {
