@@ -248,15 +248,51 @@ if (isRemoteDevice(deviceId)) {
   - 针对 Windows 目标端，环境变量必须采用链式命令：`set "VAR=val" & set "VAR2=val2" & cd /d "<dir>" & <cmd>`；
   - 针对 Linux/POSIX 目标端，保持 `VAR=val ... <cmd>` 原生语法。
 
-### 3. 多设备工作区隔离与路径跨端泄漏防线（Path Leak Prevention）
-- **现象**：切换设备后，文件面板或终端报 `403 Access denied`。
-- **根因**：用户在设备 A（Linux）打开了 `/home/user/file`，切换到设备 B（Windows 本地）时，若前端未清空或隔离工作区，旧标签页会向设备 B 的 `/api/files` 请求该 Linux 路径，触发 Windows 下的安全边界检查导致拒绝；同理，未持久化 `deviceId` 的终端也会混用本地路径。
-- **治理规则**：
-  - **设备切换时的工作区隔离**：`handleSelectDevice` 必须触发 `changeFileWorkspace(prevProject, nextProject)`，并在切换时重置选中的路径与会话；
-  - **标签与存储的设备绑定**：终端标签（`terminalTabs`）在持久化到 `sessionStorage` 时，必须序列化 `deviceId`；
-  - **路径合法性守卫**：前端在请求前通过 `isPathCompatibleWithDevice(path, deviceId)` 进行防御性阻断，API 端对跨平台非法路径提供安全回退。
+### 3. 多设备工作区隔离与前端禁臆断路径铁律（Path Isolation without Frontend Presumption）
+- **现象**：在 wsnas（本地 Linux）直接访问时，左下角文件面板显示“未找到文件”，根本不发送网络请求；而跨设备切换时可能报 `403 Access denied`。
+- **根因剖析**：
+  - 之前为防止跨端泄露而在前端引入了 `isPathCompatibleWithDevice(path, deviceId)` 正则校验；
+  - **严重错误假设**：该函数默认 `deviceId === "localhost"` 就一定是 Windows 机器，一看到 `/home/windsing/...` 带有 `/home/` 前缀就直接返回 `false`，在前端把有效请求直接掐死！
+  - 实际上用户完全可能在 Linux 主机（如 wsnas）上以 `localhost` 身份本地运行 `pi-web`；
+- **治理规则（核心铁律）**：
+  - **严禁在前端编写任何臆测操作系统类型的硬编码路径校验**（如判断 `/home/` 或 `C:\`）；
+  - 路径的合法性、安全性全权交给后端的 `IDeviceRuntime`（`LocalDeviceRuntime` / `SshRemoteDeviceRuntime`）及其底层的 `isFilePathAllowed`；
+  - 前端只负责在设备切换时通过 `changeFileWorkspace(prevProject, nextProject)` 显式清空旧项目的工作区选择与文件标签；
+  - 终端标签（`terminalTabs`）序列化到 `sessionStorage` 时必须持久化 `deviceId`。
 
-### 4. 远程/后端服务重启后的会话过期自愈（Session Self-Healing）
+### 4. 远程 Windows SSH Shell 的真实类型识别（Git Bash vs cmd.exe）与命令语法
+- **现象**：从 Linux 访问 Windows 远程节点（如从 wsnas 访问 wshome）时，会话创建或恢复失败，报错 `/usr/bin/bash: line 1: cd: too many arguments`，导致 SSE 报 404、页面报 500。
+- **根因**：
+  - Windows 节点的 OpenSSH 默认登录 Shell 不一定是 `cmd.exe`，极大概率是 Git Bash（`bash.exe` / `sh.exe`，POSIX 语法）；
+  - 旧代码仅凭“目标是 Windows 系统”就武断拼接 `cmd.exe` 专用的命令：`set "VAR=val" & cd /d "D:\proj" & ...`；
+  - 当 Bash 执行 `cd /d "D:\proj"` 时，将 `/d` 当作目录参数，直接报错 `too many arguments`，导致 `pi` RPC 进程根本无法在工作区启动。
+- **治理规则**：
+  - 精准嗅探 Shell 类型：通过执行 `uname -s 2>/dev/null || echo %OS%`；
+  - 只有在 `uname` 命令执行失败、且输出纯粹为 `Windows_NT` 时，才确认为原生 `cmd.exe`，采用 `set VAR=val & cd /d ...` 语法；
+  - 只要 `uname` 成功（输出包含 `Linux`、`Darwin`、`MINGW64`、`MSYS`、`Cygwin`），均判定为 POSIX Shell，一律采用正统 POSIX 语法：`cd "..." && VAR=val pi ...`，彻底根除跨端语法崩溃。
+
+### 5. OpenSSH 客户端并发信道饱和（MaxSessions 10）限流防线
+- **现象**：在远程页面打开或切换会话时，并发多个状态轮询、文件探测和 SSE 事件通道，突然抛出 `(SSH) Channel open failure: open failed` 导致全站接口 500。
+- **根因**：OpenSSH 服务端默认配置了 `MaxSessions 10`。高频或突发的并发 `client.exec()` 一瞬间打开超过 10 个 Channel，SSH 服务端直接拒绝分配新信道。
+- **治理规则**：
+  - 在 `SSHHostDriver` 中实现单次执行并发信号量控制（`acquireExecSlot()`，设硬上限 `MAX_CONCURRENT_EXECS = 4`）；
+  - 超过并发限制的请求在内存队列中缓冲排队，执行完毕自动唤醒下一个；
+  - 结合 `withChannelRetry` 与空闲 Shell 驱逐机制，永不触发 OpenSSH 10 信道硬上限。
+
+### 6. 内网/离线部署环境下的字体网络依赖剔除
+- **现象**：将预编译服务部署到家庭内网 NAS 或海外无代理服务器时，服务启动耗时极长或报 `Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/font'`，接口出现 500。
+- **根因**：`app/layout.tsx` 依赖了 `next/font/google`（如 `Noto_Sans_Mono`），在服务器初始化或按需编译时会强行访问 `fonts.gstatic.com`，在内网超时挂死。
+- **治理规则**：
+  - 移除对 `next/font/google` 的外部网络强依赖，改用 CSS 本地字体栈配合系统级备用字体（`--font-mono-default`）；
+  - 确保预构建产物在完全断网环境下也能 100% 毫秒级冷启动。
+
+### 7. 预构建产物的跨平台相对软链接规范化（Normalize Symlinks）
+- **现象**：在 Windows 开发机执行 `next build` 打包后传输到 Linux，服务启动直接报错 `Cannot find package '@earendil-works/pi-coding-agent-...'`。
+- **根因**：Windows 下生成的 `.next/node_modules` 软链接可能包含绝对路径或错误的跨平台深度层级，直接解压到 Linux 时无法正确解析模块。
+- **治理规则**：
+  - 提供标准的 `scripts/normalize-next-symlinks.mjs` 工具，使用 Node.js 原生 `path.relative` 严格计算相对路径，在部署或打包后统一规范化全部符号链接。
+
+### 8. 远程/后端服务重启后的会话过期自愈（Session Self-Healing）
 - **现象**：服务部署升级或 NAS 重启后，浏览器刷新时终端报 `404 Terminal session not found`，页面卡死。
 - **根因**：终端 PTY 属于内存驻留进程，服务重启后原有 ID 自然失效。若前端仅做简单的 `GET /api/terminal/:id` 校验，在 404 时抛出异常，会导致用户无法使用。
 - **治理规则**：
