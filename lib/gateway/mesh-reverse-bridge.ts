@@ -6,6 +6,20 @@ import { getCanonicalHostId } from "./host-identity";
 /** Default port on the remote device for the reverse bridge */
 export const DEFAULT_MESH_BRIDGE_PORT = 29564;
 
+declare global {
+  var __activeMeshBridgePorts: Map<string, number> | undefined;
+}
+
+const activeBridgePorts: Map<string, number> =
+  globalThis.__activeMeshBridgePorts ?? (globalThis.__activeMeshBridgePorts = new Map());
+
+/**
+ * Get the currently active mesh bridge port for a given remote device.
+ */
+export function getActiveMeshBridgePort(deviceId: string): number {
+  return activeBridgePorts.get(deviceId.toLowerCase()) || DEFAULT_MESH_BRIDGE_PORT;
+}
+
 /**
  * Attaches a reverse bridge port forward on an active SSH client connection.
  *
@@ -161,6 +175,7 @@ export function setupMeshReverseBridge(
             resolve(0);
           } else {
             activeBridgePort = port2;
+            activeBridgePorts.set(deviceId.toLowerCase(), port2);
             console.log(`[MeshReverseBridge:${deviceId}] Bridge active on remote 127.0.0.1:${port2} via SSH reverse tunnel`);
             resolve(port2);
           }
@@ -168,6 +183,7 @@ export function setupMeshReverseBridge(
       } else {
         const bound = port || requestedPort;
         activeBridgePort = bound;
+        activeBridgePorts.set(deviceId.toLowerCase(), bound);
         console.log(`[MeshReverseBridge:${deviceId}] Bridge active on remote 127.0.0.1:${bound} via SSH reverse tunnel`);
         resolve(bound);
       }

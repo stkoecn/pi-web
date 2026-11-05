@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { execFile } from "child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { promisify } from "util";
@@ -107,18 +107,44 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const inline = new URL(req.url).searchParams.get("inline") === "1";
+  const url = new URL(req.url);
+  const inline = url.searchParams.get("inline") === "1";
+  const deviceId = url.searchParams.get("deviceId")?.trim() || undefined;
 
   try {
-    const filePath = await resolveSessionPath(id);
+    let filePath = await resolveSessionPath(id);
+    let tempInputPath: string | null = null;
+    let sessionBase = id;
+
+    if (!filePath && deviceId) {
+      try {
+        const { findRemoteSessionFile, readRemoteSessionContent } = await import("@/lib/remote-session-store");
+        const file = await findRemoteSessionFile(deviceId, id);
+        if (file) {
+          const content = await readRemoteSessionContent(deviceId, file);
+          const tempDir = join(tmpdir(), "pi-web-export");
+          mkdirSync(tempDir, { recursive: true });
+          tempInputPath = join(tempDir, `${randomUUID()}.jsonl`);
+          writeFileSync(tempInputPath, content, "utf8");
+          filePath = tempInputPath;
+          sessionBase = basename(file.path, ".jsonl");
+        }
+      } catch (err) {
+        console.warn(`[ExportRoute] Failed to load remote session ${id} from ${deviceId}:`, err);
+      }
+    }
+
     if (!filePath) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    }
+
+    if (!tempInputPath) {
+      sessionBase = basename(filePath, ".jsonl");
     }
 
     const tempDir = join(tmpdir(), "pi-web-export");
     mkdirSync(tempDir, { recursive: true });
 
-    const sessionBase = basename(filePath, ".jsonl");
     const fileName = `pi-session-${sessionBase}.html`;
     const outputPath = join(tempDir, `${randomUUID()}.html`);
 
@@ -138,6 +164,9 @@ export async function GET(
       });
     } finally {
       rmSync(outputPath, { force: true });
+      if (tempInputPath) {
+        rmSync(tempInputPath, { force: true });
+      }
     }
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

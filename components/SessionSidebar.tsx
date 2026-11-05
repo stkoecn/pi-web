@@ -1339,7 +1339,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, []);
   const handleDefaultCwd = useCallback(async (purpose: "files" | "new-session" = "files") => {
     try {
-      const res = await fetch("/api/default-cwd", { method: "POST" });
+      const res = await fetch("/api/default-cwd", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId: deviceIdRef.current }),
+      });
       const data = await res.json() as { cwd?: string; error?: string };
       // Select it like any other directory, so validation, project identity and
       // the file allow-list all go through /api/cwd/validate. It is not a path

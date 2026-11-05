@@ -568,6 +568,13 @@ export class SSHHostDriver implements IHostDriver {
 
     // Explicitly inject device and session environment variables so mesh extension knows its identity
     const envVars: string[] = [`PI_WEB_DEVICE_ID="${this.deviceId}"`];
+    try {
+      const { getActiveMeshBridgePort } = await import("../mesh-reverse-bridge");
+      const bridgePort = getActiveMeshBridgePort(this.deviceId);
+      if (bridgePort) {
+        envVars.push(`PI_MESH_BRIDGE_PORT="${bridgePort}"`);
+      }
+    } catch {}
     let candidateSessionId: string | undefined;
     if (opts.resumeSession) {
       const slashIdx = Math.max(opts.resumeSession.lastIndexOf("/"), opts.resumeSession.lastIndexOf("\\"));

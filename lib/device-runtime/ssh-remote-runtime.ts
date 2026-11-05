@@ -125,6 +125,7 @@ export function unpackMeshOutboundFrame(msg: any): {
     deviceId?: string;
     cwd?: string;
     prompt?: string;
+    isToolCall?: boolean;
   };
   frameId?: string;
 } {
@@ -160,6 +161,7 @@ export function unpackMeshOutboundFrame(msg: any): {
       deviceId: senderDev,
       cwd: senderCwd,
       prompt,
+      isToolCall: senderCtx?.isToolCall ?? true,
     },
   };
 }
@@ -247,6 +249,7 @@ export class SshRemoteActiveSession implements IActiveSession {
  * Reuses existing gateway, SSH driver, and remote session modules without code duplication.
  */
 export class SshRemoteDeviceRuntime implements IDeviceRuntime {
+  readonly isRemote = true;
   constructor(public readonly deviceId: string) {}
 
   protected async getDriver(): Promise<IHostDriver> {
@@ -342,6 +345,11 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
       return new SshRemoteActiveSession(existing);
     }
     return undefined;
+  }
+
+  async hasSession(sessionId: string): Promise<boolean> {
+    const file = await findRemoteSessionFile(this.deviceId, sessionId);
+    return Boolean(file);
   }
 
   async listSessions(options?: ListSessionsOptions): Promise<SessionSummary[]> {

@@ -194,11 +194,13 @@ export interface ExecResult {
  */
 export interface IDeviceRuntime {
   readonly deviceId: string;
+  readonly isRemote: boolean;
 
   // 1. Session Lifecycle
   createSession(options: CreateSessionOptions): Promise<SessionInitResult>;
   resumeSession(sessionId: string, sessionFile?: string, options?: ResumeSessionOptions): Promise<IActiveSession>;
   getActiveSession(sessionId: string): Promise<IActiveSession | undefined>;
+  hasSession(sessionId: string): Promise<boolean>;
   listSessions(options?: ListSessionsOptions): Promise<SessionSummary[]>;
   readSessionTranscript(sessionId: string, sessionFile?: string): Promise<SessionTranscript>;
   readSessionContext(sessionId: string, sessionFile?: string, options?: ReadSessionContextOptions): Promise<SessionContextResult>;

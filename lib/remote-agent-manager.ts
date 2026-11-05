@@ -1,8 +1,8 @@
-import { getGateway } from "@/lib/gateway/singleton";
-import type { RPCChannel } from "@/lib/gateway/types/host-driver";
-import { deviceHomeOrDefault } from "@/lib/device-home";
-import { isBlockingExtensionUiRequest } from "@/lib/extension-ui-queue";
-import type { ExtensionUiRequest } from "@/lib/types";
+import { getGateway } from "./gateway/singleton";
+import type { RPCChannel } from "./gateway/types/host-driver";
+import { deviceHomeOrDefault } from "./device-home";
+import { isBlockingExtensionUiRequest } from "./extension-ui-queue";
+import type { ExtensionUiRequest } from "./types";
 
 export interface RemoteRpcSession {
   sessionId: string;
@@ -334,13 +334,37 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
             deviceId: senderDev,
             sessionId: senderSess,
             cwd: senderCwd,
-            isToolCall: senderCtx?.isToolCall ?? false,
+            isToolCall: senderCtx?.isToolCall ?? true,
           },
         }).catch((err) => {
           console.error(`[RemoteRpcSession:${deviceId}] Failed to route mesh outbound message:`, err);
         });
       });
       return;
+    }
+
+    // Intercept text reply blocks (:::mesh-reply[target]...:::) from remote assistant messages as fallback
+    if (msg?.type === "message" || msg?.type === "message_end") {
+      const messageObj = msg?.message || msg?.data?.message;
+      if (messageObj?.role === "assistant") {
+        let textContent = "";
+        if (typeof messageObj.content === "string") {
+          textContent = messageObj.content;
+        } else if (Array.isArray(messageObj.content)) {
+          for (const block of messageObj.content) {
+            if (block && block.type === "text" && typeof block.text === "string") {
+              textContent += block.text + "\n";
+            }
+          }
+        }
+        if (textContent.includes(":::mesh-reply")) {
+          import("./gateway/mesh-interceptor").then(({ interceptMeshReplyFromText }) => {
+            interceptMeshReplyFromText(textContent, sessionObj.sessionId, deviceId).catch((e) => {
+              console.error(`[RemoteRpcSession:${deviceId}] Mesh interceptor error:`, e);
+            });
+          }).catch(() => {});
+        }
+      }
     }
   });
 

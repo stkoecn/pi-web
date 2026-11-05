@@ -10,7 +10,7 @@ import {
 import { isBashOutputPathReferencedBySession } from "@/lib/session-file-references";
 import { isBashOutputPathReferencedByEntries } from "@/lib/session-file-references-core";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
-import { openRemoteSessionManager } from "@/lib/remote-session-store";
+import { getDeviceRuntime } from "@/lib/device-runtime";
 import { getGateway } from "@/lib/gateway/singleton";
 
 // GET /api/agent/[id]/bash-output?path=<absPath>
@@ -45,19 +45,19 @@ export async function GET(
       return NextResponse.json({ error: "invalid path" }, { status: 400 });
     }
     try {
-      const remote = await openRemoteSessionManager(deviceId, id);
-      if (!remote) return NextResponse.json({ error: "Session not found" }, { status: 404 });
-      if (!isBashOutputPathReferencedByEntries(path, remote.sm.getEntries() as never)) {
+      const runtime = await getDeviceRuntime(deviceId);
+      const transcript = await runtime.readSessionTranscript(id);
+      if (!isBashOutputPathReferencedByEntries(path, transcript.entries as never)) {
         return NextResponse.json({ error: "forbidden" }, { status: 403 });
       }
 
       const driver = await getGateway().getOrConnectDriver(deviceId);
-      // -w0 is GNU-only; plain `base64` wraps, and the wrapper strips the breaks.
-      const encoded = await driver.exec(`base64 '${path.replace(/'/g, `'\''`)}'`, [], { timeoutMs: 30_000 });
-      if (encoded.exitCode !== 0) {
+      let bytes: Buffer;
+      try {
+        bytes = await driver.readFile(path);
+      } catch {
         return NextResponse.json({ error: "full output unavailable" }, { status: 404 });
       }
-      const bytes = Buffer.from(encoded.stdout.replace(/\s+/g, ""), "base64");
       if (bytes.length > MAX_INLINE_BASH_OUTPUT_BYTES && !download) {
         return NextResponse.json({
           error: `Full output is too large to display (limit ${MAX_INLINE_BASH_OUTPUT_BYTES} bytes)`,

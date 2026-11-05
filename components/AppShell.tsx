@@ -1247,7 +1247,7 @@ export function AppShell() {
     setAutoNameStatus({ kind: "naming" });
 
     try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/auto-name`, {
+      const response = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(sessionId)}/auto-name`, selectedDeviceIdRef.current), {
         method: "POST",
       });
       const body = (await response.json().catch(() => ({}))) as { title?: string; error?: string };

@@ -161,6 +161,7 @@ export class LocalActiveSession implements IActiveSession {
  */
 export class LocalDeviceRuntime implements IDeviceRuntime {
   readonly deviceId: string = LOCAL_DEVICE_ID;
+  readonly isRemote = false;
 
   // 1. Session Lifecycle
 
@@ -241,6 +242,11 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
       return new LocalActiveSession(existing);
     }
     return undefined;
+  }
+
+  async hasSession(sessionId: string): Promise<boolean> {
+    const filePath = await resolveSessionPath(sessionId);
+    return Boolean(filePath);
   }
 
   async listSessions(options?: ListSessionsOptions): Promise<SessionSummary[]> {

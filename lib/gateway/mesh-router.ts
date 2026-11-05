@@ -167,7 +167,15 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   }
 
   // d. Resolve target device runtime
-  const targetRuntime = await getDeviceRuntime(deviceTarget);
+  let targetRuntime;
+  try {
+    targetRuntime = await getDeviceRuntime(deviceTarget);
+  } catch (err) {
+    return {
+      success: false,
+      error: `Cannot reach target device "${deviceTarget}": ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 
   // Discover known projects and sessions on target device
   let resolvedCwd = projectTarget || "";
