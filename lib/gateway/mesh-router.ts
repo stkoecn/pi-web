@@ -9,7 +9,7 @@ export type MeshDeliveryMode = "realtime" | "steer" | "followup" | "silent";
 
 export const MODE_PROMPTS: Record<MeshDeliveryMode, string> = {
   realtime:
-    'Sender is blocked waiting for your reply. Sender unblocks on receiving any message or on timeout. You MUST reply by calling send_session_message tool to "{replyTarget}", do NOT just output text',
+    'Sender is blocked waiting for response. Sender unblocks on receiving any message, user action, or on timeout. Reply by calling send_session_message to "{replyTarget}"',
   steer:
     'Sender is NOT blocked. Please prioritize this request and reply by calling send_session_message to "{replyTarget}"',
   followup:
@@ -48,6 +48,7 @@ export interface SendMeshMessageResult {
   createdNewSession: boolean;
   mode: MeshDeliveryMode;
   reply?: string;
+  unblockReason?: string;
   error?: string;
 }
 
@@ -265,28 +266,10 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     if (matched) {
       pendingReplies.delete(key);
       entry.cleanup?.();
-      entry.resolve(message);
-      isReplyToPending = true;
-      resolvedSessionId = entry.senderSessionId;
+      // Unblock the sender's send_session_message tool call with unblock reason, NOT the message body!
+      entry.resolve("Unblocked by incoming message.");
       break;
     }
-  }
-
-  // c. CORE ANTI-DEADLOCK & DEDUPLICATION RULE (Scenario B):
-  // If this message was a reply that resolved an active pending wait on the peer,
-  // deliver directly via entry.resolve and return immediately!
-  // Do NOT inject a duplicate prompt into the target session.
-  if (isReplyToPending) {
-    if (earlyWaitKey) pendingReplies.delete(earlyWaitKey);
-    if (earlyTimer) clearTimeout(earlyTimer);
-    return {
-      success: true,
-      targetDeviceId: deviceTarget,
-      targetSessionId: resolvedSessionId || sessionTarget || "unknown",
-      createdNewSession: false,
-      mode,
-      reply: "Delivered reply to waiting peer session.",
-    };
   }
 
   // b. Prompt header injection (realtime, steer, followup, silent)
@@ -358,32 +341,9 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     }
   }
 
-  // f. Realtime mode reply wait (resolved exclusively by peer calling send_session_message)
+  // f. Realtime mode reply wait: blocks sender until interrupted by any message or 300s timeout
   if (mode === "realtime" && senderSessionId && earlyWaitPromise) {
-    const replyText = await earlyWaitPromise;
-
-    // Fallback prompt injection:
-    // When called from a tool context (isToolCall !== false), the reply is returned directly
-    // as the tool execution result (toolResult) to the model. We must NOT inject a duplicate
-    // prompt into senderActive!
-    // Only in non-tool contexts (isToolCall === false) where there is no tool call awaiting
-    // the result do we deliver a fallback prompt.
-    const isToolCall = options.senderContext?.isToolCall ?? true;
-    if (!isToolCall && replyText && !replyText.startsWith("Timeout:") && !replyText.startsWith("Realtime wait stopped") && !replyText.startsWith("Delivered reply")) {
-      const fromPeer = resolvedSessionId ? `${resolvedSessionId}.${deviceTarget}` : deviceTarget;
-      const inboundMsg = `[From ${fromPeer}][mode: realtime]:\n${replyText}`;
-      try {
-        const senderRuntime = await getDeviceRuntime(senderDeviceId);
-        const senderActive = await senderRuntime.getActiveSession(senderSessionId);
-        if (senderActive && senderActive.isAlive()) {
-          await senderActive.send({
-            type: "prompt",
-            message: inboundMsg,
-            streamingBehavior: "followUp",
-          });
-        }
-      } catch (_) {}
-    }
+    const unblockReason = await earlyWaitPromise;
 
     return {
       success: true,
@@ -391,7 +351,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       targetSessionId: resolvedSessionId || "unknown",
       createdNewSession: isNewSession,
       mode,
-      reply: replyText,
+      unblockReason: unblockReason || "Unblocked.",
     };
   }
 

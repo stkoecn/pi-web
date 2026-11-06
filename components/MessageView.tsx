@@ -1704,7 +1704,38 @@ function MeshOutboundBubble({
             {message}
           </SafeMarkdownBody>
 
-          
+          {resultText && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "8px 12px",
+                borderRadius: 6,
+                background: isError ? "rgba(248, 113, 113, 0.08)" : "rgba(139, 92, 246, 0.08)",
+                border: isError ? "1px solid rgba(248, 113, 113, 0.25)" : "1px solid rgba(139, 92, 246, 0.25)",
+                fontSize: 12,
+                color: "var(--text)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontWeight: 600,
+                  marginBottom: 4,
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono)",
+                  color: isError ? "#f87171" : "#a855f7",
+                }}
+              >
+                <ReceiveRobotIcon size={12} color={isError ? "#f87171" : "#a855f7"} />
+                <span>{isError ? "执行异常 / 错误回执:" : "调度回执 / 状态:"}</span>
+              </div>
+              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5 }}>
+                {resultText}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

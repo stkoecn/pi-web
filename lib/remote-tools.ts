@@ -53,7 +53,7 @@ const BASE_TOOLS: ToolEntry[] = [
   },
   {
     name: "send_session_message",
-    description: "Send a message to another session or start a new session on this host or any connected remote host. In 'realtime' mode (default), the sender is blocked waiting for the recipient's reply via send_session_message (unblocking on reply or timeout). Recipient MUST reply using send_session_message, not direct text output. Other modes: 'steer' (sender not blocked; interrupts immediately), 'followup' (sender not blocked; queues), 'silent' (notification only, no reply).",
+    description: "Send a message to another session or start a new session on this host or any connected remote host. Target format: 'sessionId.host' (e.g. '01a18806-xxxx-xxxx.wshome' or '442d76a5.wsnas') or '@project.host' to start a new session. In 'realtime' mode (default), the sender blocks waiting for up to 300s, unblocking if interrupted by any incoming message, user action, or timeout. Incoming messages from peers are delivered as standard chat messages to the conversation stream.",
     active: true,
   },
   {

@@ -55,13 +55,13 @@ export function createMeshExtension(currentDeviceId = getCanonicalHostId(), curr
                 isToolCall: true,
               },
             });
-            const replySection = result.reply
-              ? `\n\n[Response received from ${result.targetSessionId} on host "${result.targetDeviceId}"]:\n${result.reply}`
+            const unblockSection = result.unblockReason
+              ? ` (${result.unblockReason})`
               : "";
             return {
               content: [{
                 type: "text",
-                text: `Message successfully dispatched to ${result.targetSessionId} on host "${result.targetDeviceId}" (mode: ${result.mode}, newSession: ${result.createdNewSession}).${replySection}`,
+                text: `Message dispatched to ${result.targetSessionId} on host "${result.targetDeviceId}" (mode: ${result.mode}, newSession: ${result.createdNewSession}).${unblockSection}`,
               }],
               details: undefined,
             };
