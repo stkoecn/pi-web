@@ -112,6 +112,7 @@ const nextConfig: NextConfig = {
   },
   env: {
     NEXT_PUBLIC_APP_VERSION: version,
+    NEXT_PUBLIC_BUILD_ID: `${version}.${Date.now().toString(36)}`,
   },
 };
 

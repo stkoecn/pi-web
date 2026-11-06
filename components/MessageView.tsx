@@ -444,32 +444,34 @@ export function parseSessionTarget(
 ): { sessionId: string; deviceId?: string } | null {
   if (target) {
     const trimmed = target.trim();
-    // 1. Check deviceId:sessionId (e.g. "wshome:01a1aec7-be16-7261-8a74-f256d9cc2a4e")
-    const colonIdx = trimmed.indexOf(":");
-    if (colonIdx > 0) {
-      const dev = trimmed.slice(0, colonIdx).trim();
-      const rest = trimmed.slice(colonIdx + 1).trim();
-      if (/^[0-9a-fA-F-]{8,}$/.test(rest) && !rest.includes("/") && !rest.includes("\\")) {
-        return { sessionId: rest, deviceId: dev || undefined };
+    if (trimmed && trimmed !== "Remote Session" && trimmed !== "未知目标") {
+      // 1. Check deviceId:sessionId (e.g. "wshome:01a1aec7-be16-7261-8a74-f256d9cc2a4e")
+      const colonIdx = trimmed.indexOf(":");
+      if (colonIdx > 0) {
+        const dev = trimmed.slice(0, colonIdx).trim();
+        const rest = trimmed.slice(colonIdx + 1).trim();
+        if (/^[0-9a-zA-Z_-]{6,}$/.test(rest)) {
+          return { sessionId: rest, deviceId: dev || undefined };
+        }
       }
-    }
 
-    // 2. Check sessionId.deviceId (e.g. "01a1aec7-be16-7261-8a74-f256d9cc2a4e.wshome")
-    const dotIdx = trimmed.lastIndexOf(".");
-    if (dotIdx > 0) {
-      const sessId = trimmed.slice(0, dotIdx).trim();
-      const devId = trimmed.slice(dotIdx + 1).trim();
-      if (/^[0-9a-fA-F-]{8,}$/.test(sessId) && !sessId.startsWith("@")) {
-        return { sessionId: sessId, deviceId: devId || undefined };
+      // 2. Check sessionId.deviceId (e.g. "01a1aec7-be16-7261-8a74-f256d9cc2a4e.wshome")
+      const dotIdx = trimmed.lastIndexOf(".");
+      if (dotIdx > 0) {
+        const sessId = trimmed.slice(0, dotIdx).trim();
+        const devId = trimmed.slice(dotIdx + 1).trim();
+        if (/^[0-9a-zA-Z_-]{6,}$/.test(sessId) && !sessId.startsWith("@")) {
+          return { sessionId: sessId, deviceId: devId || undefined };
+        }
       }
-    }
 
-    // 3. Check bare sessionId (e.g. UUID)
-    if (
-      /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/i.test(trimmed) ||
-      (/^[0-9a-fA-F-]{8,}$/.test(trimmed) && !trimmed.includes("/") && !trimmed.includes("\\") && !trimmed.startsWith("@"))
-    ) {
-      return { sessionId: trimmed, deviceId: undefined };
+      // 3. Check bare sessionId (UUID or alphanumeric 6+ chars)
+      if (
+        /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/i.test(trimmed) ||
+        (/^[0-9a-zA-Z_-]{6,}$/.test(trimmed) && !trimmed.startsWith("@"))
+      ) {
+        return { sessionId: trimmed, deviceId: undefined };
+      }
     }
   }
 
@@ -530,9 +532,16 @@ function MeshInboundCard({
 
   const handleOpenPeerSession = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!parsedTarget || !onOpenSubagent) return;
+    if (!parsedTarget) return;
     const label = `[${parsedTarget.deviceId || "peer"}] ${parsedTarget.sessionId.slice(0, 8)}`;
-    onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
+    if (onOpenSubagent) {
+      onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
+    } else {
+      const url = parsedTarget.deviceId
+        ? `/?session=${encodeURIComponent(parsedTarget.sessionId)}&deviceId=${encodeURIComponent(parsedTarget.deviceId)}`
+        : `/?session=${encodeURIComponent(parsedTarget.sessionId)}`;
+      window.open(url, "_blank");
+    }
   };
 
   return (
@@ -582,7 +591,7 @@ function MeshInboundCard({
         {/* Sender address display (clickable pill when parsed) */}
         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1, overflow: "hidden" }}>
           <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>来自:</span>
-          {parsedTarget && onOpenSubagent ? (
+          {parsedTarget ? (
             <span
               onClick={handleOpenPeerSession}
               role="button"
@@ -591,11 +600,11 @@ function MeshInboundCard({
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 4,
-                padding: "2px 7px",
+                gap: 5,
+                padding: "2px 8px",
                 borderRadius: 4,
-                background: "rgba(168, 85, 247, 0.14)",
-                border: "1px solid rgba(168, 85, 247, 0.35)",
+                background: "rgba(168, 85, 247, 0.16)",
+                border: "1px solid rgba(168, 85, 247, 0.4)",
                 color: "#c084fc",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11,
@@ -608,16 +617,16 @@ function MeshInboundCard({
                 transition: "all 0.15s ease",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(168, 85, 247, 0.25)";
-                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.6)";
+                e.currentTarget.style.background = "rgba(168, 85, 247, 0.28)";
+                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.7)";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(168, 85, 247, 0.14)";
-                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.35)";
+                e.currentTarget.style.background = "rgba(168, 85, 247, 0.16)";
+                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.4)";
               }}
             >
               <span>{sender}</span>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
@@ -659,15 +668,15 @@ function MeshInboundCard({
           <polyline points="2 3.5 5 6.5 8 3.5" />
         </svg>
 
-        {parsedTarget && onOpenSubagent && (
+        {parsedTarget && (
           <button
             type="button"
             onClick={handleOpenPeerSession}
             title="在侧边栏标签页中打开此对端会话"
             aria-label="在侧边栏标签页中打开此对端会话"
             style={{
-              background: "rgba(168, 85, 247, 0.12)",
-              border: "1px solid rgba(168, 85, 247, 0.28)",
+              background: "rgba(168, 85, 247, 0.15)",
+              border: "1px solid rgba(168, 85, 247, 0.35)",
               borderRadius: 4,
               color: "#c084fc",
               cursor: "pointer",
@@ -682,12 +691,12 @@ function MeshInboundCard({
               transition: "all 0.15s ease",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(168, 85, 247, 0.22)";
-              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.5)";
+              e.currentTarget.style.background = "rgba(168, 85, 247, 0.28)";
+              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.7)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(168, 85, 247, 0.12)";
-              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.28)";
+              e.currentTarget.style.background = "rgba(168, 85, 247, 0.15)";
+              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.35)";
             }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -695,6 +704,11 @@ function MeshInboundCard({
               <line x1="9" y1="3" x2="9" y2="21" />
             </svg>
             <span>打开会话</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
           </button>
         )}
 
@@ -1681,9 +1695,16 @@ function MeshOutboundBubble({
 
   const handleOpenTargetSession = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!parsedTarget || !onOpenSubagent) return;
+    if (!parsedTarget) return;
     const label = `[${parsedTarget.deviceId || "target"}] ${parsedTarget.sessionId.slice(0, 8)}`;
-    onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
+    if (onOpenSubagent) {
+      onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
+    } else {
+      const url = parsedTarget.deviceId
+        ? `/?session=${encodeURIComponent(parsedTarget.sessionId)}&deviceId=${encodeURIComponent(parsedTarget.deviceId)}`
+        : `/?session=${encodeURIComponent(parsedTarget.sessionId)}`;
+      window.open(url, "_blank");
+    }
   };
 
   const isWaiting = mode === "realtime" && result === undefined && !cancelledLocally;
@@ -1735,7 +1756,7 @@ function MeshOutboundBubble({
         {/* Target display / clickable pill */}
         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1, overflow: "hidden" }}>
           <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>发往:</span>
-          {parsedTarget && onOpenSubagent ? (
+          {parsedTarget ? (
             <span
               onClick={handleOpenTargetSession}
               role="button"
@@ -1744,11 +1765,11 @@ function MeshOutboundBubble({
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 4,
-                padding: "2px 7px",
+                gap: 5,
+                padding: "2px 8px",
                 borderRadius: 4,
-                background: isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.14)",
-                border: isError ? "1px solid rgba(248, 113, 113, 0.35)" : "1px solid rgba(34, 197, 94, 0.35)",
+                background: isError ? "rgba(248, 113, 113, 0.16)" : "rgba(34, 197, 94, 0.16)",
+                border: isError ? "1px solid rgba(248, 113, 113, 0.4)" : "1px solid rgba(34, 197, 94, 0.4)",
                 color: isError ? "#f87171" : "#16a34a",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11,
@@ -1761,16 +1782,16 @@ function MeshOutboundBubble({
                 transition: "all 0.15s ease",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.22)" : "rgba(34, 197, 94, 0.25)";
-                e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.55)" : "rgba(34, 197, 94, 0.6)";
+                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.28)" : "rgba(34, 197, 94, 0.28)";
+                e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.7)" : "rgba(34, 197, 94, 0.7)";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.14)";
-                e.currentTarget.style.borderColor = isError ? "1px solid rgba(248, 113, 113, 0.35)" : "rgba(34, 197, 94, 0.35)";
+                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.16)" : "rgba(34, 197, 94, 0.16)";
+                e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.4)" : "rgba(34, 197, 94, 0.4)";
               }}
             >
               <span>{target || parsedTarget.sessionId.slice(0, 8)}</span>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
@@ -1856,15 +1877,15 @@ function MeshOutboundBubble({
           <polyline points="2 3.5 5 6.5 8 3.5" />
         </svg>
 
-        {parsedTarget && onOpenSubagent && (
+        {parsedTarget && (
           <button
             type="button"
             onClick={handleOpenTargetSession}
             title="在侧边栏标签页中打开目标会话"
             aria-label="在侧边栏标签页中打开目标会话"
             style={{
-              background: isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.12)",
-              border: isError ? "1px solid rgba(248, 113, 113, 0.28)" : "1px solid rgba(34, 197, 94, 0.28)",
+              background: isError ? "rgba(248, 113, 113, 0.15)" : "rgba(34, 197, 94, 0.15)",
+              border: isError ? "1px solid rgba(248, 113, 113, 0.35)" : "1px solid rgba(34, 197, 94, 0.35)",
               borderRadius: 4,
               color: isError ? "#f87171" : "#16a34a",
               cursor: "pointer",
@@ -1879,12 +1900,12 @@ function MeshOutboundBubble({
               transition: "all 0.15s ease",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.22)" : "rgba(34, 197, 94, 0.22)";
-              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.5)" : "rgba(34, 197, 94, 0.5)";
+              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.28)" : "rgba(34, 197, 94, 0.28)";
+              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.7)" : "rgba(34, 197, 94, 0.7)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.12)";
-              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.28)" : "rgba(34, 197, 94, 0.28)";
+              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.15)" : "rgba(34, 197, 94, 0.15)";
+              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.35)" : "rgba(34, 197, 94, 0.35)";
             }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1892,6 +1913,11 @@ function MeshOutboundBubble({
               <line x1="9" y1="3" x2="9" y2="21" />
             </svg>
             <span>打开会话</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
           </button>
         )}
 
