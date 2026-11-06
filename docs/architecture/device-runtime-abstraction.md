@@ -160,20 +160,23 @@ if (isRemoteDevice(deviceId)) {
 
 ---
 
-## 七、跨机器通信 send_session_message 双重投递（Duplicate Delivery）与自相矛盾修复
+## 七、跨机器通信 send_session_message 双重投递与单次投递规范演进
 
-对应 `BUG_REPORT_DUPLICATE_DELIVERY.md` 中暴露的问题，在 `lib/gateway/mesh-router.ts` 和扩展引导层完成以下关键重构：
+对应 `BUG_REPORT_DUPLICATE_DELIVERY.md` 中暴露的问题以及跨会话流式交互需求，在 `lib/gateway/mesh-router.ts`、`lib/gateway/mesh-extension.ts` 和扩展引导层完成以下关键重构：
 
-### 1. 根因剖析
+### 1. 根因剖析与演进路径
 - 跨主机通信中，`mode: "realtime"` 的本质是发起方挂起等待对端的同步回复；
 - 此前在对端回复时，路由不仅直接用 `entry.resolve` 唤醒了等待，还在代码中未经判断地将该消息作为独立 Prompt 强行灌入对端会话，同时又在解除等待后在发起端追加了相同的 Prompt；
-- 另外在 Prompt Header 模板中，`silent` 模式生成了自相矛盾的 `[Notify only, no reply required][reply by using send_session_message]:`，而 `realtime` 的同步等待设计与对端文本输出捕获存在冲突。
+- 后来曾尝试将对端回信短路拦截在 `toolResult` 中，导致回信被当成工具返回值，未注入主聊天流，主界面无法直观看到对端回复的气泡。
 
-### 2. 修复方案
-1. **被动回复短路与单次投递（Deduplication & Single Delivery）**：
-   - 当 `isReplyToPending === true`（即此消息是对挂起等待的应答）时，直接 `entry.resolve(message)` 履行等待，**立即短路返回**，严禁向会话反向注入多余 Prompt；
-   - 区分工具调用场景与 Fallback 场景：当通过 LLM 工具调用（`isToolCall === true`）触发时，对端答复直接包裹在 `toolResult` 内容中交付给模型，不再执行会话层二次 Prompt 灌入；
-2. **彻底纠正 Prompt 模板与自相矛盾指令**：
+### 2. 最终设计规范
+1. **解阻机制（Unblock Protocol）**：
+   - 发起方在 `mode: "realtime"` 下最多挂起等待 300 秒；
+   - 期间若触发任意条件立即解阻：① 收到对端/用户的新消息打断；② 用户显式打断/取消；③ 300 秒超时；
+   - 解阻后，工具结果 `toolResult` 保持干净与幂等，仅返回投递状态与解阻原因（例如 `"Message dispatched to sess-xxx on host wsnas (Unblocked by incoming message.)"`），不侵入式劫持会话内容；
+2. **标准聊天流投递（Standard Chat Delivery）**：
+   - 所有接收到的对端回复消息，均以标准会话消息（带 `[From ${replyTarget}][mode: steer]` 标识）正常注入发送方会话的事件流和聊天面板中，模型与人类用户都能清晰感知对话；
+3. **彻底纠正 Prompt 模板与自相矛盾指令**：
    - 彻底移除对模型非结构化文本输出（`message_end` / `agent_end`）的脆弱劫持；
    - `silent` 模式剥离 `[reply by using send_session_message]`，固定为 `[From ${replyTarget}][mode: silent][Notification only, do NOT reply]:`；
    - `realtime` / `steer` / `followup` 清晰引导通过 `send_session_message` 工具回复，跨设备交互模型认知统一。
