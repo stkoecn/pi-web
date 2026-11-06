@@ -289,11 +289,19 @@ if (isRemoteDevice(deviceId)) {
   - 移除对 `next/font/google` 的外部网络强依赖，改用 CSS 本地字体栈配合系统级备用字体（`--font-mono-default`）；
   - 确保预构建产物在完全断网环境下也能 100% 毫秒级冷启动。
 
-### 7. 预构建产物的跨平台相对软链接规范化（Normalize Symlinks）
-- **现象**：在 Windows 开发机执行 `next build` 打包后传输到 Linux，服务启动直接报错 `Cannot find package '@earendil-works/pi-coding-agent-...'`。
-- **根因**：Windows 下生成的 `.next/node_modules` 软链接可能包含绝对路径或错误的跨平台深度层级，直接解压到 Linux 时无法正确解析模块。
-- **治理规则**：
-  - 提供标准的 `scripts/normalize-next-symlinks.mjs` 工具，使用 Node.js 原生 `path.relative` 严格计算相对路径，在部署或打包后统一规范化全部符号链接。
+### 7. 预构建产物的跨平台相对软链接规范化（Normalize Symlinks 与 Git-Bash 虚拟路径陷阱）
+- **现象**：
+  - 在 Windows 开发机执行 `next build` 打包后同步至 Linux 生产端，服务启动直接报错：
+    `Cannot find package '@earendil-works/pi-coding-agent-...'` 或 `Cannot find module 'ssh2-...'`，导致整个页面挂掉或路由级 500。
+- **根因剖析**：
+  1. Turbopack 在生成 `.next/node_modules/` 时，会为外部模块生成软链接。
+  2. 若开发机在 Git Bash（MSYS/MinGW）环境下构建，软链接写入的目标通常是类似 `/d/proj/pi-web/node_modules/...` 的 Git Bash 虚拟挂载路径，既不是 Windows 规范路径（`D:\...`），在远端 Linux 下也没有 `/d` 目录。
+  3. 旧版 `normalize-next-symlinks.mjs` 依赖 `path.isAbsolute()` 或严格的 Windows 盘符检测，在 Linux 下执行时把 `/d/...` 当作不存在的系统根目录，转换失败保持原样，导致 Node.js 动态 `import()` 时抛出 `ERR_MODULE_NOT_FOUND`。
+  4. 此外，脚本主执行入口若采用脆弱的 `process.argv[1] === import.meta.url` 路径匹配，可能在特定 Node 执行参数或符号链接调用下被跳过。
+- **治理规则（核心铁律）**：
+  - **全量虚拟挂载路径正则捕获**：必须匹配 `^\/[a-zA-Z]\/.*[\\/]node_modules[\\/](.*)$`，不论构建来源是 Windows 原生、Git Bash 还是 WSL，一律截取 `node_modules` 相对后缀；
+  - **强制无条件执行**：在 `normalize-next-symlinks.mjs` 中移除脆弱的入口判断，确保只要调用脚本就无条件遍历规范化；
+  - **部署闭环验证**：解压并执行规范化脚本后，**必须在远程端执行验证检查**：通过 `readlink` 确认全部符号链接均为相对路径（如 `../../node_modules/...`），禁止未验证即交付。
 
 ### 8. 远程/后端服务重启后的会话过期自愈（Session Self-Healing）
 - **现象**：服务部署升级或 NAS 重启后，浏览器刷新时终端报 `404 Terminal session not found`，页面卡死。
