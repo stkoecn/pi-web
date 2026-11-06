@@ -24,6 +24,12 @@ Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
   - 严禁在 `wsnas` 等远程生产机器上直接运行 `next build` 或 `next dev` 进行在线编译（NAS CPU/内存受限，不仅编译极慢极易超时，还会引起 CPU/内存飙升、缺失二进制环境导致的 PostCSS 产物损坏等不可控问题）。
   - **唯一正确的部署规范**：必须在本地开发机完成完整编译与测试后，仅将编译产物（`.next` 目录）、静态资源及应用代码打包归档同步至远程节点。
   - 远程节点的服务必须以生产模式运行（通过 systemd 执行 `node bin/pi-web.js -p 9564 -H 0.0.0.0 --no-open`），严禁将 systemd 服务改为 `next dev`。
+  - **标准化远程节点同步部署流程**：
+    1. 本地执行编译：`NODE_OPTIONS="--max-old-space-size=8192" TURBOPACK=1 npx next build`
+    2. 打包应用源码与构建产物（包含 `.next`、`app`、`components`、`lib`、`hooks`、`public`、`bin`、`package.json`），排除开发机 `node_modules`。
+    3. 通过 SFTP/SCP 同步上传至远端目录（如 `/home/windsing/pi-web/`）。
+    4. 执行 `scripts/normalize-next-symlinks.mjs` 修复 `.next/node_modules` 内的相对软链接。
+    5. 通过 systemd 重启远端常驻服务：`systemctl --user restart pi-web`，并验证服务状态及 HTTP 响应。
 
 ---
 
