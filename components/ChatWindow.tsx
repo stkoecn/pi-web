@@ -86,7 +86,7 @@ interface Props {
   onOpenFile?: (filePath: string, page?: number) => void;
   /** Files dropped onto the chat were written into the working directory. */
   onFilesUploaded?: () => void;
-  onOpenSubagent?: (sessionId: string, label: string) => void;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
   onAskInNewChat?: (prompt: string, sourceSessionId: string, sourceEntryId: string) => Promise<void>;
   quoteSelectionEnabled?: boolean;
   initialPrompt?: string;
@@ -1634,7 +1634,7 @@ const StreamingReply = memo(function StreamingReply({ store, onCommit, toolResul
   modelNames: Record<string, string>;
   cwd?: string;
   onOpenFile?: (filePath: string, page?: number) => void;
-  onOpenSubagent?: (sessionId: string, label: string) => void;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
 }) {
   const message = useStreamingSelector(store, selectStreamingMessage);
   useLayoutEffect(onCommit, [message, onCommit]);

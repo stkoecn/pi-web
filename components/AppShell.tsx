@@ -630,7 +630,7 @@ export function AppShell() {
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
   // Subagent tabs remain open within a project; side tabs follow their main session.
-  const [agentTabs, setAgentTabs] = useState<{ sessionId: string; label: string; side?: boolean }[]>([]);
+  const [agentTabs, setAgentTabs] = useState<{ sessionId: string; label: string; side?: boolean; deviceId?: string }[]>([]);
   const sideTabOwnerRef = useRef<string | null>(null);
   const sideTabsReadyRef = useRef(false);
   const sideTabsSavedOnWorkspaceSwitchRef = useRef(false);
@@ -1465,10 +1465,10 @@ export function AppShell() {
   }, [terminalTabs, isMobile, selectedDeviceId]);
 
   // Subagent work opens in a right-panel tab instead of hijacking the main chat.
-  const handleOpenSubagentTab = useCallback((sessionId: string, label: string, side?: boolean) => {
+  const handleOpenSubagentTab = useCallback((sessionId: string, label: string, side?: boolean, targetDeviceId?: string) => {
     setAgentTabs((prev) => prev.some((tab) => tab.sessionId === sessionId)
-      ? prev
-      : [...prev, { sessionId, label, ...(side ? { side: true } : {}) }]);
+      ? prev.map((tab) => tab.sessionId === sessionId ? { ...tab, ...(targetDeviceId ? { deviceId: targetDeviceId } : {}) } : tab)
+      : [...prev, { sessionId, label, ...(side ? { side: true } : {}), ...(targetDeviceId ? { deviceId: targetDeviceId } : {}) }]);
     setActiveFileTabId(`agent:${sessionId}`);
     setRightPanelOpen(true);
     if (isMobile) setSidebarOpen(false);
@@ -3214,7 +3214,7 @@ export function AppShell() {
             <SessionChatPanel
               key={activeAgentTab.sessionId}
               sessionId={activeAgentTab.sessionId}
-              deviceId={selectedDeviceId}
+              deviceId={activeAgentTab.deviceId ?? selectedDeviceId}
               running={runningSessionIds.has(activeAgentTab.sessionId)}
               initialPrompt={sideChatPrompts[activeAgentTab.sessionId]}
               onInitialPromptConsumed={() => setSideChatPrompts((prev) => {

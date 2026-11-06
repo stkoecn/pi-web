@@ -210,7 +210,7 @@ interface Props {
   modelNames?: Record<string, string>;
   cwd?: string;
   onOpenFile?: (filePath: string, page?: number) => void;
-  onOpenSubagent?: (sessionId: string, label: string) => void;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
   entryId?: string;
   searchBlock?: AssistantContentBlock;
   onFork?: (entryId: string) => void;
@@ -302,7 +302,7 @@ function haveSameRelevantToolResults(
 
 export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSubagent, entryId, searchBlock, onFork, forking, onEditContent, onCancelEdit, isEditing, showTimestamp, prevTimestamp, sessionId, writtenFiles, turnDurationMs, onCompact, isCompacting, compactError }: Props) {
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd || undefined} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onEditContent={onEditContent} onCancelEdit={onCancelEdit} isEditing={isEditing} />;
+    return <UserMessageView message={message as UserMessage} cwd={cwd || undefined} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} entryId={entryId} onFork={onFork} forking={forking} onEditContent={onEditContent} onCancelEdit={onCancelEdit} isEditing={isEditing} />;
   }
   if (message.role === "assistant") {
     return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd || undefined} onOpenFile={onOpenFile} onOpenSubagent={onOpenSubagent} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} turnDurationMs={turnDurationMs} onCompact={onCompact} isCompacting={isCompacting} compactError={compactError} />;
@@ -436,6 +436,7 @@ function MeshInboundCard({
   body,
   cwd,
   onOpenFile,
+  onOpenSubagent,
   imageBlocksNode,
 }: {
   sender: string;
@@ -443,6 +444,7 @@ function MeshInboundCard({
   body?: string | null;
   cwd?: string | null;
   onOpenFile?: (path: string) => void;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
   imageBlocksNode?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -454,6 +456,31 @@ function MeshInboundCard({
     navigator.clipboard?.writeText(body);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  // Parse sender target, e.g. "01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome" -> sessionId and deviceId
+  const parsedTarget = useMemo(() => {
+    if (!sender) return null;
+    const dotIdx = sender.lastIndexOf(".");
+    if (dotIdx > 0) {
+      const sessId = sender.slice(0, dotIdx).trim();
+      const devId = sender.slice(dotIdx + 1).trim();
+      // UUID test or session ID check
+      if (sessId.length >= 8) {
+        return { sessionId: sessId, deviceId: devId };
+      }
+    }
+    if (sender.length >= 8 && !sender.includes(" ") && !sender.includes("/")) {
+      return { sessionId: sender, deviceId: undefined };
+    }
+    return null;
+  }, [sender]);
+
+  const handleOpenPeerSession = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!parsedTarget || !onOpenSubagent) return;
+    const label = `[${parsedTarget.deviceId || "peer"}] ${parsedTarget.sessionId.slice(0, 8)}`;
+    onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
   };
 
   return (
@@ -537,6 +564,34 @@ function MeshInboundCard({
             <polyline points="2 3.5 5 6.5 8 3.5" />
           </svg>
         </button>
+        {parsedTarget && onOpenSubagent && (
+          <button
+            type="button"
+            onClick={handleOpenPeerSession}
+            title="在侧边栏标签页中打开此对端会话"
+            aria-label="在侧边栏标签页中打开此对端会话"
+            style={{
+              background: "none",
+              border: "none",
+              borderLeft: "1px solid rgba(139, 92, 246, 0.2)",
+              color: "#a855f7",
+              cursor: "pointer",
+              padding: "0 10px",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              opacity: 0.9,
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+            <span>打开会话</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={copyText}
@@ -583,10 +638,11 @@ function MeshInboundCard({
   );
 }
 
-function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onEditContent, onCancelEdit, isEditing }: {
+function UserMessageView({ message, cwd, onOpenFile, onOpenSubagent, entryId, onFork, forking, onEditContent, onCancelEdit, isEditing }: {
   message: UserMessage;
   cwd?: string;
   onOpenFile?: (filePath: string, page?: number) => void;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
   entryId?: string;
   onFork?: (entryId: string) => void;
   forking?: boolean;
@@ -691,6 +747,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
           body={meshBody}
           cwd={cwd}
           onOpenFile={onOpenFile}
+          onOpenSubagent={onOpenSubagent}
           imageBlocksNode={imageBlocksNode}
         />
       </div>
@@ -1010,7 +1067,7 @@ function AssistantMessageView({
   modelNames?: Record<string, string>;
   cwd?: string;
   onOpenFile?: (filePath: string, page?: number) => void;
-  onOpenSubagent?: (sessionId: string, label: string) => void;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
@@ -1306,7 +1363,7 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, onOpenSubagent, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; searchTarget?: boolean; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void; onOpenSubagent?: (sessionId: string, label: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
+function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, onOpenSubagent, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; searchTarget?: boolean; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string, page?: number) => void; onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
     return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd || undefined} onOpenFile={onOpenFile} /></div>;
   }
@@ -1496,11 +1553,13 @@ function MeshOutboundBubble({
   result,
   duration,
   sessionId,
+  onOpenSubagent,
 }: {
   block: ToolCallContent;
   result?: ToolResultMessage;
   duration?: number;
   sessionId?: string;
+  onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [cancelling, setCancelling] = useState(false);
@@ -1528,6 +1587,30 @@ function MeshOutboundBubble({
   const target = typeof input.target === "string" ? input.target : "";
   const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
   const mode = typeof input.mode === "string" ? input.mode : "realtime";
+
+  // Parse target if it points to a session, e.g. "01a1aec7-be16-7261-8a74-f256d9cc2a4e.wshome" or "@project.host"
+  const parsedTarget = useMemo(() => {
+    if (!target) return null;
+    const dotIdx = target.lastIndexOf(".");
+    if (dotIdx > 0) {
+      const sessId = target.slice(0, dotIdx).trim();
+      const devId = target.slice(dotIdx + 1).trim();
+      // If it's a session ID (not @project)
+      if (sessId.length >= 8 && !sessId.startsWith("@")) {
+        return { sessionId: sessId, deviceId: devId };
+      }
+    } else if (target.length >= 8 && !target.startsWith("@") && !target.includes("/") && !target.includes(" ")) {
+      return { sessionId: target, deviceId: undefined };
+    }
+    return null;
+  }, [target]);
+
+  const handleOpenTargetSession = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!parsedTarget || !onOpenSubagent) return;
+    const label = `[${parsedTarget.deviceId || "target"}] ${parsedTarget.sessionId.slice(0, 8)}`;
+    onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
+  };
 
   const isError = result?.isError ?? false;
   const resultText = result
@@ -1663,6 +1746,35 @@ function MeshOutboundBubble({
           </svg>
         </button>
 
+        {parsedTarget && onOpenSubagent && (
+          <button
+            type="button"
+            onClick={handleOpenTargetSession}
+            title="在侧边栏标签页中打开目标会话"
+            aria-label="在侧边栏标签页中打开目标会话"
+            style={{
+              background: "none",
+              border: "none",
+              borderLeft: isError ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(34,197,94,0.2)",
+              color: isError ? "#f87171" : "#16a34a",
+              cursor: "pointer",
+              padding: "0 10px",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+              opacity: 0.9,
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+            <span>打开会话</span>
+          </button>
+        )}
+
         {isWaiting && (
           <button
             type="button"
@@ -1742,10 +1854,10 @@ function MeshOutboundBubble({
   );
 }
 
-function ToolCallBlock({ block, result, duration, onOpenSubagent, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSubagent?: (sessionId: string, label: string) => void; sessionId?: string }) {
+function ToolCallBlock({ block, result, duration, onOpenSubagent, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSubagent?: (sessionId: string, label: string, side?: boolean, deviceId?: string) => void; sessionId?: string }) {
   const toolName = block.toolName || (block as any).name;
   if (toolName === "send_session_message") {
-    return <MeshOutboundBubble block={block} result={result} duration={duration} sessionId={sessionId} />;
+    return <MeshOutboundBubble block={block} result={result} duration={duration} sessionId={sessionId} onOpenSubagent={onOpenSubagent} />;
   }
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(() => isToolCallExpanded(block.toolCallId));
