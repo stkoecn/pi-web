@@ -24,7 +24,11 @@ export function normalizeNextSymlinks(baseDir = process.cwd()) {
         let rawTarget = fs.readlinkSync(fullPath);
         // If target was an absolute path from the build host, map it to the target node_modules
         let absoluteTarget;
-        if (path.isAbsolute(rawTarget)) {
+        // Check for Windows path (C:\ or D:/) or POSIX path or Git-bash style (/d/proj/...)
+        const gitBashMatch = rawTarget.match(/^\/[a-zA-Z]\/.*[\\/]node_modules[\\/](.*)$/);
+        if (gitBashMatch) {
+          absoluteTarget = path.join(realNodeModules, gitBashMatch[1]);
+        } else if (path.isAbsolute(rawTarget) || /^[a-zA-Z]:[\\/]/.test(rawTarget)) {
           const parts = rawTarget.split(/[\\/]node_modules[\\/]/);
           if (parts.length > 1) {
             absoluteTarget = path.join(realNodeModules, parts.slice(1).join(path.sep));
@@ -49,8 +53,5 @@ export function normalizeNextSymlinks(baseDir = process.cwd()) {
   walk(nextNodeModules);
 }
 
-// Allow direct execution
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([a-zA-Z]:)/, "$1"))) {
-  normalizeNextSymlinks();
-  console.log("Normalized symlinks in .next/node_modules successfully.");
-}
+normalizeNextSymlinks();
+console.log("Normalized symlinks in .next/node_modules successfully.");
