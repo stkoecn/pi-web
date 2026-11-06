@@ -588,45 +588,38 @@ function MeshInboundCard({
           接收
         </span>
 
-        {/* Sender address display (clickable pill when parsed) */}
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1, overflow: "hidden" }}>
+        {/* Sender address display */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, flex: 1, overflow: "hidden" }}>
           <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>来自:</span>
           {parsedTarget ? (
             <span
               onClick={handleOpenPeerSession}
               role="button"
               tabIndex={0}
-              title={`在侧边栏标签页中打开此对端会话 (${parsedTarget.sessionId})`}
+              title={`在侧边栏中打开会话 (${parsedTarget.sessionId})`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                padding: "2px 8px",
-                borderRadius: 4,
-                background: "rgba(168, 85, 247, 0.16)",
-                border: "1px solid rgba(168, 85, 247, 0.4)",
+                gap: 4,
                 color: "#c084fc",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11,
-                fontWeight: 600,
                 cursor: "pointer",
                 maxWidth: "100%",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                transition: "all 0.15s ease",
+                textDecoration: "none",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(168, 85, 247, 0.28)";
-                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.7)";
+                e.currentTarget.style.textDecoration = "underline";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(168, 85, 247, 0.16)";
-                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.4)";
+                e.currentTarget.style.textDecoration = "none";
               }}
             >
               <span>{sender}</span>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.85 }}>
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
@@ -650,6 +643,40 @@ function MeshInboundCard({
           {mode && <span style={{ fontSize: 10, color: "var(--text-dim)", opacity: 0.8, flexShrink: 0 }}>· {mode.toUpperCase()}</span>}
         </div>
 
+        {parsedTarget && (
+          <button
+            type="button"
+            onClick={handleOpenPeerSession}
+            title="在侧边栏中打开对端会话"
+            aria-label="在侧边栏中打开对端会话"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text-dim)",
+              cursor: "pointer",
+              padding: "0 4px",
+              display: "flex",
+              alignItems: "center",
+              opacity: 0.75,
+              flexShrink: 0,
+              transition: "color 0.15s ease, opacity 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "#c084fc";
+              e.currentTarget.style.opacity = "1";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "var(--text-dim)";
+              e.currentTarget.style.opacity = "0.75";
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+          </button>
+        )}
+
         <svg
           width="10"
           height="10"
@@ -668,50 +695,6 @@ function MeshInboundCard({
           <polyline points="2 3.5 5 6.5 8 3.5" />
         </svg>
 
-        {parsedTarget && (
-          <button
-            type="button"
-            onClick={handleOpenPeerSession}
-            title="在侧边栏标签页中打开此对端会话"
-            aria-label="在侧边栏标签页中打开此对端会话"
-            style={{
-              background: "rgba(168, 85, 247, 0.15)",
-              border: "1px solid rgba(168, 85, 247, 0.35)",
-              borderRadius: 4,
-              color: "#c084fc",
-              cursor: "pointer",
-              padding: "2px 8px",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              fontWeight: 600,
-              flexShrink: 0,
-              transition: "all 0.15s ease",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(168, 85, 247, 0.28)";
-              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.7)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(168, 85, 247, 0.15)";
-              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.35)";
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="9" y1="3" x2="9" y2="21" />
-            </svg>
-            <span>打开会话</span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-          </button>
-        )}
-
         <button
           type="button"
           onClick={copyText}
@@ -722,13 +705,13 @@ function MeshInboundCard({
             borderLeft: "1px solid rgba(139, 92, 246, 0.2)",
             color: copied ? "var(--accent)" : "var(--text-dim)",
             cursor: "pointer",
-            padding: "0 6px",
+            padding: "0 8px",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             fontSize: 11,
             fontFamily: "var(--font-mono)",
-            opacity: 0.85,
+            opacity: copied ? 1 : 0.8,
             flexShrink: 0,
           }}
         >
@@ -1659,7 +1642,22 @@ function MeshOutboundBubble({
   const [expanded, setExpanded] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [cancelledLocally, setCancelledLocally] = useState(false);
+  const [copied, setCopied] = useState(false);
   const effectiveSessionId = sessionId || undefined;
+
+  const rawInput = block.input || (block as any).arguments;
+  const input = (typeof rawInput === "object" && rawInput !== null) ? (rawInput as Record<string, unknown>) : {};
+  const target = typeof input.target === "string" ? input.target : "";
+  const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
+  const mode = typeof input.mode === "string" ? input.mode : "realtime";
+
+  const copyText = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!message) return;
+    navigator.clipboard?.writeText(message);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   const handleCancelWait = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1676,12 +1674,6 @@ function MeshOutboundBubble({
       });
     } catch (_) {}
   };
-
-  const rawInput = block.input || (block as any).arguments;
-  const input = (typeof rawInput === "object" && rawInput !== null) ? (rawInput as Record<string, unknown>) : {};
-  const target = typeof input.target === "string" ? input.target : "";
-  const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
-  const mode = typeof input.mode === "string" ? input.mode : "realtime";
 
   const isError = result?.isError ?? false;
   const resultText = result
@@ -1753,45 +1745,38 @@ function MeshOutboundBubble({
           发送
         </span>
 
-        {/* Target display / clickable pill */}
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1, overflow: "hidden" }}>
+        {/* Target address display */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, flex: 1, overflow: "hidden" }}>
           <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>发往:</span>
           {parsedTarget ? (
             <span
               onClick={handleOpenTargetSession}
               role="button"
               tabIndex={0}
-              title={`在侧边栏标签页中打开目标会话 (${parsedTarget.sessionId})`}
+              title={`在侧边栏中打开目标会话 (${parsedTarget.sessionId})`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                padding: "2px 8px",
-                borderRadius: 4,
-                background: isError ? "rgba(248, 113, 113, 0.16)" : "rgba(34, 197, 94, 0.16)",
-                border: isError ? "1px solid rgba(248, 113, 113, 0.4)" : "1px solid rgba(34, 197, 94, 0.4)",
+                gap: 4,
                 color: isError ? "#f87171" : "#16a34a",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11,
-                fontWeight: 600,
                 cursor: "pointer",
                 maxWidth: "100%",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                transition: "all 0.15s ease",
+                textDecoration: "none",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.28)" : "rgba(34, 197, 94, 0.28)";
-                e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.7)" : "rgba(34, 197, 94, 0.7)";
+                e.currentTarget.style.textDecoration = "underline";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.16)" : "rgba(34, 197, 94, 0.16)";
-                e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.4)" : "rgba(34, 197, 94, 0.4)";
+                e.currentTarget.style.textDecoration = "none";
               }}
             >
               <span>{target || parsedTarget.sessionId.slice(0, 8)}</span>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.85 }}>
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
@@ -1859,6 +1844,40 @@ function MeshOutboundBubble({
           </span>
         )}
 
+        {parsedTarget && (
+          <button
+            type="button"
+            onClick={handleOpenTargetSession}
+            title="在侧边栏中打开目标会话"
+            aria-label="在侧边栏中打开目标会话"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text-dim)",
+              cursor: "pointer",
+              padding: "0 4px",
+              display: "flex",
+              alignItems: "center",
+              opacity: 0.75,
+              flexShrink: 0,
+              transition: "color 0.15s ease, opacity 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = isError ? "#f87171" : "#16a34a";
+              e.currentTarget.style.opacity = "1";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "var(--text-dim)";
+              e.currentTarget.style.opacity = "0.75";
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+          </button>
+        )}
+
         <svg
           width="10"
           height="10"
@@ -1876,50 +1895,6 @@ function MeshOutboundBubble({
         >
           <polyline points="2 3.5 5 6.5 8 3.5" />
         </svg>
-
-        {parsedTarget && (
-          <button
-            type="button"
-            onClick={handleOpenTargetSession}
-            title="在侧边栏标签页中打开目标会话"
-            aria-label="在侧边栏标签页中打开目标会话"
-            style={{
-              background: isError ? "rgba(248, 113, 113, 0.15)" : "rgba(34, 197, 94, 0.15)",
-              border: isError ? "1px solid rgba(248, 113, 113, 0.35)" : "1px solid rgba(34, 197, 94, 0.35)",
-              borderRadius: 4,
-              color: isError ? "#f87171" : "#16a34a",
-              cursor: "pointer",
-              padding: "2px 8px",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              fontWeight: 600,
-              flexShrink: 0,
-              transition: "all 0.15s ease",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.28)" : "rgba(34, 197, 94, 0.28)";
-              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.7)" : "rgba(34, 197, 94, 0.7)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.15)" : "rgba(34, 197, 94, 0.15)";
-              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.35)" : "rgba(34, 197, 94, 0.35)";
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="9" y1="3" x2="9" y2="21" />
-            </svg>
-            <span>打开会话</span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-          </button>
-        )}
 
         {isWaiting && (
           <button
@@ -1946,6 +1921,29 @@ function MeshOutboundBubble({
             {cancelling ? "已取消" : "✕ 停止"}
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={copyText}
+          title="复制消息内容"
+          style={{
+            background: "none",
+            border: "none",
+            borderLeft: "1px solid rgba(34, 197, 94, 0.2)",
+            color: copied ? "var(--accent)" : "var(--text-dim)",
+            cursor: "pointer",
+            padding: "0 8px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            opacity: copied ? 1 : 0.8,
+            flexShrink: 0,
+          }}
+        >
+          {copied ? "已复制" : "复制"}
+        </button>
       </div>
 
       {/* ── Expanded Content Body ── */}
@@ -1964,36 +1962,22 @@ function MeshOutboundBubble({
             {message}
           </SafeMarkdownBody>
 
-          {resultText && (
+          {isError && resultText && (
             <div
               style={{
-                marginTop: 10,
-                padding: "8px 12px",
-                borderRadius: 6,
-                background: isError ? "rgba(248, 113, 113, 0.08)" : "rgba(139, 92, 246, 0.08)",
-                border: isError ? "1px solid rgba(248, 113, 113, 0.25)" : "1px solid rgba(139, 92, 246, 0.25)",
-                fontSize: 12,
-                color: "var(--text)",
+                marginTop: 8,
+                padding: "6px 10px",
+                borderRadius: 5,
+                background: "rgba(248, 113, 113, 0.08)",
+                border: "1px solid rgba(248, 113, 113, 0.25)",
+                fontSize: 11,
+                color: "#f87171",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                lineHeight: 1.5,
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontWeight: 600,
-                  marginBottom: 4,
-                  fontSize: 11,
-                  fontFamily: "var(--font-mono)",
-                  color: isError ? "#f87171" : "#a855f7",
-                }}
-              >
-                <ReceiveRobotIcon size={12} color={isError ? "#f87171" : "#a855f7"} />
-                <span>{isError ? "执行异常 / 错误回执:" : "调度回执 / 状态:"}</span>
-              </div>
-              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5 }}>
-                {resultText}
-              </div>
+              {resultText}
             </div>
           )}
         </div>
