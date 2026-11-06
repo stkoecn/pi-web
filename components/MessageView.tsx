@@ -491,6 +491,12 @@ export function parseSessionTarget(
           }
         }
       }
+      if (!inferredDevice && contextText) {
+        const hostMatch = contextText.match(/on host ["']?([a-zA-Z0-9_-]+)["']?/i);
+        if (hostMatch) {
+          inferredDevice = hostMatch[1];
+        }
+      }
       return { sessionId: uuidMatch[0], deviceId: inferredDevice };
     }
   }

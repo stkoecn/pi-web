@@ -568,6 +568,20 @@ export function AppShell() {
   const [connectingDeviceId, setConnectingDeviceId] = useState<string | null>(null);
   /** A refused switch: the old view is still there, and this says why. */
   const [deviceToast, setDeviceToast] = useState<string | null>(null);
+  const [gatewayHostId, setGatewayHostId] = useState<string>("localhost");
+
+  useEffect(() => {
+    fetch("/api/devices")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const canonical = data?.hostId || data?.devices?.find((d: { id: string; name?: string }) => d.id === "localhost")?.name;
+        if (canonical && typeof canonical === "string") {
+          setGatewayHostId(canonical);
+          setSelectedDeviceId((cur) => (cur.toLowerCase() === canonical.toLowerCase() ? "localhost" : cur));
+        }
+      })
+      .catch(() => {});
+  }, [devicesRefreshKey]);
 
   useEffect(() => {
     if (!selectedDeviceId || selectedDeviceId === "localhost") {
@@ -1466,13 +1480,20 @@ export function AppShell() {
 
   // Subagent work opens in a right-panel tab instead of hijacking the main chat.
   const handleOpenSubagentTab = useCallback((sessionId: string, label: string, side?: boolean, targetDeviceId?: string) => {
+    const isTargetLocal = targetDeviceId
+      ? targetDeviceId === "localhost" ||
+        (gatewayHostId && targetDeviceId.toLowerCase() === gatewayHostId.toLowerCase())
+      : true;
+    const resolvedDeviceId = targetDeviceId
+      ? (isTargetLocal ? "localhost" : targetDeviceId)
+      : selectedDeviceIdRef.current;
     setAgentTabs((prev) => prev.some((tab) => tab.sessionId === sessionId)
-      ? prev.map((tab) => tab.sessionId === sessionId ? { ...tab, ...(targetDeviceId ? { deviceId: targetDeviceId } : {}) } : tab)
-      : [...prev, { sessionId, label, ...(side ? { side: true } : {}), ...(targetDeviceId ? { deviceId: targetDeviceId } : {}) }]);
+      ? prev.map((tab) => tab.sessionId === sessionId ? { ...tab, deviceId: resolvedDeviceId } : tab)
+      : [...prev, { sessionId, label, ...(side ? { side: true } : {}), deviceId: resolvedDeviceId }]);
     setActiveFileTabId(`agent:${sessionId}`);
     setRightPanelOpen(true);
     if (isMobile) setSidebarOpen(false);
-  }, [isMobile]);
+  }, [isMobile, gatewayHostId]);
 
   // The agent switcher's side-panel button: opens a subagent's tab, or closes
   // it when the open panel already has it (the panel closes with its last tab).
@@ -2440,7 +2461,7 @@ export function AppShell() {
   };
 
   return (
-    <DeviceIdProvider deviceId={selectedDeviceId}>
+    <DeviceIdProvider deviceId={selectedDeviceId} hostId={gatewayHostId}>
     <>
     {/* A refused host switch: the previous host is still on screen, so the
         reason has to be visible somewhere other than the view that did not

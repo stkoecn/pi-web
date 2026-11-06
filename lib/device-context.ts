@@ -15,7 +15,52 @@
 
 export const LOCAL_DEVICE_ID = "localhost";
 
-/** Device id for this request; `localhost` when the request is device-blind. */
+/**
+ * Returns true if the deviceId represents the local gateway machine.
+ * Safe for use in both browser and Node.js environments.
+ */
+export function isLocalHost(deviceId: string | null | undefined): boolean {
+  if (!deviceId) return true;
+  const d = deviceId.trim().toLowerCase();
+  if (d === "localhost" || d === "local" || d === "127.0.0.1" || d === "::1") {
+    return true;
+  }
+  // Check process.env overrides
+  if (typeof process !== "undefined" && process?.env) {
+    const envHost = (
+      process.env.PI_WEB_HOST_ID ||
+      process.env.PI_WEB_DEVICE_ID ||
+      process.env.NEXT_PUBLIC_HOST_ID ||
+      ""
+    ).trim().toLowerCase();
+    if (envHost && (d === envHost || d.split(".")[0] === envHost)) {
+      return true;
+    }
+  }
+  // In Node.js environment (server-side), check os.hostname() dynamically
+  if (typeof window === "undefined") {
+    try {
+      const nodeProcess = (globalThis as { process?: { versions?: { node?: string } } }).process;
+      const nodeOs = nodeProcess?.versions?.node
+        ? (eval('require')('node:os') as { hostname?: () => string })
+        : null;
+      if (nodeOs && typeof nodeOs.hostname === "function") {
+        const rawHostname = nodeOs.hostname().trim().toLowerCase();
+        if (rawHostname) {
+          const shortHost = rawHostname.split(".")[0];
+          if (d === rawHostname || d === shortHost || d.split(".")[0] === shortHost) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
+/** Device id for this request; `localhost` when the request is device-blind or targets the local host. */
 export function getRequestDeviceId(
   req: Request,
   searchParams?: URLSearchParams,
@@ -26,12 +71,15 @@ export function getRequestDeviceId(
   const fromQuery = (searchParams ?? (url ? new URL(url).searchParams : new URLSearchParams())).get("deviceId");
   const raw = fromQuery ?? req?.headers?.get?.("x-device-id") ?? null;
   const trimmed = raw?.trim();
-  return trimmed ? trimmed : LOCAL_DEVICE_ID;
+  if (!trimmed || isLocalHost(trimmed)) {
+    return LOCAL_DEVICE_ID;
+  }
+  return trimmed;
 }
 
 /** True when the id names a gateway device rather than the in-process host. */
 export function isRemoteDevice(deviceId: string | null | undefined): deviceId is string {
-  return Boolean(deviceId) && deviceId !== LOCAL_DEVICE_ID;
+  return Boolean(deviceId) && !isLocalHost(deviceId);
 }
 
 /**

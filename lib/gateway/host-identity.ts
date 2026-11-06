@@ -1,5 +1,4 @@
 import os from "node:os";
-import { readDevicesFile } from "./device-config-file";
 
 let cachedHostId: string | null = null;
 
@@ -53,6 +52,7 @@ export function isLocalHostId(deviceId: string | null | undefined): boolean {
     d === "local" ||
     d === "127.0.0.1" ||
     d === "::1" ||
-    d === canonical
+    d === canonical ||
+    d.split(".")[0] === canonical
   );
 }

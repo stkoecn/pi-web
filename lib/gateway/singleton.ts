@@ -1,4 +1,5 @@
 import { DeviceRegistry } from './device-registry';
+import { isLocalHostId } from './host-identity';
 import { SSHClientPool } from './ssh-client-pool';
 import { SSHServer } from './ssh-server';
 import {
@@ -376,7 +377,7 @@ export class GatewayManager {
 
   public async getOrConnectDriver(id?: string, timeoutMs = 10000): Promise<IHostDriver> {
     const targetId = id || 'localhost';
-    if (targetId === 'localhost') return this.registry.getDriver('localhost');
+    if (targetId === 'localhost' || isLocalHostId(targetId)) return this.registry.getDriver('localhost');
 
     const entry = this.registry.get(targetId);
     if (entry && entry.driver.isAlive()) {
@@ -409,7 +410,7 @@ export class GatewayManager {
    */
   public getOnlineDriver(id?: string): IHostDriver {
     const targetId = id || 'localhost';
-    if (targetId === 'localhost') return this.registry.getDriver('localhost');
+    if (targetId === 'localhost' || isLocalHostId(targetId)) return this.registry.getDriver('localhost');
     const entry = this.registry.get(targetId);
     if (!entry || !entry.driver.isAlive()) {
       throw new DeviceOfflineError(targetId);
@@ -472,7 +473,7 @@ export class GatewayManager {
    */
   public async getDriverForRequest(id?: string, timeoutMs = 10000): Promise<IHostDriver> {
     const targetId = id || 'localhost';
-    if (targetId === 'localhost') return this.registry.getDriver('localhost');
+    if (targetId === 'localhost' || isLocalHostId(targetId)) return this.registry.getDriver('localhost');
     let entry = this.registry.get(targetId);
     // No entry means no device by that id is configured, so there is nothing to
     // wait for. Every configured device has a placeholder entry before the

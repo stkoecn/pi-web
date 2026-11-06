@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { DeviceInfo } from './types/device';
 import type { IHostDriver } from './types/host-driver';
 import { LocalHostDriver } from './drivers/local-host-driver';
-import { getCanonicalHostId } from './host-identity';
+import { getCanonicalHostId, isLocalHostId } from './host-identity';
 
 export interface DeviceEntry {
   info: DeviceInfo;
@@ -17,7 +17,7 @@ export class DeviceRegistry extends EventEmitter {
     if (enableLocalhost) {
       const localDriver = new LocalHostDriver();
       const hostId = getCanonicalHostId();
-      this.devices.set('localhost', {
+      const localEntry: DeviceEntry = {
         info: {
           id: 'localhost',
           name: hostId,
@@ -27,7 +27,17 @@ export class DeviceRegistry extends EventEmitter {
           lastSeen: Date.now(),
         },
         driver: localDriver,
-      });
+      };
+      this.devices.set('localhost', localEntry);
+      if (hostId && hostId !== 'localhost') {
+        this.devices.set(hostId, {
+          info: {
+            ...localEntry.info,
+            id: hostId,
+          },
+          driver: localDriver,
+        });
+      }
     }
   }
 
@@ -69,10 +79,17 @@ export class DeviceRegistry extends EventEmitter {
   }
 
   get(deviceId: string): DeviceEntry | undefined {
+    if (isLocalHostId(deviceId)) {
+      return this.devices.get('localhost') ?? this.devices.get(getCanonicalHostId());
+    }
     return this.devices.get(deviceId);
   }
 
   getDriver(deviceId: string): IHostDriver {
+    if (isLocalHostId(deviceId)) {
+      const entry = this.devices.get('localhost') ?? this.devices.get(getCanonicalHostId());
+      if (entry && entry.driver.isAlive()) return entry.driver;
+    }
     const entry = this.devices.get(deviceId);
     if (!entry || !entry.driver.isAlive()) {
       throw new Error(`Device '${deviceId}' is not connected or offline`);
@@ -81,14 +98,19 @@ export class DeviceRegistry extends EventEmitter {
   }
 
   list(): DeviceInfo[] {
-    return Array.from(this.devices.values()).map(e => ({
-      ...e.info,
-      status: e.driver.isAlive() ? e.info.status : 'offline',
-    }));
+    const list: DeviceInfo[] = [];
+    for (const [id, entry] of this.devices) {
+      if (isLocalHostId(id) && id !== 'localhost') continue;
+      list.push({
+        ...entry.info,
+        status: entry.driver.isAlive() ? entry.info.status : 'offline',
+      });
+    }
+    return list;
   }
 
   async closeAll(): Promise<void> {
-    for (const [id, entry] of this.devices) {
+    for (const [, entry] of this.devices) {
       try {
         await entry.driver.close();
       } catch {}

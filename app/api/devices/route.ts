@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getGateway } from '@/lib/gateway/singleton';
+import { getCanonicalHostId } from '@/lib/gateway/host-identity';
 import { sshHostToDevice } from '@/lib/gateway/ssh-config';
 import {
   addDeviceToConfigs,
@@ -46,6 +47,7 @@ export async function GET() {
     const enabledDefault = gateway.readEnabledDefault();
     const configured = new Set(file.configs.map((config) => config.id));
     return NextResponse.json({
+      hostId: getCanonicalHostId(),
       devices: gateway.listDevices(),
       configPath: file.path,
       configs: file.configs.map(publicDeviceConfig),
