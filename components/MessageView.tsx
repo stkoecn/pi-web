@@ -430,6 +430,72 @@ function InboundBadge({ color = "#a855f7" }: { color?: string }) {
   );
 }
 
+/**
+ * Robustly parses a session target into { sessionId, deviceId }.
+ * Supports formats:
+ * - "sessionId.deviceId" (e.g. "01a1aec7-be16-7261-8a74-f256d9cc2a4e.wshome")
+ * - "deviceId:sessionId" (e.g. "wshome:01a1aec7-be16-7261-8a74-f256d9cc2a4e")
+ * - Bare UUID / session ID
+ * - Fallback to searching sessionId from contextText (e.g. tool execution response)
+ */
+export function parseSessionTarget(
+  target?: string | null,
+  contextText?: string | null
+): { sessionId: string; deviceId?: string } | null {
+  if (target) {
+    const trimmed = target.trim();
+    // 1. Check deviceId:sessionId (e.g. "wshome:01a1aec7-be16-7261-8a74-f256d9cc2a4e")
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx > 0) {
+      const dev = trimmed.slice(0, colonIdx).trim();
+      const rest = trimmed.slice(colonIdx + 1).trim();
+      if (/^[0-9a-fA-F-]{8,}$/.test(rest) && !rest.includes("/") && !rest.includes("\\")) {
+        return { sessionId: rest, deviceId: dev || undefined };
+      }
+    }
+
+    // 2. Check sessionId.deviceId (e.g. "01a1aec7-be16-7261-8a74-f256d9cc2a4e.wshome")
+    const dotIdx = trimmed.lastIndexOf(".");
+    if (dotIdx > 0) {
+      const sessId = trimmed.slice(0, dotIdx).trim();
+      const devId = trimmed.slice(dotIdx + 1).trim();
+      if (/^[0-9a-fA-F-]{8,}$/.test(sessId) && !sessId.startsWith("@")) {
+        return { sessionId: sessId, deviceId: devId || undefined };
+      }
+    }
+
+    // 3. Check bare sessionId (e.g. UUID)
+    if (
+      /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/i.test(trimmed) ||
+      (/^[0-9a-fA-F-]{8,}$/.test(trimmed) && !trimmed.includes("/") && !trimmed.includes("\\") && !trimmed.startsWith("@"))
+    ) {
+      return { sessionId: trimmed, deviceId: undefined };
+    }
+  }
+
+  // 4. Fallback: extract UUID from contextText (e.g. "[Response received from 01a1aec7-be16-7261-8a74-f256d9cc2a4e]")
+  if (contextText) {
+    const uuidMatch = contextText.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+    if (uuidMatch) {
+      let inferredDevice: string | undefined = undefined;
+      if (target) {
+        const colonIdx = target.indexOf(":");
+        if (colonIdx > 0) {
+          inferredDevice = target.slice(0, colonIdx).trim();
+        } else {
+          const dotIdx = target.lastIndexOf(".");
+          if (dotIdx > 0) {
+            inferredDevice = target.slice(dotIdx + 1).trim();
+          }
+        }
+      }
+      return { sessionId: uuidMatch[0], deviceId: inferredDevice };
+    }
+  }
+
+  return null;
+}
+
 function MeshInboundCard({
   sender,
   mode,
@@ -458,22 +524,8 @@ function MeshInboundCard({
     setTimeout(() => setCopied(false), 1500);
   };
 
-  // Parse sender target, e.g. "01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome" -> sessionId and deviceId
   const parsedTarget = useMemo(() => {
-    if (!sender) return null;
-    const dotIdx = sender.lastIndexOf(".");
-    if (dotIdx > 0) {
-      const sessId = sender.slice(0, dotIdx).trim();
-      const devId = sender.slice(dotIdx + 1).trim();
-      // UUID test or session ID check
-      if (sessId.length >= 8) {
-        return { sessionId: sessId, deviceId: devId };
-      }
-    }
-    if (sender.length >= 8 && !sender.includes(" ") && !sender.includes("/")) {
-      return { sessionId: sender, deviceId: undefined };
-    }
-    return null;
+    return parseSessionTarget(sender);
   }, [sender]);
 
   const handleOpenPeerSession = (e: React.MouseEvent) => {
@@ -495,75 +547,118 @@ function MeshInboundCard({
         margin: "8px 0",
       }}
     >
-      {/* ── Tool call header style ── */}
-      <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
+      {/* ── Card Header ── */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "6px 10px",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 12,
+          minWidth: 0,
+          userSelect: "none",
+        }}
+      >
+        <span
           style={{
-            display: "flex",
+            display: "inline-flex",
             alignItems: "center",
-            gap: 7,
-            flex: 1,
-            minWidth: 0,
-            padding: "6px 10px",
-            background: "none",
-            border: "none",
-            color: "var(--text-muted)",
-            cursor: "pointer",
-            fontSize: 12,
-            textAlign: "left",
+            gap: 5,
+            color: "#a855f7",
+            fontFamily: "var(--font-mono)",
+            fontWeight: 600,
+            fontSize: 11,
+            flexShrink: 0,
           }}
         >
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              color: "#a855f7",
-              fontFamily: "var(--font-mono)",
-              fontWeight: 600,
-              fontSize: 11,
-              flexShrink: 0,
-            }}
-          >
-            <ReceiveRobotIcon size={14} color="#a855f7" />
-            <InboundBadge color="#a855f7" />
-            接收
-          </span>
-          <span
-            style={{
-              color: "var(--text-dim)",
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              flex: 1,
-              minWidth: 0,
-            }}
-            title={`来自: ${sender}`}
-          >
-            来自: {sender}{mode ? ` · ${mode.toUpperCase()}` : ""}
-          </span>
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 10 10"
-            fill="none"
-            stroke="var(--text-dim)"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{
-              flexShrink: 0,
-              transform: expanded ? "rotate(180deg)" : "none",
-              transition: "transform 0.15s",
-            }}
-          >
-            <polyline points="2 3.5 5 6.5 8 3.5" />
-          </svg>
-        </button>
+          <ReceiveRobotIcon size={14} color="#a855f7" />
+          <InboundBadge color="#a855f7" />
+          接收
+        </span>
+
+        {/* Sender address display (clickable pill when parsed) */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1, overflow: "hidden" }}>
+          <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>来自:</span>
+          {parsedTarget && onOpenSubagent ? (
+            <span
+              onClick={handleOpenPeerSession}
+              role="button"
+              tabIndex={0}
+              title={`在侧边栏标签页中打开此对端会话 (${parsedTarget.sessionId})`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 7px",
+                borderRadius: 4,
+                background: "rgba(168, 85, 247, 0.14)",
+                border: "1px solid rgba(168, 85, 247, 0.35)",
+                color: "#c084fc",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(168, 85, 247, 0.25)";
+                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.6)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(168, 85, 247, 0.14)";
+                e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.35)";
+              }}
+            >
+              <span>{sender}</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </span>
+          ) : (
+            <span
+              style={{
+                color: "var(--text-dim)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={`来自: ${sender}`}
+            >
+              {sender}
+            </span>
+          )}
+          {mode && <span style={{ fontSize: 10, color: "var(--text-dim)", opacity: 0.8, flexShrink: 0 }}>· {mode.toUpperCase()}</span>}
+        </div>
+
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          fill="none"
+          stroke="var(--text-dim)"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            flexShrink: 0,
+            transform: expanded ? "rotate(180deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          <polyline points="2 3.5 5 6.5 8 3.5" />
+        </svg>
+
         {parsedTarget && onOpenSubagent && (
           <button
             type="button"
@@ -571,27 +666,38 @@ function MeshInboundCard({
             title="在侧边栏标签页中打开此对端会话"
             aria-label="在侧边栏标签页中打开此对端会话"
             style={{
-              background: "none",
-              border: "none",
-              borderLeft: "1px solid rgba(139, 92, 246, 0.2)",
-              color: "#a855f7",
+              background: "rgba(168, 85, 247, 0.12)",
+              border: "1px solid rgba(168, 85, 247, 0.28)",
+              borderRadius: 4,
+              color: "#c084fc",
               cursor: "pointer",
-              padding: "0 10px",
+              padding: "2px 8px",
               display: "flex",
               alignItems: "center",
               gap: 4,
               fontSize: 11,
               fontFamily: "var(--font-mono)",
-              opacity: 0.9,
+              fontWeight: 600,
+              flexShrink: 0,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(168, 85, 247, 0.22)";
+              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.5)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(168, 85, 247, 0.12)";
+              e.currentTarget.style.borderColor = "rgba(168, 85, 247, 0.28)";
             }}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
               <line x1="9" y1="3" x2="9" y2="21" />
             </svg>
             <span>打开会话</span>
           </button>
         )}
+
         <button
           type="button"
           onClick={copyText}
@@ -599,15 +705,17 @@ function MeshInboundCard({
           style={{
             background: "none",
             border: "none",
+            borderLeft: "1px solid rgba(139, 92, 246, 0.2)",
             color: copied ? "var(--accent)" : "var(--text-dim)",
             cursor: "pointer",
-            padding: "0 10px",
+            padding: "0 6px",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             fontSize: 11,
             fontFamily: "var(--font-mono)",
-            opacity: 0.8,
+            opacity: 0.85,
+            flexShrink: 0,
           }}
         >
           {copied ? "已复制" : "复制"}
@@ -760,21 +868,16 @@ function UserMessageView({ message, cwd, onOpenFile, onOpenSubagent, entryId, on
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div style={{ display: "flex", alignItems: meshSender ? "flex-start" : "flex-end", flexDirection: meshSender ? "row-reverse" : "row", gap: 6, width: meshSender ? "100%" : undefined, maxWidth: meshSender ? "100%" : "85%" }}>
+      <div style={{ display: "flex", alignItems: "flex-end", flexDirection: "row", gap: 6, maxWidth: "85%" }}>
         <div
           style={{
             flex: 1,
-            width: meshSender ? "100%" : undefined,
             minWidth: 0,
             background: isEditing
               ? "color-mix(in srgb, var(--accent) 14%, var(--user-bg))"
-              : meshSender
-              ? "color-mix(in srgb, #22c55e 10%, var(--user-bg))"
               : "var(--user-bg)",
             border: isEditing
               ? "1px solid color-mix(in srgb, var(--accent) 62%, var(--user-bg))"
-              : meshSender
-              ? "1px solid rgba(34,197,94,0.35)"
               : "1px solid rgba(59,130,246,0.2)",
             boxShadow: isEditing ? "0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent)" : undefined,
             borderRadius: 12,
@@ -787,29 +890,7 @@ function UserMessageView({ message, cwd, onOpenFile, onOpenSubagent, entryId, on
             overflowY: "auto",
           }}
         >
-          {meshSender ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                <span
-                  style={{
-                    fontSize: 10,
-                    padding: "1px 6px",
-                    borderRadius: 4,
-                    background: "rgba(34, 197, 94, 0.16)",
-                    color: "#16a34a",
-                    border: "1px solid rgba(34, 197, 94, 0.28)",
-                    fontFamily: "var(--font-mono)",
-                    fontWeight: 500,
-                  }}
-                  title={`完整发件地址: ${meshSender}`}
-                >
-                  MESH{meshDeliveryMode ? ` · ${meshDeliveryMode.toUpperCase()}` : ""} · 来自 {formattedSender}
-                </span>
-              </div>
-              {imageBlocksNode}
-              {meshBody && <SafeMarkdownBody className="markdown-user-message" keepLineBreaks cwd={cwd || undefined} onOpenFile={onOpenFile}>{meshBody}</SafeMarkdownBody>}
-            </div>
-          ) : commandText ? (
+          {commandText ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
               {imageBlocksNode}
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
@@ -1588,22 +1669,15 @@ function MeshOutboundBubble({
   const message = typeof input.message === "string" ? input.message : (block.rawInput ?? "");
   const mode = typeof input.mode === "string" ? input.mode : "realtime";
 
-  // Parse target if it points to a session, e.g. "01a1aec7-be16-7261-8a74-f256d9cc2a4e.wshome" or "@project.host"
+  const isError = result?.isError ?? false;
+  const resultText = result
+    ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join(String.fromCharCode(10))
+    : null;
+
+  // Parse target if it points to a session, or fallback to resultText (e.g. [Response received from <sessionId>])
   const parsedTarget = useMemo(() => {
-    if (!target) return null;
-    const dotIdx = target.lastIndexOf(".");
-    if (dotIdx > 0) {
-      const sessId = target.slice(0, dotIdx).trim();
-      const devId = target.slice(dotIdx + 1).trim();
-      // If it's a session ID (not @project)
-      if (sessId.length >= 8 && !sessId.startsWith("@")) {
-        return { sessionId: sessId, deviceId: devId };
-      }
-    } else if (target.length >= 8 && !target.startsWith("@") && !target.includes("/") && !target.includes(" ")) {
-      return { sessionId: target, deviceId: undefined };
-    }
-    return null;
-  }, [target]);
+    return parseSessionTarget(target, resultText);
+  }, [target, resultText]);
 
   const handleOpenTargetSession = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1611,11 +1685,6 @@ function MeshOutboundBubble({
     const label = `[${parsedTarget.deviceId || "target"}] ${parsedTarget.sessionId.slice(0, 8)}`;
     onOpenSubagent(parsedTarget.sessionId, label, false, parsedTarget.deviceId);
   };
-
-  const isError = result?.isError ?? false;
-  const resultText = result
-    ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join(String.fromCharCode(10))
-    : null;
 
   const isWaiting = mode === "realtime" && result === undefined && !cancelledLocally;
 
@@ -1631,120 +1700,161 @@ function MeshOutboundBubble({
         margin: "8px 0",
       }}
     >
-      {/* ── Tool call header style (exact bash style) ── */}
-      <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
+      {/* ── Tool call header style ── */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "6px 10px",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 12,
+          minWidth: 0,
+          userSelect: "none",
+        }}
+      >
+        <span
           style={{
-            display: "flex",
+            display: "inline-flex",
             alignItems: "center",
-            gap: 7,
-            flex: 1,
-            minWidth: 0,
-            padding: "6px 10px",
-            background: "none",
-            border: "none",
-            color: "var(--text-muted)",
-            cursor: "pointer",
-            fontSize: 12,
-            textAlign: "left",
+            gap: 5,
+            color: isError ? "#f87171" : "#16a34a",
+            fontFamily: "var(--font-mono)",
+            fontWeight: 600,
+            fontSize: 11,
+            flexShrink: 0,
           }}
         >
+          <SendRobotIcon size={14} color={isError ? "#f87171" : "#16a34a"} />
+          <OutboundBadge color="#16a34a" isError={isError} />
+          发送
+        </span>
+
+        {/* Target display / clickable pill */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1, overflow: "hidden" }}>
+          <span style={{ color: "var(--text-dim)", fontSize: 11, flexShrink: 0 }}>发往:</span>
+          {parsedTarget && onOpenSubagent ? (
+            <span
+              onClick={handleOpenTargetSession}
+              role="button"
+              tabIndex={0}
+              title={`在侧边栏标签页中打开目标会话 (${parsedTarget.sessionId})`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 7px",
+                borderRadius: 4,
+                background: isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.14)",
+                border: isError ? "1px solid rgba(248, 113, 113, 0.35)" : "1px solid rgba(34, 197, 94, 0.35)",
+                color: isError ? "#f87171" : "#16a34a",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.22)" : "rgba(34, 197, 94, 0.25)";
+                e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.55)" : "rgba(34, 197, 94, 0.6)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.14)";
+                e.currentTarget.style.borderColor = isError ? "1px solid rgba(248, 113, 113, 0.35)" : "rgba(34, 197, 94, 0.35)";
+              }}
+            >
+              <span>{target || parsedTarget.sessionId.slice(0, 8)}</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </span>
+          ) : (
+            <span
+              style={{
+                color: "var(--text-dim)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={`发往: ${target}`}
+            >
+              {target || "未知目标"}
+            </span>
+          )}
+          {mode && <span style={{ fontSize: 10, color: "var(--text-dim)", opacity: 0.8, flexShrink: 0 }}>· {mode.toUpperCase()}</span>}
+        </div>
+
+        {/* Status info in header */}
+        {isWaiting ? (
           <span
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: 5,
-              color: isError ? "#f87171" : "#16a34a",
-              fontFamily: "var(--font-mono)",
-              fontWeight: 600,
               fontSize: 11,
+              color: "#16a34a",
+              fontFamily: "var(--font-mono)",
               flexShrink: 0,
             }}
           >
-            <SendRobotIcon size={14} color={isError ? "#f87171" : "#16a34a"} />
-            <OutboundBadge color="#16a34a" isError={isError} />
-            发送
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "#16a34a",
+                boxShadow: "0 0 6px rgba(34, 197, 94, 0.8)",
+                animation: "pulse 1.5s infinite ease-in-out",
+              }}
+            />
+            等待回复...
           </span>
+        ) : result !== undefined ? (
           <span
             style={{
-              color: "var(--text-dim)",
-              fontFamily: "var(--font-mono)",
               fontSize: 11,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              flex: 1,
-              minWidth: 0,
-            }}
-            title={`发往: ${target}`}
-          >
-            发往: {target || "未知目标"}{mode ? ` · ${mode.toUpperCase()}` : ""}
-          </span>
-
-          {/* Status info in header */}
-          {isWaiting ? (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                fontSize: 11,
-                color: "#16a34a",
-                fontFamily: "var(--font-mono)",
-                flexShrink: 0,
-              }}
-            >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: "#16a34a",
-                  boxShadow: "0 0 6px rgba(34, 197, 94, 0.8)",
-                  animation: "pulse 1.5s infinite ease-in-out",
-                }}
-              />
-              等待回复...
-            </span>
-          ) : result !== undefined ? (
-            <span
-              style={{
-                fontSize: 11,
-                color: isError ? "#f87171" : "#16a34a",
-                fontFamily: "var(--font-mono)",
-                flexShrink: 0,
-              }}
-            >
-              {isError ? "✕ 失败" : "✓ 已送达"}
-            </span>
-          ) : null}
-
-          {duration !== undefined && (
-            <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-              {formatToolDuration(duration)}
-            </span>
-          )}
-
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 10 10"
-            fill="none"
-            stroke="var(--text-dim)"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{
+              color: isError ? "#f87171" : "#16a34a",
+              fontFamily: "var(--font-mono)",
               flexShrink: 0,
-              transform: expanded ? "rotate(180deg)" : "none",
-              transition: "transform 0.15s",
             }}
           >
-            <polyline points="2 3.5 5 6.5 8 3.5" />
-          </svg>
-        </button>
+            {isError ? "✕ 失败" : "✓ 已送达"}
+          </span>
+        ) : null}
+
+        {duration !== undefined && (
+          <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+            {formatToolDuration(duration)}
+          </span>
+        )}
+
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          fill="none"
+          stroke="var(--text-dim)"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            flexShrink: 0,
+            transform: expanded ? "rotate(180deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          <polyline points="2 3.5 5 6.5 8 3.5" />
+        </svg>
 
         {parsedTarget && onOpenSubagent && (
           <button
@@ -1753,21 +1863,31 @@ function MeshOutboundBubble({
             title="在侧边栏标签页中打开目标会话"
             aria-label="在侧边栏标签页中打开目标会话"
             style={{
-              background: "none",
-              border: "none",
-              borderLeft: isError ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(34,197,94,0.2)",
+              background: isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.12)",
+              border: isError ? "1px solid rgba(248, 113, 113, 0.28)" : "1px solid rgba(34, 197, 94, 0.28)",
+              borderRadius: 4,
               color: isError ? "#f87171" : "#16a34a",
               cursor: "pointer",
-              padding: "0 10px",
+              padding: "2px 8px",
               display: "flex",
               alignItems: "center",
               gap: 4,
               fontSize: 11,
               fontFamily: "var(--font-mono)",
-              opacity: 0.9,
+              fontWeight: 600,
+              flexShrink: 0,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.22)" : "rgba(34, 197, 94, 0.22)";
+              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.5)" : "rgba(34, 197, 94, 0.5)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = isError ? "rgba(248, 113, 113, 0.12)" : "rgba(34, 197, 94, 0.12)";
+              e.currentTarget.style.borderColor = isError ? "rgba(248, 113, 113, 0.28)" : "rgba(34, 197, 94, 0.28)";
             }}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
               <line x1="9" y1="3" x2="9" y2="21" />
             </svg>
@@ -1784,15 +1904,17 @@ function MeshOutboundBubble({
             style={{
               background: "none",
               border: "none",
+              borderLeft: "1px solid rgba(248, 113, 113, 0.2)",
               color: cancelling ? "var(--text-dim)" : "#ef4444",
               cursor: cancelling ? "default" : "pointer",
-              padding: "0 10px",
+              padding: "0 8px",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               fontSize: 11,
               fontFamily: "var(--font-mono)",
               opacity: cancelling ? 0.6 : 0.85,
+              flexShrink: 0,
             }}
           >
             {cancelling ? "已取消" : "✕ 停止"}
