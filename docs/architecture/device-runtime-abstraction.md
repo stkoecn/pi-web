@@ -301,5 +301,13 @@ if (isRemoteDevice(deviceId)) {
 - **治理规则**：
   - 在 `TerminalPanel.tsx` 中实施**容错自愈策略**：当检查到旧终端 404（已过期或被后端重启回收）时，立即自动以相同的 `cwd`、`cols`、`rows` 和 `deviceId` 发起 `POST /api/terminal` 重新唤起有效 Shell，实现用户端无感刷新与自动恢复。
 
+### 9. 标准对端会话交互 UI（Cross-Session UX）
+- **接收卡片（`MeshInboundCard`）**：
+  - 自动解析 `[From <target>]` 格式的来源标识（如 `01a18c40-03dd-7233-a7a1-eac7c43eeb29.wshome`）；
+  - 右上角提供 **「打开会话」** 快捷按钮：点击后直接在侧边栏右侧面板（Right Panel）创建并激活一个专用 Tab 标签页，加载对端会话完整上下文与信息流，支持跨设备无缝追踪与协作。
+- **发送卡片（`MeshOutboundBubble`）**：
+  - 目标为会话 ID（如 `<sessionId>.<deviceId>`）时，同样在卡片操作栏提供 **「打开会话」** 按钮，点击在右侧面板 Tab 中查看该目标会话；
+  - `mode: "realtime"` 下常态展示呼吸等待指示灯，若用户无需继续等待可随时点击 **「✕ 停止」** 取消阻塞。
+
 
 
