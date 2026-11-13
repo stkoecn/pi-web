@@ -48,6 +48,14 @@ export async function POST(
   try {
     const body = await req.json() as { type: string; [key: string]: unknown };
     commandType = typeof body.type === "string" ? body.type : undefined;
+
+    // Any incoming user prompt, steer, follow_up, or abort MUST immediately unblock any pending realtime wait
+    if (commandType === "prompt" || commandType === "steer" || commandType === "follow_up" || commandType === "abort") {
+      try {
+        const { unblockPendingRealtimeWait } = await import("@/lib/gateway/mesh-router");
+        unblockPendingRealtimeWait(id, undefined, "Unblocked by user message.");
+      } catch {}
+    }
     const requestedToolNames = body.toolNames;
     if (
       requestedToolNames !== undefined

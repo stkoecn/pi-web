@@ -53,9 +53,10 @@ export function setupMeshReverseBridge(
 
       const stream = accept();
 
+      // Allow sufficient time for synchronous LLM response (realtime waiting can take up to 300s)
       const streamTimeout = setTimeout(() => {
         try { stream.destroy(); } catch {}
-      }, 15000);
+      }, 310_000);
       streamTimeout.unref?.();
 
       stream.on("error", () => {
@@ -160,6 +161,8 @@ export function setupMeshReverseBridge(
               const errBody = JSON.stringify({ error: String(err) });
               const resp = `HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(errBody)}\r\nConnection: close\r\n\r\n${errBody}`;
               stream.end(resp);
+            } finally {
+              clearTimeout(streamTimeout);
             }
           })();
         }

@@ -554,10 +554,12 @@ export class SSHHostDriver implements IHostDriver {
       args.push('--no-session');
     } else {
       if (opts.sessionDir) {
-        args.push('--session-dir', `"${opts.sessionDir}"`);
+        const normDir = opts.sessionDir.replace(/\\/g, '/');
+        args.push('--session-dir', `"${normDir}"`);
       }
       if (opts.resumeSession) {
-        args.push('--session', `"${opts.resumeSession}"`);
+        const normSession = opts.resumeSession.replace(/\\/g, '/');
+        args.push('--session', `"${normSession}"`);
       }
     }
 

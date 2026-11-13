@@ -193,6 +193,13 @@ export class SshRemoteActiveSession implements IActiveSession {
   }
 
   async send(message: Record<string, unknown>): Promise<unknown> {
+    const type = message.type as string;
+    if (type === "prompt" || type === "steer" || type === "follow_up" || type === "abort") {
+      try {
+        const { unblockPendingRealtimeWait } = await import("../gateway/mesh-router");
+        unblockPendingRealtimeWait(this.sessionId, this.session.deviceId, "Unblocked by incoming message.");
+      } catch {}
+    }
     return new Promise((resolve) => {
       const id = (message.id as string) || `remote-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const req = { ...message, id };

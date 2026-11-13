@@ -62,7 +62,7 @@ export const REMOTE_SESSION_MAX_PER_DEVICE = 3;
 /** How often the idle sweeper runs. */
 const REMOTE_SESSION_SWEEP_INTERVAL_MS = 60_000;
 /** Overall budget for a remote pi to answer its first `get_state`. */
-const REMOTE_INIT_TIMEOUT_MS = 15_000;
+const REMOTE_INIT_TIMEOUT_MS = 30_000;
 /** `get_state` is re-sent at this cadence while pi is still booting. */
 const REMOTE_INIT_RETRY_INTERVAL_MS = 500;
 const REMOTE_INIT_MAX_ATTEMPTS = 10;
@@ -275,7 +275,7 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
     if (settled) return;
     attempts += 1;
     channel.send({ type: "get_state" });
-    if (attempts < REMOTE_INIT_MAX_ATTEMPTS) {
+    if (!settled) {
       retryTimer = setTimeout(requestState, REMOTE_INIT_RETRY_INTERVAL_MS);
     }
   };

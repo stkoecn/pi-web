@@ -1150,6 +1150,13 @@ export class AgentSessionWrapper {
         throw new Error("Session is being copied to a new session");
       }
 
+      if (type === "prompt" || type === "steer" || type === "follow_up" || type === "abort") {
+        try {
+          const { unblockPendingRealtimeWait } = await import("./gateway/mesh-router");
+          unblockPendingRealtimeWait(this.sessionId, undefined, "Unblocked by incoming message.");
+        } catch {}
+      }
+
       if (type === "prompt" || type === "steer" || type === "follow_up") {
         const imageError = validateAgentImages(command.images);
         if (imageError) throw new Error(imageError);
