@@ -38,6 +38,9 @@ export async function GET(
     if (message.includes("Session not found") || message.includes("not found")) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
+    // Upstream's transcript-notice / excludeLeaf / sessionId enhancements live
+    // inside the runtime's readSessionContext (lib/device-runtime/*-runtime.ts);
+    // this route stays a thin deviceId-dispatching facade over it.
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { execFile } from "child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { promisify } from "util";
@@ -111,6 +111,12 @@ export async function GET(
   const inline = url.searchParams.get("inline") === "1";
   const deviceId = url.searchParams.get("deviceId")?.trim() || undefined;
 
+  // Per-request private directory. A fixed /tmp/pi-web-export is created by
+  // whichever OS user runs the first WebUI process; other users on the same
+  // host then cannot write into it and history export fails. The remote
+  // session's staged input copy lives inside the same directory, so one
+  // recursive removal at the end cleans both.
+  let tempDir: string | null = null;
   try {
     let filePath = await resolveSessionPath(id);
     let tempInputPath: string | null = null;
@@ -122,8 +128,7 @@ export async function GET(
         const file = await findRemoteSessionFile(deviceId, id);
         if (file) {
           const content = await readRemoteSessionContent(deviceId, file);
-          const tempDir = join(tmpdir(), "pi-web-export");
-          mkdirSync(tempDir, { recursive: true });
+          tempDir = mkdtempSync(join(tmpdir(), "pi-web-export-"));
           tempInputPath = join(tempDir, `${randomUUID()}.jsonl`);
           writeFileSync(tempInputPath, content, "utf8");
           filePath = tempInputPath;
@@ -138,37 +143,34 @@ export async function GET(
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
+    if (!tempDir) {
+      tempDir = mkdtempSync(join(tmpdir(), "pi-web-export-"));
+    }
     if (!tempInputPath) {
       sessionBase = basename(filePath, ".jsonl");
     }
 
-    const tempDir = join(tmpdir(), "pi-web-export");
-    mkdirSync(tempDir, { recursive: true });
-
     const fileName = `pi-session-${sessionBase}.html`;
     const outputPath = join(tempDir, `${randomUUID()}.html`);
 
-    try {
-      await exportSession(filePath, outputPath);
+    await exportSession(filePath, outputPath);
 
-      const html = readFileSync(outputPath, "utf8");
-      return new Response(html, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Content-Disposition": getContentDisposition(fileName, inline),
-          "Cache-Control": "no-cache",
-          "Content-Security-Policy": "frame-ancestors 'none'",
-          "X-Content-Type-Options": "nosniff",
-          "X-Frame-Options": "DENY",
-        },
-      });
-    } finally {
-      rmSync(outputPath, { force: true });
-      if (tempInputPath) {
-        rmSync(tempInputPath, { force: true });
-      }
-    }
+    const html = readFileSync(outputPath, "utf8");
+    return new Response(html, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Disposition": getContentDisposition(fileName, inline),
+        "Cache-Control": "no-cache",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+      },
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
+  } finally {
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   }
 }

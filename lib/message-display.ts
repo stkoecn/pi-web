@@ -103,6 +103,19 @@ export function getAssistantErrorMessage(
 }
 
 /**
+ * A reply cut off by Stop, which pi's TUI marks "Operation aborted" as it ends.
+ * Its `errorMessage` is whatever the provider's client threw ("Request aborted",
+ * "This operation was aborted", …), so the chat says its own line instead. A
+ * tool call it streamed never ran: pi runs no tools after an abort.
+ */
+export function isAssistantAborted(
+  message: AssistantMessage,
+  options: DisplayOptions = {},
+): boolean {
+  return !options.isStreaming && message.stopReason === "aborted";
+}
+
+/**
  * A turn that ended on `stopReason: "length"` spent its whole output budget
  * (often on reasoning alone) and produced no final answer; without a notice it
  * looks like a hung session. The copy lives in i18n (`chat.truncatedByOutputLimit`).
@@ -163,4 +176,15 @@ export function isMeshOutboundMessage(message: AgentMessage | undefined | null):
   return message.content.some(
     (b: any) => b.type === "toolCall" && (b.toolName === "send_session_message" || b.name === "send_session_message")
   );
+}
+
+/**
+ * How many of a running `!` command's last lines show under its card, and how many rows
+ * once wrapped: pi's TUI previews `PREVIEW_LINES` (20) and cuts them to as many visual lines.
+ */
+export const LIVE_OUTPUT_PREVIEW_LINES = 20;
+
+/** A running `!` command's last lines (`LIVE_OUTPUT_PREVIEW_LINES`); the page caps their rows. */
+export function liveOutputPreview(output: string): string {
+  return output.replace(/\n+$/, "").split("\n").slice(-LIVE_OUTPUT_PREVIEW_LINES).join("\n");
 }

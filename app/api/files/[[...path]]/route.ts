@@ -44,6 +44,9 @@ import {
   statRemotePath,
 } from "@/lib/remote-files";
 import type { IHostDriver } from "@/lib/gateway/types/host-driver";
+import { registerFileWatch } from "@/lib/file-watch-registry";
+import { FILE_WATCH_HEARTBEAT_MS } from "@/lib/file-version";
+import { pageStreamLabel, registerPageStream } from "@/lib/page-stream-registry";
 
 const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch"] as const;
 type FileRequestType = typeof FILE_REQUEST_TYPES[number];
@@ -951,11 +954,14 @@ export async function GET(
         return NextResponse.json({ error: "Not a file" }, { status: 400 });
       }
       let watcher: fs.FSWatcher | null = null;
+      // The debug panel's count of open watches; released when the watcher fails or the client cancels.
+      let releaseWatch: (() => void) | null = null;
       let lastMtimeMs = stat?.mtimeMs ?? 0;
       let lastCtimeMs = stat?.ctimeMs ?? 0;
       let lastIno = stat?.ino ?? 0;
       let lastSize = stat?.size ?? 0;
       let lastExists = stat !== undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
       const stream = new ReadableStream({
         start(controller) {
           const send = (eventName: string, data: Record<string, unknown>) => {
@@ -964,6 +970,7 @@ export async function GET(
               controller.enqueue(new TextEncoder().encode(payload));
             } catch {
               // client disconnected
+              clearInterval(heartbeat);
             }
           };
           try {
@@ -997,20 +1004,46 @@ export async function GET(
               }
             });
             watcher.on("error", () => {
+              clearInterval(heartbeat);
               try { watcher?.close(); } catch { /* ignore */ }
               watcher = null;
+              releaseWatch?.();
               try { controller.close(); } catch { /* ignore */ }
             });
+            // Counted, and listed under the page that opened it (`?holder=`).
+            const releaseCount = registerFileWatch();
+            const releasePage = registerPageStream(pageStreamLabel("file-watch", request));
+            releaseWatch = () => {
+              releaseCount();
+              releasePage();
+            };
+            // A client gone without a cancel (a phone off the network) would keep
+            // the watcher, and its place in the debug panel's count, forever.
+            const onAbort = () => {
+              clearInterval(heartbeat);
+              try { watcher?.close(); } catch { /* ignore */ }
+              watcher = null;
+              releaseWatch?.();
+              try { controller.close(); } catch { /* ignore */ }
+            };
+            if (request.signal.aborted) {
+              onAbort();
+              return;
+            }
+            request.signal.addEventListener("abort", onAbort, { once: true });
             // The client snapshots only after this event, so emit it after the
             // watcher exists to avoid dropping changes between those steps.
             send("connected", { filePath });
+            heartbeat = setInterval(() => send("ping", {}), FILE_WATCH_HEARTBEAT_MS);
           } catch {
             send("error", { message: "Failed to watch file" });
             controller.close();
           }
         },
         cancel() {
+          clearInterval(heartbeat);
           try { watcher?.close(); } catch { /* ignore */ }
+          releaseWatch?.();
         },
       });
       return new Response(stream, {

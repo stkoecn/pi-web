@@ -21,11 +21,20 @@ export class AgentCommandError extends Error {
     public readonly status: number,
     public readonly code?: string,
     public readonly accepted?: boolean,
+    /** The session's folder, when the refusal is that it no longer exists (#1422). */
+    public readonly missingCwd?: string,
   ) {
     super(message);
     this.name = "AgentCommandError";
   }
 }
+
+/**
+ * A command refused for an extension's error that pi's runner already reported as an
+ * `extension_error` event (a `user_bash` handler that threw): the page shows that event's
+ * notice, so the refusal adds none.
+ */
+export const EXTENSION_REPORTED_CODE = "extension_reported";
 
 export function isPromptRejectedError(error: unknown): error is AgentCommandError {
   return error instanceof AgentCommandError

@@ -6,6 +6,7 @@ import {
   getRunningRpcSessionIds,
 } from "@/lib/rpc-manager";
 import { getSessionUiStateRevision } from "@/lib/session-ui-state";
+import { getSessionIdsWithUnsettledSubagentRuns } from "@/lib/subagent-runtime";
 import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +37,12 @@ export async function GET(req: Request) {
         runningSessionIds: getRunningRemoteRpcSessionIdsForDevice(deviceId),
         awaitingInputSessionIds: getAwaitingInputRemoteRpcSessionIdsForDevice(deviceId),
         completionNotificationSuppressedSessionIds: [],
+        // Remote subagent runs live on the device, not in this process.
+        subagentsActiveSessionIds: [],
         sessionUiStateRevision: null,
+        // Same contract as the local branch: a browser dates its unread markers
+        // on this server's clock, never on its own.
+        serverNow: Date.now(),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
@@ -48,7 +54,9 @@ export async function GET(req: Request) {
       runningSessionIds: getRunningRpcSessionIds(),
       awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
       completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
+      subagentsActiveSessionIds: getSessionIdsWithUnsettledSubagentRuns(),
       sessionUiStateRevision: getSessionUiStateRevision(),
+      serverNow: Date.now(),
     },
     { headers: { "Cache-Control": "no-store" } },
   );

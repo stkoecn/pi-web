@@ -17,6 +17,7 @@ import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { getDeviceRuntime } from "@/lib/device-runtime";
 import { loadRemoteModels } from "@/lib/remote-models";
 import { DeviceOfflineError } from "@/lib/gateway/singleton";
+import { llamaCppExtension } from "@/lib/pi-sdk-internals";
 
 export const dynamic = "force-dynamic";
 
@@ -114,6 +115,7 @@ export async function PUT(req: Request) {
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
+      resourceLoaderOptions: { extensionFactories: [llamaCppExtension] },
       ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
     });
     const { settingsManager } = services;
