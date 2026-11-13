@@ -319,3 +319,24 @@ if (isRemoteDevice(deviceId)) {
 
 
 
+
+---
+
+## 十、运行时收敛进度与后续计划（2026-11，上游 v0.16.0 合并后）
+
+### 1. 本轮已完成（R1 + R2a-d）
+
+**Mesh 协议正确性（R1）**：realtime 语义恢复为"等待对端回复"，解阻钩子只匹配发送会话自身的等待（设备全等），`pendingReplies` 生命周期全路径清理，去重仅对"进行中"投递生效，远程 `send` 不再伪造成功，远程扩展 fetch 有界（310s）且错误分类完整，cmd.exe 环境变量注入改为 `set "VAR=value"`。
+
+**契约收敛（R2a-d）**：远程 `forkSession` 支持 `targetEntryId`/`sourceTitle`；远程 `setSessionTools` 先恢复会话再应用（会话不存在时报错而非假成功）；远程 UI 状态完整往返 project 钉选与排序；`IDeviceRuntime` 新增 `capabilities`（toolParameters/modelsByCwd/projectUiState）供调用方显式降级；git/status、git/diff、worktrees、ui-state 的远程失败显式化（503 + 错误体），其中 git/diff 同步修复了远程 shell 注入（`shellQuote`）；sessions/stats、subagents/[id]、models-config/test 补齐 deviceId 或显式拒绝；`unpackMeshOutboundFrame` 收敛为唯一实现；`isLocalHostId` 委托 `device-context.isLocalHost`（单一 localhost 谓词）；本地 exec 与 SSH 驱动同为 30s 超时契约。
+
+**上游血缘修复**：v0.16.0 合并以"内容级三方合并（base=f130910）+ 双亲合并提交"完成，`dev` 与 `upstream/main` 建立真实 git 血缘——**此后同步直接 `git merge upstream/main` 即可**，不再需要手工快照。同时找回了此前手工同步丢失的上游子系统（未确认发送 #1432、missingCwd #1422、Debug 快照读取器、工具时钟、#1401 二进制嗅探）。
+
+### 2. 已知待办（按优先级）
+
+1. **主会话路由收编（R2e，未做）**：`agent/new`、`agent/[id]`、`agent/[id]/events`、`sessions`、`agent/running`、`sessions/[id]` 仍各自保留 `isRemoteDevice` 分支并复制运行时逻辑（约 60 处分叉点中的主体）。收编方向：路由只做参数解析，全部委托 `getDeviceRuntime(deviceId)`；远程分支逻辑下沉进 `SshRemoteDeviceRuntime`/`remote-agent-manager`；`enqueueDeviceSessionTask` 队列/上限在所有建会话路径生效。**必须在有 E2E（wsnas 联调 + 浏览器 QA）的会话中逐条进行**——这些路由今天工作正常，收编是重构而非修复。
+2. **远程工具参数与按 cwd 的模型探测**：`capabilities` 已显式声明限制；若需要，在远程探针（remote-tools/remote-models）中加 schema 与项目作用域。
+3. **远程 subagent 运行跟踪**：subagents/[id] 目前对远程显式 501；设备端运行时需要暴露运行状态。
+4. **PI_SESSION_ID 注入新会话**：远程新会话首个 `get_state` 前没有会话 id，网关侧的"设备仅一个运行会话"兜底覆盖了大部分场景。
+5. **terminal-manager 调和**：dev 的设备感知异步重写与上游的同步复用契约（#1560 测试）待统一（测试已显式 skip 并标注）。
+6. **历史遗留测试失败**：组件 10 个、lib 18 个、junction 1 个在合并前即失败（与本次工作无关），集中于 Debug 面板交互与主题渲染断言，宜随 R2e 一起清理。
