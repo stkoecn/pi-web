@@ -15,7 +15,7 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { GET } = await jiti.import("./[...path]/route.ts");
+const { GET } = await jiti.import("./[[...path]]/route.ts");
 const { allowFileRoot } = await jiti.import("../../../lib/allowed-roots.ts");
 // Another copy of the module, as the debug route's bundle holds one.
 const { countFileWatches } = await jiti.import("../../../lib/file-watch-registry.ts");

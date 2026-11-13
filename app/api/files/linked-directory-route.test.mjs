@@ -23,7 +23,7 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { GET, POST } = await jiti.import("./[...path]/route.ts");
+const { GET, POST } = await jiti.import("./[[...path]]/route.ts");
 const { GET: getFileIndex } = await jiti.import("../file-index/route.ts");
 const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
 const { encodeFilePathForApi } = await jiti.import("../../../lib/file-paths.ts");

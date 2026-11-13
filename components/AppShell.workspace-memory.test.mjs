@@ -192,6 +192,12 @@ test("New restores the draft after session navigation and workspace auto-restore
         const getSessionViewSnapshot = () => null;
         const setSessionViewSnapshot = () => false;
         const deleteSessionViewSnapshot = () => {};
+        const releaseUnconfirmedSendRef = { current: () => {} };
+        const liveFollowFrameRef = { current: null };
+        const cancelAnimationFrame = () => {};
+        const bashRecoveryIdRef = { current: 0 };
+        const cancelEventStreamGrace = () => {};
+        const closeEvents = () => {};
         ${hookSource.slice(cleanupStart, cleanupEnd)}
       })`), context);
       let mountedKey = context.sessionKey;

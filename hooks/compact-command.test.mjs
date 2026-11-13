@@ -66,6 +66,7 @@ function hook() {
     setCompactResult: (result) => calls.compactResults.push(result),
     readCompactResult: (result) => result,
     // The compact POST blocks for the whole compaction, as the real one does.
+    deviceIdRef: { current: "localhost" },
     sendAgentCommand: (sid, command) => {
       calls.requests.push(command);
       return compact.promise;

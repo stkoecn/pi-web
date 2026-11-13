@@ -47,6 +47,7 @@ function fork(reply) {
     bashRunningRef: { current: false },
     sessionIdRef: { current: "source" },
     setForkingEntryId: () => {},
+    deviceIdRef: { current: "localhost" },
     sendAgentCommand: async (sid, command) => {
       calls.requests.push([sid, command]);
       return reply();

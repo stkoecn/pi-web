@@ -32,6 +32,7 @@ function setup() {
     fetch: (url) => { const request = Promise.withResolvers(); requests.push({ ...request, url }); return request.promise; },
     syncLiveModel() {}, setIsCompacting() {}, setAutoCompactionEnabled() {}, setQueuedMessages() {},
     normalizeQueuedMessages: (value) => value, finishPromptWithoutStream: () => { throw new Error("busy run settled"); },
+    isNearBottomRef: { current: true }, liveFollowFrameRef: { current: null }, pendingScrollToUserRef: { current: false }, scrollToBottom: () => {},
   });
   context.applyLiveUsage = callback("applyLiveUsage").runInContext(context);
   context.refreshContextUsage = callback("refreshContextUsage").runInContext(context);
@@ -119,6 +120,9 @@ test("only completed assistant messages trigger an immediate usage read", () => 
       agentRunningRef: { current: true }, sessionIdRef: { current: "a" }, optimisticUserMessageKeyRef: { current: null },
       isSystemMessageEvent: (event) => event.message.role === "system",
       normalizeToolCalls: (message) => message, userMessageKey: () => "user", setMessages() {}, dispatch() {}, setAgentPhase() {},
+      isNearBottomRef: { current: true }, liveFollowFrameRef: { current: null }, pendingScrollToUserRef: { current: false },
+      scrollToBottom() {}, idleMessageReadsRef: { current: null }, markPromptLanded() {},
+      requestAnimationFrame: (fn) => 0, cancelAnimationFrame() {},
       setToolClocks() {}, withoutToolClock: (clocks) => clocks,
       refreshContextUsage: (sid) => reads.push(sid),
     });

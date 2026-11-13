@@ -44,6 +44,8 @@ function setup(fetchImpl) {
     asConcreteThinkingLevel: (value) => (!value || value === "auto" ? null : value),
     fetch: fetchImpl,
     missingCwdFromBody,
+    withDeviceId: (url) => url,
+    deviceId: "localhost",
     MODELS_RETRY_DELAYS_MS: script(schedule.initializer.getText(source)).runInNewContext(),
     delay: async (ms) => { delays.push(ms); },
   };

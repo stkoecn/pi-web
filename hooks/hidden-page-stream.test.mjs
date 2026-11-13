@@ -70,7 +70,7 @@ async function setup() {
       return json({ filePath: "/s1.jsonl", leafId: null, tree: [], treeFormat: "summary", context: { messages: [], entryIds: [], oldestEntryId: null, hasMore: false } });
     }
     if (url === "/api/sessions/s1/state") return json({ running: true, state: server.state });
-    if (url === "/api/agent/s1/lease") {
+    if (url.startsWith("/api/agent/s1/lease")) {
       if (server.answer === "never") {
         return new Promise((_resolve, reject) => {
           init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
@@ -99,7 +99,7 @@ async function setup() {
   // Lease requests since hiding: the renewal tick and the release check share one.
   let mark = 0;
   const hide = () => { mark = requests.length; setVisibility("hidden"); };
-  const checks = () => requests.slice(mark).filter((url) => url === "/api/agent/s1/lease").length;
+  const checks = () => requests.slice(mark).filter((url) => url.startsWith("/api/agent/s1/lease")).length;
   const reads = () => requests.filter((url) => url.startsWith("/api/sessions/s1?")).length;
   const tick = async (ms) => { mock.timers.tick(ms); await settle(); hook.flush(); };
   const read = () => reader?.() ?? null;
@@ -146,7 +146,7 @@ test("a page hidden past the grace closes the idle stream and its return reopens
 test("the page renews the session the whole time, with or without its stream", async () => {
   const state = await setup();
   try {
-    const holds = () => state.requests.filter((url) => url === "/api/agent/s1/lease").length;
+    const holds = () => state.requests.filter((url) => url.startsWith("/api/agent/s1/lease")).length;
     assert.equal(holds(), 1, "sent as soon as the session is selected");
     await connectIdle(state);
     await state.tick(SESSION_LEASE_RENEW_MS);

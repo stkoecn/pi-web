@@ -14,7 +14,15 @@ export async function GET(
     const runtime = await getDeviceRuntime(deviceId);
     const active = await runtime.getActiveSession(id);
     if (active) {
-      const state = (active as any).session?.state ?? (await (active as any).session?.send?.({ type: "get_state" }).catch(() => undefined));
+      // Two active-session shapes reach this point: the local RPC wrapper
+      // carries `send` itself, while the remote runtime wraps it in `.session`.
+      // Cached `.state` answers without a round trip on either.
+      const anyActive = active as any;
+      const state = anyActive.session?.state
+        ?? anyActive.state
+        ?? (typeof anyActive.send === "function"
+          ? await anyActive.send({ type: "get_state" }).catch(() => undefined)
+          : await anyActive.session?.send?.({ type: "get_state" }).catch(() => undefined));
       return NextResponse.json({ running: true, ...(state ? { state } : {}) });
     }
 

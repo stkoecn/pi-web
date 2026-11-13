@@ -51,6 +51,7 @@ function hook(reply) {
     appendedLeafRef: { current: null },
     entryIdsRef: { current: [] },
     onSessionForked: (id) => calls.forked.push(id),
+    deviceIdRef: { current: "localhost" },
     sendAgentCommand: async (sid, command) => {
       calls.requests.push(command);
       return reply;

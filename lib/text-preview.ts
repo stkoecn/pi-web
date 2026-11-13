@@ -5,13 +5,27 @@ export interface TextPreviewChunk {
   content: string;
   nextOffset: number;
   truncated: boolean;
+  // No text preview: the viewer offers the download instead of decoded bytes.
+  binary: boolean;
 }
+
+// Git's own test (buffer_is_binary): a NUL byte among the first 8000 bytes.
+// Invalid UTF-8 alone stays text, so a Latin-1 file still shows as before.
+const BINARY_SNIFF_BYTES = 8000;
 
 function utf8SequenceLength(byte: number): number {
   if ((byte & 0xe0) === 0xc0) return 2;
   if ((byte & 0xf0) === 0xe0) return 3;
   if ((byte & 0xf8) === 0xf0) return 4;
   return 1;
+}
+
+function looksBinary(buffer: Buffer, length: number): boolean {
+  // UTF-16 text is full of NULs; a byte order mark keeps it the text view it had.
+  if (length >= 2 && ((buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff))) {
+    return false;
+  }
+  return buffer.subarray(0, Math.min(length, BINARY_SNIFF_BYTES)).includes(0);
 }
 
 export function readTextPreviewChunk(
@@ -46,6 +60,13 @@ export function chunkFromBuffer(
   fileSize: number,
   offset: number,
 ): TextPreviewChunk {
+  // Only the start of a file decides; Load more continues a file shown as text.
+  // A remote device's chunk goes through the same test, so a binary device file
+  // offers its download instead of decoded bytes, exactly like a local one.
+  if (offset === 0 && looksBinary(buffer, bytesRead)) {
+    return { content: "", nextOffset: 0, truncated: false, binary: true };
+  }
+
   let end = Math.min(bytesRead, TEXT_PREVIEW_MAX_BYTES);
   if (offset + end < fileSize) {
     let sequenceStart = end;
@@ -62,5 +83,6 @@ export function chunkFromBuffer(
     content: buffer.toString("utf8", 0, end),
     nextOffset,
     truncated: nextOffset < fileSize,
+    binary: false,
   };
 }

@@ -57,6 +57,9 @@ async function setup({ fresh = false, context } = {}) {
     response: Promise.withResolvers(),
     outcome: "network",
   };
+  // The hook's live-follow scroll runs on rAF; the tests stub it out (no DOM).
+  globalThis.requestAnimationFrame = () => 0;
+  globalThis.cancelAnimationFrame = () => {};
   globalThis.EventSource = class {
     readyState = 0;
     onmessage = null;

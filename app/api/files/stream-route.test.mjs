@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(new URL("./[...path]/route.ts", import.meta.url), "utf8");
+const source = await readFile(new URL("./[[...path]]/route.ts", import.meta.url), "utf8");
 const start = source.indexOf("function streamFile");
 const end = source.indexOf("function escapeHtml", start);
 assert.notEqual(start, -1, "streamFile not found");

@@ -15,6 +15,9 @@ import type {
 } from "@/lib/types";
 import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
 import type { TranslationParams } from "@/lib/i18n/types";
+import { runStatePhase } from "@/lib/chat-phase-label";
+
+import { missingCwdFromBody } from "@/lib/missing-cwd";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { AgentCommandError, agentStatusUrl, EXTENSION_REPORTED_CODE, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { LOCAL_DEVICE_ID, isRemoteDevice, withDeviceId } from "@/lib/device-context";
@@ -44,6 +47,9 @@ import {
 } from "@/lib/agent-event-connection";
 import type { DebugClientLease, DebugClientSession, DebugEventConnectionSnapshot, DebugStreamCloseReason } from "@/lib/debug-types";
 import { pageId, peekPageId, trackEventSource } from "@/lib/page-debug";
+
+// This page's id, the `?holder=` of its event streams: lib/page-debug.ts.
+export { peekPageId };
 import { HIDDEN_PAGE_GRACE_MS } from "@/hooks/usePageHidden";
 import { AGENT_EVENT_HEARTBEAT_MS, isNestedToolExecutionEvent, isSystemMessageEvent } from "@/lib/agent-event-wire";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
@@ -333,7 +339,7 @@ let pageLeaseHolder: string | null = null;
 type SessionLeaseOutcome = SessionLeaseReply | "unanswered" | null;
 function sessionLeaseUrl(sid: string, deviceId: string): string {
   pageLeaseHolder ??= `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  return withDeviceId(`/api/agent/${encodeURIComponent(sid)}/lease?holder=${pageLeaseHolder}`, deviceId);
+  return withDeviceId(`/api/agent/${encodeURIComponent(sid)}/lease`, deviceId);
 }
 // Retry temporary model-list failures without requiring a page refresh.
 const MODELS_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
@@ -662,7 +668,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current = new AgentEventConnection({
       createSource: (sid) => {
         eventConnectionDeviceIdRef.current = deviceIdRef.current;
-        return new EventSource(withDeviceId(`/api/agent/${encodeURIComponent(sid)}/events`, deviceIdRef.current));
+        return new EventSource(withDeviceId(`/api/agent/${encodeURIComponent(sid)}/events?holder=${encodeURIComponent(pageId())}`, deviceIdRef.current));
       },
       onEvent: (event) => handleAgentEventRef.current?.(event as AgentEvent),
       shouldMaintain: (sid) => (
@@ -1253,8 +1259,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, []);
 
-  const closeEvents = useCallback(() => {
-    eventConnectionRef.current?.close();
+  const closeEvents = useCallback((reason?: DebugStreamCloseReason) => {
+    eventConnectionRef.current?.close(reason);
   }, []);
 
   // A stream opened for another device is stale. Close it and re-stamp the
@@ -1307,16 +1313,45 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const timeout = setTimeout(() => controller.abort(), SESSION_LEASE_TIMEOUT_MS);
     const request: { sid: string; promise: Promise<SessionLeaseOutcome> } = { sid, promise: Promise.resolve(null) };
     request.promise = (async (): Promise<SessionLeaseOutcome> => {
+      let httpStatus: number | null = null;
+      let result: SessionLeaseOutcome = null;
+      const startedAt = Date.now();
+      leaseDebugRef.current.inFlightSince = startedAt;
+      leaseDebugRef.current.requests += 1;
       try {
         const response = await fetch(sessionLeaseUrl(sid, deviceIdRef.current), { method: "POST", cache: "no-store", signal: controller.signal });
-        return response.ok ? await response.json() as SessionLeaseReply : null;
+        httpStatus = response.status;
+        result = response.ok ? await response.json() as SessionLeaseReply : null;
+        return result;
       } catch (error) {
         // Timed out (queued behind open streams) or no network. A body that is no
         // JSON counts as an error reply.
-        return controller.signal.aborted || error instanceof TypeError ? "unanswered" : null;
+        result = controller.signal.aborted || error instanceof TypeError ? "unanswered" : null;
+        return result;
       } finally {
         clearTimeout(timeout);
         if (leaseRequestRef.current === request) leaseRequestRef.current = null;
+        // The debug panel's record of it; whatever the reply holds, it cannot throw from here.
+        try {
+          const lease = leaseDebugRef.current;
+          const at = Date.now();
+          const outcome = result === "unanswered" ? "unanswered" : result === null ? "error" : "reply";
+          if (outcome === "unanswered") lease.unanswered += 1;
+          if (outcome === "error") lease.errors += 1;
+          const reply = typeof result === "object" && result !== null ? result : null;
+          lease.inFlightSince = null;
+          lease.last = {
+            at,
+            durationMs: Math.max(0, at - startedAt),
+            outcome,
+            httpStatus,
+            reply: reply && {
+              running: reply.running === true,
+              awaitingInput: reply.awaitingInput === true,
+              subagentsActive: reply.subagentsActive === true,
+            },
+          };
+        } catch {}
       }
     })();
     leaseRequestRef.current = request;
@@ -1352,6 +1387,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     );
     const check = async () => {
       timer = null;
+      hiddenReleaseDueAtRef.current = null;
       if (!releasable()) return;
       const reply = await requestLease(sid);
       if (!releasable()) return;
@@ -1360,10 +1396,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         return;
       }
       eventStreamReleasedRef.current = true;
-      closeEvents();
+      releaseDebugRef.current = { count: releaseDebugRef.current.count + 1, lastAt: Date.now() };
+      closeEvents("released");
     };
     const arm = () => {
-      timer ??= setTimeout(() => void check(), HIDDEN_PAGE_GRACE_MS);
+      if (timer !== null) return;
+      timer = setTimeout(() => void check(), HIDDEN_PAGE_GRACE_MS);
+      hiddenReleaseDueAtRef.current = Date.now() + HIDDEN_PAGE_GRACE_MS;
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
@@ -1371,6 +1410,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       } else if (timer) {
         clearTimeout(timer);
         timer = null;
+        hiddenReleaseDueAtRef.current = null;
       }
     };
     if (document.visibilityState === "hidden") arm();
@@ -1378,6 +1418,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return () => {
       disposed = true;
       if (timer) clearTimeout(timer);
+      hiddenReleaseDueAtRef.current = null;
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [closeEvents, eventStreamIdle, eventStreamReattachCount, requestLease, session?.id, deviceId]);
@@ -1603,11 +1644,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (promptActive) {
           eventStreamGraceActiveRef.current = false;
           eventStreamGraceTimerRef.current = null;
+          eventStreamGraceDueAtRef.current = null;
           sdkAgentActiveRef.current = Boolean(state?.isStreaming);
           rpcPromptPendingRef.current = Boolean(state?.isPromptRunning);
           agentRunningRef.current = true;
           setAgentRunning(true);
-          setAgentPhase(state?.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
+          setAgentPhase((prev) => runStatePhase(prev, Boolean(state?.isStreaming)));
           return;
         }
 
@@ -2564,7 +2606,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // run's end reads the file.
     const midRun = agentRunningRef.current || bashRunningRef.current;
     const syncLiveState = async () => {
-      const res = await fetch(agentStatusUrl(sid)).catch(() => null);
+      const res = await fetch(agentStatusUrl(sid, deviceIdRef.current)).catch(() => null);
       const d = res?.ok ? await res.json().catch(() => null) as { state?: AgentStateResponse } | null : null;
       if (d?.state && sessionHookMountedRef.current && sessionIdRef.current === sid) syncLiveModel(d.state);
     };
@@ -2598,26 +2640,30 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, currentModelOverride, isNew, loadSession, setNewSessionModel, syncLiveModel]);
 
-  const handleCompact = useCallback(async () => {
+  const handleCompact = useCallback(async (customInstructions?: string): Promise<boolean> => {
     const sid = sessionIdRef.current;
-    if (!sid || isCompacting) return;
+    if (!sid || isCompacting) return true;
     setIsCompacting(true);
     setCompactError(null);
     setCompactResult(null);
     try {
-      const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" }, deviceIdRef.current)
+      const result = await sendAgentCommand<CompactCommandResult>(sid, {
+        type: "compact",
+        ...(customInstructions ? { customInstructions } : {}),
+      }, deviceIdRef.current);
       setCompactResult(readCompactResult(result, "manual"));
       // Keep the composer mounted: a loading screen would discard its focus
       // and selection while the user is writing the next prompt.
-      if (await loadSession(sid, true)) promoteNewSession();
+      if (await loadSession(sid)) promoteNewSession();
       return true;
     } catch (e) {
       setCompactError(e instanceof Error ? e.message : String(e));
       setCompactResult(null);
+      return false;
     } finally {
       setIsCompacting(false);
     }
-  }, [isCompacting, loadSession]);
+  }, [isCompacting, loadSession, promoteNewSession]);
 
   // The banner otherwise stays until the next compaction, e.g. "Nothing to compact".
   const dismissCompactError = useCallback(() => setCompactError(null), []);
@@ -2626,12 +2672,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const modelCwd = newSessionCwd ?? session?.cwd ?? "";
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
     let d: ModelsResponse;
+    let cwdGone: string | null = null;
     try {
       const res = await fetch(withDeviceId(modelsUrl, deviceId), signal ? { signal } : undefined);
       if (!res.ok) {
         let detail = "";
+        let body: unknown = null;
         try {
-          const body: unknown = await res.json();
+          body = await res.json();
           if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
             detail = body.error;
           }
@@ -2639,16 +2687,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (e instanceof DOMException && e.name === "AbortError") throw e;
           // Non-JSON error responses fall back to the HTTP status.
         }
+        cwdGone = missingCwdFromBody(body);
         throw new Error(detail || `Failed to load models (HTTP ${res.status})`);
       }
       d = await res.json() as ModelsResponse;
       signal?.throwIfAborted();
     } catch (e) {
       if (!signal?.aborted && !(e instanceof DOMException && e.name === "AbortError")) {
-        setModelError(e instanceof Error ? e.message : String(e));
+        // A moved or deleted project folder is not a model problem (#1422).
+        setModelsMissingCwd(cwdGone);
+        setModelError(cwdGone ? null : e instanceof Error ? e.message : String(e));
       }
       throw e;
     }
+    setModelsMissingCwd(null);
     setModelNames(d.models);
     setModelError(d.modelError ?? null);
     setModelScopeWarnings(d.modelScopeWarnings ?? []);
@@ -2806,16 +2858,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       switch (commandName) {
         case "compact": {
           if (!sid || isCompacting) return complete({ handled: true, error: "No active session to compact" });
-          setIsCompacting(true);
-          setCompactError(null);
-          setCompactResult(null);
-          const result = await sendAgentCommand<CompactCommandResult>(sid, {
-            type: "compact",
-            ...(args ? { customInstructions: args } : {}),
-          }, deviceIdRef.current)
-          setCompactResult(readCompactResult(result, "manual"));
-          if (await loadSession(sid, true)) promoteNewSession();
-          return complete({ handled: true, message: "Compacted context" });
+          // Detached on purpose. This must resolve now: runBuiltinCommand holds
+          // the composer's fieldset disabled until the command resolves, and the
+          // compact POST blocks for the whole compaction, which read as an input
+          // box that stopped taking text until the session was switched away and
+          // back. The compaction reports itself (Compacting status, Stop
+          // compaction, result banner, error), so no completion notice here.
+          // A failed compaction gives its instructions back, as the awaited command
+          // left them in the composer.
+          void handleCompact(args || undefined).then((compacted) => {
+            if (!compacted && args) opts.chatInputRef?.current?.prependText(`/compact ${args}`);
+          });
+          return complete({ handled: true, action: "compact" });
         }
 
         case "auto-compact": {
@@ -2926,8 +2980,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     } catch (e) {
       return complete({ handled: true, error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      if (commandName === "compact") setIsCompacting(false);
     }
   }, [activeLeafId, addNotice, ensureNewSession, handleCompact, isCompacting, loadModels, loadSession, loadSlashCommands, loadTools, promoteNewSession, onOpenSettings, onSessionForked, onSessionStatsPanelOpen, opts.chatInputRef, sessionStats, slashCommandsForMcp, startSideChat, translate]);
 
@@ -2961,16 +3013,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }, deviceIdRef.current);
     } catch (e) {
       console.error("Failed to submit streaming prompt:", e);
+      restore();
       // A transport failure after dispatch is ambiguous: the server may have
-      // accepted the queued prompt before the response was lost. Restoring in
-      // that case would invite a duplicate turn.
-      if (isPromptRejectedError(e)) restore();
-      addNotice({
-        type: "error",
-        message: e instanceof Error ? e.message : String(e),
-      });
+      // accepted the queued prompt before the response was lost, so the notice
+      // says the send is unconfirmed instead of failed (#1432).
+      if (e instanceof AgentCommandError && e.missingCwd) {
+        setPromptMissingCwd(e.missingCwd);
+        return;
+      }
+      if (isPromptRejectedError(e)) addNotice({ type: "error", message: e.message });
+      else addUnconfirmedSendNotice();
     }
-  }, [addNotice, composerDraftKey, editEntryId, restoreSubmission]);
+  }, [addNotice, addUnconfirmedSendNotice, composerDraftKey, editEntryId, restoreSubmission]);
 
   const handleSteer = useCallback(async (message: string, images?: AttachedImage[]) => {
     await sendStreamingPrompt(message, "steer", images);
@@ -3182,7 +3236,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         rpcPromptPendingRef.current = Boolean(agentState.state.isPromptRunning);
         agentRunningRef.current = true;
         setAgentRunning(true);
-        setAgentPhase(agentState.state.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
+        setAgentPhase((prev) => runStatePhase(prev, agentState.state?.isStreaming === true));
         dispatch({ type: "resume" });
         if (!agentState.state.isStreaming && agentState.state.isPromptRunning) {
           void waitForPromptSettlement(sid);
@@ -3211,6 +3265,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   reattachEventStreamRef.current = (sid: string, reason: "visible" | "activity") => {
     if (!eventStreamReleasedRef.current || endedSessionRef.current === sid) return;
     eventStreamReleasedRef.current = false;
+    reattachDebugRef.current = { count: reattachDebugRef.current.count + 1, lastAt: Date.now(), lastReason: reason };
     setEventStreamReattachCount((count) => count + 1);
     if (!sessionHookMountedRef.current || sessionIdRef.current !== sid || sessionPropIdRef.current !== sid) return;
     maintainEventsConnected(sid);
@@ -3231,6 +3286,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = session?.id;
     if (!sid) return;
     let disposed = false;
+    const leaseDebug = leaseDebugRef.current;
     const renew = async () => {
       const reply = await requestLease(sid);
       if (disposed || document.visibilityState !== "hidden") return;
@@ -3238,6 +3294,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
     void renew();
     const interval = setInterval(() => void renew(), SESSION_LEASE_RENEW_INTERVAL_MS);
+    leaseDebug.renewStartedAt = Date.now();
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       reattachEventStreamRef.current(sid, "visible");
@@ -3248,6 +3305,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return () => {
       disposed = true;
       clearInterval(interval);
+      leaseDebug.renewStartedAt = null;
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [requestLease, session?.id]);
@@ -3335,6 +3393,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           deleteSessionViewSnapshot(sid);
         }
       }
+      // After the snapshot above, so the bubble of a send given back leaves it.
+      releaseUnconfirmedSendRef.current();
       if (liveFollowFrameRef.current !== null) {
         cancelAnimationFrame(liveFollowFrameRef.current);
         liveFollowFrameRef.current = null;
