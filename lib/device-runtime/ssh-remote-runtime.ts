@@ -276,6 +276,15 @@ export class SshRemoteActiveSession implements IActiveSession {
  */
 export class SshRemoteDeviceRuntime implements IDeviceRuntime {
   readonly isRemote = true;
+  readonly capabilities = {
+    // The remote tool probe lists names and descriptions; JSON schemas need a
+    // full session connection the probe does not open.
+    toolParameters: false,
+    // The probe reads the device's models.json and its live session; project
+    // settings scoping is a local-file read the probe cannot do.
+    modelsByCwd: false,
+    projectUiState: true,
+  };
   constructor(public readonly deviceId: string) {}
 
   protected async getDriver(): Promise<IHostDriver> {
@@ -471,10 +480,13 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
 
   async forkSession(
     sessionId: string,
-    _targetEntryId?: string,
-    _options?: ForkSessionOptions,
+    targetEntryId?: string,
+    options?: ForkSessionOptions,
   ): Promise<ForkSessionResult> {
-    const res = await forkRemoteSession(this.deviceId, sessionId);
+    const res = await forkRemoteSession(this.deviceId, sessionId, {
+      targetEntryId: options?.targetEntryId ?? targetEntryId,
+      sourceTitle: options?.sourceTitle,
+    });
     return {
       sessionId: res.sessionId,
       sessionPath: res.session.path,
@@ -483,13 +495,21 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
   }
 
   async setSessionTools(sessionId: string, tools?: string[]): Promise<SetToolsResult> {
-    const session = getRemoteRpcSession(sessionId);
-    if (session && !((session.channel as any).isClosed?.())) {
-      session.pendingToolNames = tools ? [...tools] : undefined;
-      session.channel.send({ type: "set_tools", toolNames: tools ? [...tools] : [] });
-      return { sessionId, tools, recreated: false };
+    let session = getRemoteRpcSession(sessionId);
+    if (!session || ((session.channel as any).isClosed?.())) {
+      // The local contract recreates the session from its transcript and pins
+      // the loadout there. The remote mirror resumes the persisted session so
+      // the loadout lands on a live channel too; a session that does not exist
+      // on the device is an error, not a silent success.
+      const resumed = await enqueueDeviceSessionTask(this.deviceId, () =>
+        ensureRemoteRpcSessionForExisting(this.deviceId, sessionId));
+      if (!resumed) {
+        throw new Error(`Session not found on remote device ${this.deviceId}: ${sessionId}`);
+      }
+      session = resumed;
     }
-
+    session.pendingToolNames = tools ? [...tools] : undefined;
+    session.channel.send({ type: "set_tools", toolNames: tools ? [...tools] : [] });
     return { sessionId, tools, recreated: false };
   }
 
@@ -738,6 +758,8 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
       ...emptySessionUiState(),
       projectNames: remote.projectNames || {},
       sessions: (remote.sessions as any) || {},
+      projects: (remote.projects as any) || {},
+      ...(remote.projectOrder ? { projectOrder: remote.projectOrder } : {}),
     };
   }
 

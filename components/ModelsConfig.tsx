@@ -860,12 +860,14 @@ function ModelDetail({
   providerName,
   provider,
   model,
+  deviceId,
   onChange,
   onDelete,
 }: {
   providerName: string;
   provider: ProviderEntry;
   model: ModelEntry;
+  deviceId?: string;
   onChange: (m: ModelEntry) => void;
   onDelete: () => void;
 }) {
@@ -938,10 +940,10 @@ function ModelDetail({
     const requestId = ++testRequestIdRef.current;
     setTestState({ phase: "testing" });
     try {
-      const res = await fetch("/api/models-config/test", {
+      const res = await fetch(withDeviceId("/api/models-config/test", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerName, provider, model }),
+        body: JSON.stringify({ providerName, provider, model, deviceId }),
       });
       const d = await res.json() as {
         ok?: boolean;
@@ -2362,6 +2364,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, deviceId =
         providerName={selection.providerName}
         provider={provider}
         model={model}
+        deviceId={deviceId}
         onChange={(m) => updateModel(selection.providerName, selection.index, m)}
         onDelete={() => removeModel(selection.providerName, selection.index)}
       />

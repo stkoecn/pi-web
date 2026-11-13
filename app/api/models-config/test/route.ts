@@ -40,7 +40,17 @@ export async function POST(req: Request) {
   let tempDir: string | undefined;
 
   try {
-    const body = await req.json() as { providerName?: unknown; provider?: unknown; model?: unknown };
+    const body = await req.json() as { providerName?: unknown; provider?: unknown; model?: unknown; deviceId?: unknown };
+    // The probe runs on this server: for a remote device it would measure the
+    // GATEWAY's reachability, not the device's. Say so instead of a number
+    // that means nothing for the machine being configured.
+    if (typeof body.deviceId === "string" && body.deviceId !== "localhost" && body.deviceId) {
+      return NextResponse.json({
+        ok: false,
+        error: "Testing a provider from a remote device is not supported yet; the probe would run here, not there.",
+        unsupportedForDevice: true,
+      });
+    }
     const providerName = typeof body.providerName === "string" ? body.providerName.trim() : "";
     if (!providerName) return NextResponse.json({ ok: false, error: "providerName is required" }, { status: 400 });
     if (!isRecord(body.provider)) return NextResponse.json({ ok: false, error: "provider is required" }, { status: 400 });

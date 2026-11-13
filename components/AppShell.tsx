@@ -2799,6 +2799,7 @@ export function AppShell() {
                   rootSession={activeSessionFamily.root}
                   subagents={activeSessionFamily.subagents}
                   selectedSessionId={selectedSession.id}
+                  deviceId={selectedDeviceId}
                   runningSessionIds={runningSessionIds}
                   onSelectSession={handleSelectSession}
                   openSubagentTabIds={openSubagentTabIds}

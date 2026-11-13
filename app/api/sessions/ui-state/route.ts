@@ -48,10 +48,17 @@ export async function GET(req: Request) {
         ...emptySessionUiState(),
         projectNames: remote.projectNames || {},
         sessions: (remote.sessions as any) || {},
+        projects: (remote.projects as any) || {},
+        ...(remote.projectOrder ? { projectOrder: remote.projectOrder } : {}),
       };
       return NextResponse.json({ state } satisfies SessionUiStateResponse, { headers: NO_STORE });
-    } catch {
-      return NextResponse.json({ state: emptySessionUiState() } satisfies SessionUiStateResponse, { headers: NO_STORE });
+    } catch (error) {
+      // The sidebar keeps its previous state and shows the error on a failed
+      // read; an empty state would read as "every pin and name is gone".
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 503, headers: NO_STORE },
+      );
     }
   }
 

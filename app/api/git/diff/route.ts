@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { lstatSync } from "fs";
 import path from "path";
 import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed, isWindowsAbsolutePath } from "@/lib/file-access";
+import { shellQuote } from "@/lib/shell-quote";
 import { getGitFileDiff } from "@/lib/git-changes";
 import { hasParentDirectorySegment } from "@/lib/path-security";
 
@@ -34,14 +35,24 @@ export async function GET(request: NextRequest) {
       try {
         const { getGateway } = await import("@/lib/gateway/singleton");
         const driver = await getGateway().getOrConnectDriver(deviceId);
-        const diffRes = await driver.exec(`git -C "${(cwd || '~').replace(/"/g, '\\"')}" diff -- "${filePath.replace(/"/g, '\\"')}" 2>/dev/null || echo ""`);
+        // shellQuote, not double quotes: inside remote-shell double quotes
+        // `$(...)` and backticks would expand — a command injection from the
+        // browser's cwd/path into the device's shell.
+        const dir = shellQuote(cwd || "~");
+        const file = shellQuote(filePath);
+        const diffRes = await driver.exec(`git -C ${dir} diff -- ${file} 2>/dev/null || echo ""`, [], { timeoutMs: 15_000 });
         return NextResponse.json({
           supported: true,
           patch: diffRes.stdout || "",
           path: filePath,
         });
       } catch (err: any) {
-        return NextResponse.json({ supported: false, patch: "", path: filePath });
+        // A dead device is an error the viewer can show; "supported: false"
+        // reads as "this file type has no diff" and hides the outage.
+        return NextResponse.json(
+          { error: err instanceof Error ? err.message : String(err) },
+          { status: 503 },
+        );
       }
     }
 

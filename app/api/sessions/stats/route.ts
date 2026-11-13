@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { getSessionSettings, openSessionManager, resolveSessionPath } from "@/lib/session-reader";
@@ -34,11 +35,16 @@ function refusal(status: number, error: string) {
   return NextResponse.json({ error }, { status, headers: NO_STORE });
 }
 
-async function readSummary(id: string): Promise<SessionUsageSummary | null> {
+async function readSummary(id: string, deviceId?: string): Promise<SessionUsageSummary | null> {
   const rpc = getRpcSession(id);
   let sm: SessionManagerLike;
   if (rpc?.isAlive()) {
     sm = rpc.inner.sessionManager as SessionManagerLike;
+  } else if (isRemoteDevice(deviceId)) {
+    // Remote sessions read through the gateway: the same SessionManager
+    // facade over the device's JSONL, so the builders below are unchanged.
+    const remote = await import("@/lib/remote-session-store");
+    sm = await remote.openRemoteSessionManager(deviceId!, id) as unknown as SessionManagerLike;
   } else {
     const path = await resolveSessionPath(id);
     if (!path) return null;
@@ -79,11 +85,13 @@ export async function POST(req: Request) {
   if (!Array.isArray(ids) || ids.length === 0) return refusal(400, "ids must be a non-empty array");
   if (ids.length > MAX_SESSION_STATS_IDS) return refusal(400, `ids may hold at most ${MAX_SESSION_STATS_IDS} session ids`);
   if (!ids.every((id) => typeof id === "string" && SESSION_ID_PATTERN.test(id))) return refusal(400, "ids must be session ids");
+  const deviceId = typeof body === "object" && body !== null ? (body as { deviceId?: unknown }).deviceId : undefined;
+  if (deviceId !== undefined && typeof deviceId !== "string") return refusal(400, "deviceId must be a string");
 
   const stats: Record<string, SessionUsageSummary> = {};
   for (const id of new Set(ids as string[])) {
     try {
-      const summary = await readSummary(id);
+      const summary = await readSummary(id, deviceId as string | undefined);
       if (summary) stats[id] = summary;
     } catch {
       // Malformed or concurrently removed session: leave it out.

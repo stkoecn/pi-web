@@ -1,13 +1,27 @@
 import { NextResponse } from "next/server";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { abortSubagent, getSubagentRun, steerSubagent } from "@/lib/rpc-manager";
 
 export const dynamic = "force-dynamic";
 
+// Subagent runs are tracked by the process that owns the parent wrapper. A
+// remote device's runs live in its own `pi` process, which this server cannot
+// steer yet — an explicit refusal beats steering a same-id local run by mistake.
+function remoteRefusal(req: Request): NextResponse | null {
+  if (!isRemoteDevice(getRequestDeviceId(req))) return null;
+  return NextResponse.json(
+    { error: "Steering or stopping a subagent on a remote device is not supported yet." },
+    { status: 501 },
+  );
+}
+
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  const refused = remoteRefusal(req);
+  if (refused) return refused;
   try {
     const run = await getSubagentRun(id);
     if (!run) return NextResponse.json({ error: "Subagent not found" }, { status: 404 });
@@ -22,6 +36,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  const refused = remoteRefusal(req);
+  if (refused) return refused;
   try {
     const body = await req.json() as { action?: unknown; message?: unknown };
     if (body.action === "steer") {

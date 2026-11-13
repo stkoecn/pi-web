@@ -3,6 +3,7 @@ import type { RPCChannel } from "./gateway/types/host-driver";
 import { deviceHomeOrDefault } from "./device-home";
 import { isBlockingExtensionUiRequest } from "./extension-ui-queue";
 import type { ExtensionUiRequest } from "./types";
+import { unpackMeshOutboundFrame } from "./device-runtime/ssh-remote-runtime";
 
 export interface RemoteRpcSession {
   sessionId: string;
@@ -305,21 +306,21 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
       }
     }
 
-    // Handle mesh_outbound frames emitted from remote session extension over SSH RPC stream
-    // Unpack payload: robustly support both top-level and nested { data: { ... } } structures
-    const p = (msg?.data && typeof msg.data === "object") ? msg.data : msg;
-    const isMeshOutbound = msg?.type === "mesh_outbound" || p?.type === "mesh_outbound";
-    const target = msg?.target || p?.target;
-    const message = msg?.message || p?.message;
-    if (isMeshOutbound && target && message) {
-      const mode = msg?.mode || p?.mode || "realtime";
-      const frameId = msg?.id || p?.id || `${target}_${String(message).slice(0, 50)}`;
+    // Handle mesh_outbound frames emitted from remote session extension over SSH RPC
+    // stream, unpacked by the shared canonical parser (device-runtime) so the two
+    // paths cannot drift apart again.
+    const frame = unpackMeshOutboundFrame(msg);
+    if (frame.isMeshOutbound && frame.target && frame.message) {
+      const target = frame.target;
+      const message = frame.message;
+      const mode = frame.mode || "realtime";
+      const frameId = frame.frameId || `${target}_${String(message).slice(0, 50)}`;
       if (seenMeshFrames.has(frameId)) return;
       seenMeshFrames.add(frameId);
       setTimeout(() => seenMeshFrames.delete(frameId), 30000).unref?.();
 
-      const senderCtx = msg?.senderContext || p?.senderContext;
-      const senderObj = msg?.sender || p?.sender;
+      const senderCtx = frame.senderContext;
+      const senderObj = msg?.sender;
       const senderSess = senderCtx?.sessionId || senderObj?.sessionId || sessionObj.sessionId;
       const senderDev = senderCtx?.deviceId || senderObj?.host || senderObj?.deviceId || deviceId;
       const senderCwd = senderCtx?.cwd || senderObj?.cwd || cwd;

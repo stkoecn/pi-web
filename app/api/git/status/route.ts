@@ -56,8 +56,13 @@ export async function GET(request: NextRequest) {
         remoteGitCache.set(key, { at: Date.now(), value });
         if (remoteGitCache.size > 64) remoteGitCache.clear();
         return NextResponse.json(value);
-      } catch {
-        return NextResponse.json({ branch: "unknown", clean: true, entries: [] });
+      } catch (error) {
+        // A dead device is an error the sidebar can show, not a fake clean repo:
+        // "clean: true" would hide real changes until the device came back.
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : String(error) },
+          { status: 503 },
+        );
       }
     }
 

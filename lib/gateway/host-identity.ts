@@ -1,4 +1,5 @@
 import os from "node:os";
+import { isLocalHost } from "../device-context";
 
 let cachedHostId: string | null = null;
 
@@ -40,19 +41,11 @@ export function getCanonicalHostId(): string {
 }
 
 /**
- * Helper to check if a deviceId represents this local gateway instance,
- * matching either "localhost" or its canonical host ID.
+ * Helper to check if a deviceId represents this local gateway instance.
+ * One implementation, delegated to the client-safe predicate in
+ * device-context (localhost aliases, the env overrides and the machine's
+ * canonical host id) — two copies of this drifted once already.
  */
 export function isLocalHostId(deviceId: string | null | undefined): boolean {
-  if (!deviceId) return true;
-  const canonical = getCanonicalHostId();
-  const d = deviceId.trim().toLowerCase();
-  return (
-    d === "localhost" ||
-    d === "local" ||
-    d === "127.0.0.1" ||
-    d === "::1" ||
-    d === canonical ||
-    d.split(".")[0] === canonical
-  );
+  return isLocalHost(deviceId);
 }

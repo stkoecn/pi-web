@@ -28,7 +28,7 @@ export async function GET(req: Request) {
 
     if (deviceId && deviceId !== "localhost") {
       const { getGateway } = await import("@/lib/gateway/singleton");
-      const { listRemoteWorktrees, remoteRepoRoot, worktreeForPath } = await import("@/lib/remote-worktree");
+      const { listRemoteWorktrees, remoteRepoRoot, worktreeForPath, RemoteGitError } = await import("@/lib/remote-worktree");
       const driver = await getGateway().getOrConnectDriver(deviceId);
       try {
         const root = await remoteRepoRoot(driver, cwd);
@@ -45,17 +45,24 @@ export async function GET(req: Request) {
           currentWorktreePath: worktreeForPath(worktrees, cwd),
           worktrees,
         });
-      } catch {
-        // Not a repository (or the device lost git mid-request): report the
-        // directory itself so the UI can show "this project has no worktrees".
-        return NextResponse.json({
-          projectRoot: cwd,
-          projectKey: cwd,
-          isGit: false,
-          isTopLevel: true,
-          currentWorktreePath: cwd,
-          worktrees: [],
-        });
+      } catch (error) {
+        if (error instanceof RemoteGitError) {
+          // Not a repository: report the directory itself so the UI can show
+          // "this project has no worktrees".
+          return NextResponse.json({
+            projectRoot: cwd,
+            projectKey: cwd,
+            isGit: false,
+            isTopLevel: true,
+            currentWorktreePath: cwd,
+            worktrees: [],
+          });
+        }
+        // A device that would not answer is an outage, not a non-git folder.
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : String(error) },
+          { status: 503 },
+        );
       }
     }
 

@@ -50,12 +50,18 @@ export function buildForkedSession(options: {
   sourcePath: string;
   sourceTitle?: string | null;
   suffix: string;
+  /** Fork at this entry instead of the current leaf (the local fork's targetEntryId). */
+  leafId?: string;
 }): RemoteForkFile {
   const { entries, cwd, sourcePath, sourceTitle, suffix } = options;
   if (entries.length === 0) throw new SessionForkError("not_found", "Session not found");
 
   const manager = SessionManager.inMemory(cwd || "/", undefined, [...entries]);
-  const leafId = manager.getLeafId();
+  // A caller-named leaf wins when the entry exists on the file's branch; an
+  // unknown id falls back to the current leaf rather than failing the fork.
+  const leafId = options.leafId && manager.getEntry(options.leafId)
+    ? options.leafId
+    : manager.getLeafId();
   if (!leafId || !manager.getEntry(leafId)) {
     throw new SessionForkError("empty", "Nothing to fork: the session has no messages");
   }

@@ -47,6 +47,7 @@ export interface RemoteForkResult {
 export async function forkRemoteSession(
   deviceId: string,
   sessionId: string,
+  options: { targetEntryId?: string; sourceTitle?: string | null } = {},
 ): Promise<RemoteForkResult> {
   const file = await findRemoteSessionFile(deviceId, sessionId);
   if (!file) throw new SessionForkError("not_found", "Session not found");
@@ -62,7 +63,12 @@ export async function forkRemoteSession(
     entries: parseSessionEntries(content),
     cwd: file.cwd,
     sourcePath: file.path,
-    sourceTitle: sourceTitleOf(rows.find((row) => row.id === sessionId)),
+    // An explicit sourceTitle (the local fork contract) wins over the
+    // catalogue's own title for the copy.
+    sourceTitle: options.sourceTitle !== undefined
+      ? options.sourceTitle
+      : sourceTitleOf(rows.find((row) => row.id === sessionId)),
+    leafId: options.targetEntryId,
     suffix: randomBytes(2).toString("hex"),
   });
 

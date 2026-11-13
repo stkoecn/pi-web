@@ -99,8 +99,25 @@ export interface SessionContextResult {
   before?: string | null;
 }
 
+/**
+ * What a runtime implementation fully supports, so callers can degrade
+ * explicitly instead of discovering silent gaps at runtime. The remote
+ * runtime's probe cannot enumerate tool JSON schemas and reads device-level
+ * models (no project scoping); everything else matches the local contract.
+ */
+export interface RuntimeCapabilities {
+  /** getTools() returns each tool's JSON-schema `parameters`. */
+  toolParameters: boolean;
+  /** getAvailableModels() scopes by the cwd's project settings. */
+  modelsByCwd: boolean;
+  /** Session UI state carries project pins and the sidebar's project order. */
+  projectUiState: boolean;
+}
+
 export interface ForkSessionOptions {
   sourceTitle?: string;
+  /** Fork at this entry instead of the session's current leaf. */
+  targetEntryId?: string;
 }
 
 export interface ForkSessionResult {
@@ -195,6 +212,7 @@ export interface ExecResult {
 export interface IDeviceRuntime {
   readonly deviceId: string;
   readonly isRemote: boolean;
+  readonly capabilities: RuntimeCapabilities;
 
   // 1. Session Lifecycle
   createSession(options: CreateSessionOptions): Promise<SessionInitResult>;

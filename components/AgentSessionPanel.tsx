@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { countRunningSubagents, sideChatTitle } from "@/lib/session-family";
 import type { SessionUsageSummary } from "@/lib/session-stats";
+import { withDeviceId } from "@/lib/device-context";
 import { formatActiveDuration, formatCompactCount, formatCostShort } from "@/lib/session-stats-format";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
 import { DeleteConfirm } from "./SessionTree";
@@ -13,6 +14,8 @@ interface Props {
   rootSession: SessionInfo;
   subagents: SessionInfo[];
   selectedSessionId: string;
+  /** Gateway device the family's sessions live on; localhost by default. */
+  deviceId?: string;
   runningSessionIds: ReadonlySet<string>;
   onSelectSession: (session: SessionInfo) => void;
   /** Subagents with a viewer tab in the open right panel. */
@@ -32,7 +35,7 @@ const STATS_POLL_MS = 3000;
  * it. Read on open and whenever a run starts or ends; polled while one runs,
  * on a visible page, one request at a time.
  */
-function useAgentUsage(ids: readonly string[], runningKey: string): Record<string, SessionUsageSummary> {
+function useAgentUsage(ids: readonly string[], runningKey: string, deviceId?: string): Record<string, SessionUsageSummary> {
   const [usage, setUsage] = useState<Record<string, SessionUsageSummary>>({});
   const idsKey = ids.join(",");
   useEffect(() => {
@@ -44,10 +47,10 @@ function useAgentUsage(ids: readonly string[], runningKey: string): Record<strin
       if (inFlight) return;
       inFlight = true;
       try {
-        const res = await fetch("/api/sessions/stats", {
+        const res = await fetch(withDeviceId("/api/sessions/stats", deviceId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: requested }),
+          body: JSON.stringify({ ids: requested, deviceId }),
           signal: controller.signal,
           cache: "no-store",
         });
@@ -397,7 +400,7 @@ function RowSideButton({ title, pressed, danger, disabled, onClick, children }: 
   );
 }
 
-export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, runningSessionIds, onSelectSession, openSubagentTabIds, onToggleSubagentTab, onNewSideChat, onDeleteSideChat }: Props) {
+export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, deviceId, runningSessionIds, onSelectSession, openSubagentTabIds, onToggleSubagentTab, onNewSideChat, onDeleteSideChat }: Props) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [newSideChatPending, setNewSideChatPending] = useState(false);
@@ -445,7 +448,7 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
   const runningCount = countRunningSubagents(subagents, runningSessionIds);
   const familyIds = useMemo(() => [rootSession.id, ...subagents.map((session) => session.id)], [rootSession.id, subagents]);
   const runningKey = familyIds.filter((id) => runningSessionIds.has(id)).join(",");
-  const usage = useAgentUsage(familyIds, runningKey);
+  const usage = useAgentUsage(familyIds, runningKey, deviceId);
   const familyUsage = useMemo(() => {
     const listed = familyIds.map((id) => usage[id]).filter(hasUsage);
     if (listed.length === 0) return null;

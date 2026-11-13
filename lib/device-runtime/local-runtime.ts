@@ -162,6 +162,11 @@ export class LocalActiveSession implements IActiveSession {
 export class LocalDeviceRuntime implements IDeviceRuntime {
   readonly deviceId: string = LOCAL_DEVICE_ID;
   readonly isRemote = false;
+  readonly capabilities = {
+    toolParameters: true,
+    modelsByCwd: true,
+    projectUiState: true,
+  };
 
   // 1. Session Lifecycle
 

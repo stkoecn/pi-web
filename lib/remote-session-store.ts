@@ -567,6 +567,8 @@ export async function updateRemoteSessionUiState(
 		...emptySessionUiState(),
 		projectNames: remote.projectNames || {},
 		sessions: (remote.sessions as any) || {},
+		projects: (remote.projects as any) || {},
+		...(remote.projectOrder ? { projectOrder: remote.projectOrder } : {}),
 	};
 	const { state: updated } = applySessionUiStateRequest(current, request, Date.now());
 	const json = JSON.stringify(updated, null, 2);
@@ -617,6 +619,8 @@ export async function forgetRemoteSessionUiState(
 export async function readRemoteSessionUiState(deviceId: string): Promise<{
 	projectNames: Record<string, string>;
 	sessions: Record<string, { pinned?: boolean; pinnedAt?: number; archivedAt?: number }>;
+	projects: Record<string, { pinnedAt: number; root: string }>;
+	projectOrder?: string[];
 }> {
 	try {
 		const driver = await getDriver(deviceId);
@@ -635,12 +639,14 @@ export async function readRemoteSessionUiState(deviceId: string): Promise<{
 			return {
 				projectNames: (parsed && typeof parsed.projectNames === "object" && parsed.projectNames) ? parsed.projectNames : {},
 				sessions: (parsed && typeof parsed.sessions === "object" && parsed.sessions) ? parsed.sessions : {},
+				projects: (parsed && typeof parsed.projects === "object" && parsed.projects) ? parsed.projects : {},
+				projectOrder: Array.isArray(parsed?.projectOrder) ? parsed.projectOrder : undefined,
 			};
 		}
 	} catch {
 		// Ignore if file does not exist or remote unreachable
 	}
-	return { projectNames: {}, sessions: {} };
+	return { projectNames: {}, sessions: {}, projects: {} };
 }
 /**
  * A `SessionManager` backed by the remote transcript. `SessionManager.inMemory`

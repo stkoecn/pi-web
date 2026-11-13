@@ -134,16 +134,20 @@ export class LocalHostDriver implements IHostDriver {
       // Avoid Turbopack build-time dead-code elimination folding process.platform.
       // Check dynamically at runtime whether /bin/sh exists.
       const hasPosixSh = require("node:fs").existsSync("/bin/sh");
+      // Same contract as the SSH driver: an unbounded local exec hung the
+      // caller forever while the remote side timed out at 30 s.
+      const timeoutMs = opts?.timeoutMs ?? 30_000;
+      const execOptions: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; killSignal: NodeJS.Signals } = {
+        cwd: opts?.cwd || process.cwd(),
+        env: { ...process.env, ...opts?.env },
+        timeout: timeoutMs,
+        // A timed-out child is killed hard, so the rejection carries a usable
+        // non-zero exit code instead of a dangling SIGTERM wait.
+        killSignal: "SIGKILL",
+      };
       const execPromise = (!args || args.length === 0)
-        ? execFileAsync(hasPosixSh ? "/bin/sh" : "cmd.exe", hasPosixSh ? ["-c", cmd] : ["/c", cmd], {
-            cwd: opts?.cwd || process.cwd(),
-            env: { ...process.env, ...opts?.env },
-          })
-        : execFileAsync(cmd, args, {
-            cwd: opts?.cwd || process.cwd(),
-            env: { ...process.env, ...opts?.env },
-            shell: !hasPosixSh,
-          });
+        ? execFileAsync(hasPosixSh ? "/bin/sh" : "cmd.exe", hasPosixSh ? ["-c", cmd] : ["/c", cmd], execOptions)
+        : execFileAsync(cmd, args, { ...execOptions, shell: !hasPosixSh });
 
       const { stdout, stderr } = await execPromise;
       return { stdout: stdout.toString(), stderr: stderr.toString(), exitCode: 0 };
@@ -151,7 +155,7 @@ export class LocalHostDriver implements IHostDriver {
       return {
         stdout: err.stdout ? err.stdout.toString() : "",
         stderr: err.stderr ? err.stderr.toString() : (err.message || String(err)),
-        exitCode: err.code ?? 1,
+        exitCode: typeof err.code === "number" ? err.code : 1,
       };
     }
   }
