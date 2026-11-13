@@ -200,23 +200,42 @@ export class SshRemoteActiveSession implements IActiveSession {
         unblockPendingRealtimeWait(this.sessionId, this.session.deviceId, "Unblocked by incoming message.");
       } catch {}
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const id = (message.id as string) || `remote-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const req = { ...message, id };
       const unsub = this.onMessage((msg: any) => {
         if (msg && msg.type === "response" && msg.id === id) {
+          clearTimeout(timeout);
           unsub();
           resolve(msg);
         }
       });
-      // Safety timeout for fire-and-forget commands or unacknowledged messages
+      // No answer in 5 s means the command did not reach the remote `pi` (dead
+      // channel, device asleep): a fabricated success made remote delivery
+      // indistinguishable from the local path's real errors. `abort` stays
+      // fire-and-forget — best effort by design.
       const timeout = setTimeout(() => {
         unsub();
-        resolve({ type: "response", id, success: true, acknowledged: true });
+        if (type === "abort") {
+          resolve({ type: "response", id, success: true, acknowledged: false });
+        } else {
+          reject(new Error(
+            `Remote command "${type}" got no response from device "${this.session.deviceId}" within 5 s.`
+            + " The device may be offline or its `pi` process gone.",
+          ));
+        }
       }, 5000);
       timeout.unref?.();
 
-      this.session.channel.send(req);
+      try {
+        this.session.channel.send(req);
+      } catch (error) {
+        clearTimeout(timeout);
+        unsub();
+        reject(new Error(
+          `Remote command "${type}" could not be sent to device "${this.session.deviceId}": ${error instanceof Error ? error.message : String(error)}`,
+        ));
+      }
     });
   }
 

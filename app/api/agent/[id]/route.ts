@@ -50,11 +50,14 @@ export async function POST(
     const body = await req.json() as { type: string; [key: string]: unknown };
     commandType = typeof body.type === "string" ? body.type : undefined;
 
-    // Any incoming user prompt, steer, follow_up, or abort MUST immediately unblock any pending realtime wait
+    // A prompt, steer, follow_up or abort into THIS session releases only the
+    // realtime wait this session itself started (the user took over). Passing
+    // this request's device — never undefined — keeps a same-id session on
+    // another device from being released too.
     if (commandType === "prompt" || commandType === "steer" || commandType === "follow_up" || commandType === "abort") {
       try {
         const { unblockPendingRealtimeWait } = await import("@/lib/gateway/mesh-router");
-        unblockPendingRealtimeWait(id, undefined, "Unblocked by user message.");
+        unblockPendingRealtimeWait(id, getRequestDeviceId(req), "Unblocked by user message.");
       } catch {}
     }
     const requestedToolNames = body.toolNames;

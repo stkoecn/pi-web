@@ -1279,8 +1279,14 @@ export class AgentSessionWrapper {
 
       if (type === "prompt" || type === "steer" || type === "follow_up" || type === "abort") {
         try {
-          const { unblockPendingRealtimeWait } = await import("./gateway/mesh-router");
-          unblockPendingRealtimeWait(this.sessionId, undefined, "Unblocked by incoming message.");
+          const [{ unblockPendingRealtimeWait }, { getCanonicalHostId }] = await Promise.all([
+            import("./gateway/mesh-router"),
+            import("./gateway/host-identity"),
+          ]);
+          // A prompt into this local session releases only this session's own
+          // realtime wait, under the canonical local device id — never a
+          // device-less match, which reached across hosts.
+          unblockPendingRealtimeWait(this.sessionId, getCanonicalHostId(), "Unblocked by incoming message.");
         } catch {}
       }
 

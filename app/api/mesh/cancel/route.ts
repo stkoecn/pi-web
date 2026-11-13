@@ -11,8 +11,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const sessionId = typeof body?.sessionId === "string" ? body.sessionId : undefined;
 
-    // sessionId is optional; if missing, cancelRealtimeWait cancels any pending wait matching deviceId or cancels the latest
-
+    // sessionId is required: unblockPendingRealtimeWait matches only the named
+    // session's own wait, so a bodyless cancel can no longer release every
+    // wait on the device.
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: "sessionId is required" },
+        { status: 400, headers: NO_CACHE_HEADERS }
+      );
+    }
 
     const cancelled = cancelRealtimeWait(sessionId, deviceId);
     return NextResponse.json(

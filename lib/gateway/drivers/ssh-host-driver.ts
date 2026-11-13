@@ -594,8 +594,19 @@ export class SSHHostDriver implements IHostDriver {
     const isCmd = await this.isCmdExe();
     let command: string;
     if (isCmd) {
-      // Windows OpenSSH cmd.exe does not support POSIX `VAR=val cmd` syntax
-      const envCmds = envVars.map(v => `set ${v}`).join(' & ');
+      // Windows OpenSSH cmd.exe does not support POSIX `VAR=val cmd` syntax,
+      // and `set VAR="value"` makes the quotes part of the value — which turned
+      // PI_MESH_BRIDGE_PORT into `"29564"` and broke every bridge URL. cmd's
+      // quoting form puts the whole assignment inside one pair of quotes.
+      const envCmds = envVars.map(v => {
+        const eq = v.indexOf("=");
+        const name = v.slice(0, eq);
+        let value = v.slice(eq + 1);
+        if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+          value = value.slice(1, -1);
+        }
+        return `set "${name}=${value}"`;
+      }).join(' & ');
       const baseCmd = `pi ${args.join(' ')}`;
       if (opts.cwd) {
         const winCwd = opts.cwd.replace(/\//g, '\\');

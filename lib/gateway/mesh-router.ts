@@ -64,11 +64,13 @@ interface PendingReplyEntry {
 }
 const pendingReplies = new Map<string, PendingReplyEntry>();
 
-interface InFlightOrCompletedDispatch {
+/** One dispatch in flight: a second identical call inside the window shares its promise. */
+interface InFlightDispatch {
   timestamp: number;
   promise: Promise<SendMeshMessageResult>;
 }
-const recentDispatches = new Map<string, InFlightOrCompletedDispatch>();
+const recentDispatches = new Map<string, InFlightDispatch>();
+/** How long an in-flight dispatch's dedupe record lives; entries are dropped on settle. */
 const DEDUPE_WINDOW_MS = 20_000;
 
 function makePendingReplyKey(deviceId: string, sessionId: string): string {
@@ -76,91 +78,45 @@ function makePendingReplyKey(deviceId: string, sessionId: string): string {
 }
 
 /**
- * Manually cancel a pending realtime wait for a given session or device.
- */
-/**
- * Unblock a pending realtime wait for a given session and/or device.
- * Called whenever an incoming message arrives (from user, peer session, or abort).
+ * Unblock the pending realtime wait that the named session itself started.
+ *
+ * Strict on purpose: an entry matches only when BOTH its sender session id and
+ * its sender device equal the arguments (device ids canonicalized, compared
+ * exactly). Matching the *target* session here made the router's own delivery
+ * release the sender's wait at delivery time — a false success that defeated
+ * the realtime protocol — and prefix/substring device matches let `vps`
+ * release `vps2`'s wait. A session sending a prompt releases only its own wait
+ * (the user took over); a peer's reply arrives through the router's
+ * reply-match loop below, never through this hook.
  */
 export function unblockPendingRealtimeWait(
   sessionId?: string,
   deviceId?: string,
   reason = "Unblocked by incoming message."
 ): boolean {
-  let hit = false;
+  if (!sessionId) return false;
   const canonicalLocal = getCanonicalHostId();
-  const targetDev = deviceId ? (isLocalHostId(deviceId) ? canonicalLocal : deviceId) : undefined;
+  const targetDev = (deviceId ? (isLocalHostId(deviceId) ? canonicalLocal : deviceId) : canonicalLocal).toLowerCase();
+  const targetSess = sessionId.toLowerCase().trim();
+  let hit = false;
 
   for (const [key, entry] of pendingReplies.entries()) {
-    const sId = sessionId?.toLowerCase().trim();
-    const entrySenderSess = entry.senderSessionId?.toLowerCase().trim();
-    const entryTargetSess = entry.targetSessionId?.toLowerCase().trim();
+    const senderSess = entry.senderSessionId?.toLowerCase().trim();
+    const senderDev = entry.senderDeviceId?.toLowerCase();
+    if (senderSess !== targetSess) continue;
+    if (senderDev !== targetDev
+      && !(isLocalHostId(entry.senderDeviceId) && isLocalHostId(targetDev))) continue;
 
-    const matchesSession = !sId
-      || key.toLowerCase().includes(sId)
-      || (entrySenderSess && (entrySenderSess === sId || entrySenderSess.startsWith(sId) || sId.startsWith(entrySenderSess)))
-      || (entryTargetSess && (entryTargetSess === sId || entryTargetSess.startsWith(sId) || sId.startsWith(entryTargetSess)));
-
-    const matchesDevice = !targetDev
-      || key.toLowerCase().startsWith(targetDev.toLowerCase())
-      || entry.senderDeviceId.toLowerCase() === targetDev.toLowerCase()
-      || (isLocalHostId(entry.senderDeviceId) && isLocalHostId(targetDev));
-
-    if (matchesSession && matchesDevice) {
-      pendingReplies.delete(key);
-      if (entry.timer) clearTimeout(entry.timer);
-      entry.cleanup?.();
-      entry.resolve(reason);
-      hit = true;
-    }
+    pendingReplies.delete(key);
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.cleanup?.();
+    entry.resolve(reason);
+    hit = true;
   }
   return hit;
 }
 
 export const cancelRealtimeWait = unblockPendingRealtimeWait;
-
-/**
- * Register a pending realtime wait entry for a given session.
- */
-export function registerPendingRealtimeWait(
-  sessionId: string,
-  deviceId?: string,
-  onUnblock?: (reason: string) => void,
-  timeoutMs = 300_000
-): () => void {
-  const canonicalLocal = getCanonicalHostId();
-  const dev = deviceId ? (isLocalHostId(deviceId) ? canonicalLocal : deviceId) : canonicalLocal;
-  const key = makePendingReplyKey(dev, sessionId);
-
-  let timer: NodeJS.Timeout | null = setTimeout(() => {
-    pendingReplies.delete(key);
-    onUnblock?.("Timeout: Target session did not reply within 300s.");
-  }, timeoutMs);
-  timer.unref?.();
-
-  const cleanup = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    pendingReplies.delete(key);
-  };
-
-  pendingReplies.set(key, {
-    senderDeviceId: dev,
-    senderSessionId: sessionId,
-    targetDeviceId: "",
-    targetSessionId: "",
-    resolve: (reason) => {
-      cleanup();
-      onUnblock?.(reason);
-    },
-    timer: timer!,
-    cleanup,
-  });
-
-  return cleanup;
-}
 
 /**
  * Global router to dispatch messages across sessions and hosts using IDeviceRuntime.
@@ -178,7 +134,11 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   const senderSessionId = options.senderContext?.sessionId;
   const senderDeviceId = senderDev || canonicalLocal;
 
-  // 20s deduplication window to prevent duplicate dispatch & ghost sessions from retries/replays
+  // In-flight dedupe: a second identical dispatch shares the first's promise.
+  // Every entry is dropped the moment its dispatch settles, so a genuine
+  // repeat ("Done.", a user resend) after the first completed is delivered —
+  // the earlier completed-dispatch window swallowed those and handed the
+  // first caller's result (possibly a 300 s wait) to the second.
   const dedupeKey = `${senderDeviceId}:${senderSessionId || "none"}:${target}:${message.trim()}`;
   const now = Date.now();
   for (const [k, v] of recentDispatches.entries()) {
@@ -188,8 +148,8 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   }
 
   const existing = recentDispatches.get(dedupeKey);
-  if (existing && (now - existing.timestamp <= DEDUPE_WINDOW_MS)) {
-    console.warn(`[MeshRouter] Duplicate message detected within 20s from ${senderDeviceId} to ${target}. Deduplicating.`);
+  if (existing) {
+    console.warn(`[MeshRouter] Identical dispatch already in flight from ${senderDeviceId} to ${target}; sharing its result.`);
     return existing.promise;
   }
 
@@ -201,9 +161,10 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     throw new Error(`Invalid mesh target format: "${target}". Expected [session]@[project].[host] or @[project].[host]`);
   }
 
-  const { deviceTarget: rawDeviceTarget, projectTarget, sessionTarget, isNewSession } = parsed;
+  const { deviceTarget: rawDeviceTarget, projectTarget: parsedProjectTarget, sessionTarget, isNewSession } = parsed;
   const isTargetLocal = isLocalHostId(rawDeviceTarget);
-  const deviceTarget = isTargetLocal ? canonicalLocal : rawDeviceTarget;
+  let deviceTarget = isTargetLocal ? canonicalLocal : rawDeviceTarget;
+  let projectTarget = parsedProjectTarget;
 
   const senderDev = options.senderContext?.deviceId
     ? (isLocalHostId(options.senderContext.deviceId) ? canonicalLocal : options.senderContext.deviceId)
@@ -232,6 +193,16 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
 
   if (mode === "realtime" && senderSessionId) {
     earlyWaitKey = makePendingReplyKey(senderDeviceId, senderSessionId);
+    // A same-key entry means the session already has a realtime call in flight:
+    // settle it (its tool call returns "superseded") instead of blind-overwriting,
+    // which leaked the old timer — its 300 s firing then deleted the NEW entry
+    // and left the second wait un-unblockable.
+    const previous = pendingReplies.get(earlyWaitKey);
+    if (previous) {
+      pendingReplies.delete(earlyWaitKey);
+      if (previous.timer) clearTimeout(previous.timer);
+      previous.resolve("Superseded by a newer realtime message from the same session.");
+    }
     earlyWaitPromise = new Promise<string>((resolve) => {
       const triggerResolve = (msg: string) => {
         if (isEarlySettled) return;
@@ -264,6 +235,9 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
   try {
     targetRuntime = await getDeviceRuntime(deviceTarget);
   } catch (err) {
+    // The early wait must not linger 300 s after a failed dispatch: it would
+    // later consume an unrelated reply through the device-pair fallback.
+    if (earlyTriggerResolve) earlyTriggerResolve(`Cannot reach target device "${deviceTarget}": ${err instanceof Error ? err.message : String(err)}`);
     return {
       success: false,
       targetDeviceId: deviceTarget,
@@ -272,6 +246,24 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       mode,
       error: `Cannot reach target device "${deviceTarget}": ${err instanceof Error ? err.message : String(err)}`,
     };
+  }
+
+  // `sess@wshome` — a right part with no dot — is ambiguous: a project on the
+  // current host, or a bare host name. When the name resolves as a known device
+  // (devices.json, an active tunnel, ssh-config discovery), the host reading
+  // wins, matching the address format's documented `sess@host` shape.
+  if (isTargetLocal && projectTarget && sessionTarget && !projectTarget.includes("/")
+    && projectTarget.toLowerCase() !== canonicalLocal.toLowerCase()
+    && !isLocalHostId(projectTarget)) {
+    try {
+      const asDevice = await getDeviceRuntime(projectTarget);
+      // Resolved without throwing: the name is a real device.
+      deviceTarget = isLocalHostId(asDevice.deviceId) ? canonicalLocal : asDevice.deviceId;
+      projectTarget = undefined;
+      targetRuntime = asDevice;
+    } catch {
+      // Not a device: keep the project-on-current-host reading.
+    }
   }
 
   // Discover known projects and sessions on target device
@@ -360,14 +352,6 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     ) {
       matched = true;
     }
-    // 3. Device-pair fallback: a message is arriving from the target host back to the waiting host!
-    else if (
-      callerDev &&
-      (entry.targetDeviceId.toLowerCase() === callerDev.toLowerCase() || (isLocalHostId(entry.targetDeviceId) && isLocalHostId(callerDev))) &&
-      isDeviceTargetMatchingSender
-    ) {
-      matched = true;
-    }
 
     if (matched) {
       isReplyToPending = true;
@@ -375,9 +359,10 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
       entry.cleanup?.();
       // Unblock the sender's send_session_message tool call with unblock reason, NOT the message body!
       entry.resolve("Unblocked by incoming message.");
-      // If current sender also started an early wait, settle it immediately to break mutual lock
+      // If this sender also started an early wait (a mutual realtime exchange),
+      // settle it too so the pair cannot lock up.
       if (earlyTriggerResolve) {
-        earlyTriggerResolve("Delivered reply to waiting peer session.");
+        earlyTriggerResolve("Unblocked by incoming message.");
       }
       break;
     }
@@ -390,7 +375,11 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
 
   let targetActiveSession: IActiveSession | undefined;
 
-  // e. Deliver message via unified runtime & active session
+  // e. Deliver message via unified runtime & active session. A throw here
+  // (failed create/resume, dead channel) must settle the early wait before
+  // propagating, or the entry lingers 300 s and can later consume an
+  // unrelated reply.
+  try {
   if (!resolvedSessionId || isNewSession) {
     // Case A: Create brand-new session on target runtime
     const initResult = await targetRuntime.createSession({
@@ -462,7 +451,7 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
         targetSessionId: resolvedSessionId || "unknown",
         createdNewSession: isNewSession,
         mode,
-        unblockReason: "Delivered reply to waiting peer session.",
+        unblockReason: "Unblocked by incoming message.",
       };
     }
 
@@ -485,6 +474,12 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     createdNewSession: isNewSession,
     mode,
   };
+  } catch (err) {
+    if (earlyTriggerResolve) {
+      earlyTriggerResolve(`Delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    throw err;
+  }
   })();
 
   recentDispatches.set(dedupeKey, {
@@ -492,8 +487,11 @@ export async function sendMeshMessage(options: SendMeshMessageOptions): Promise<
     promise: dispatchPromise,
   });
 
-  dispatchPromise.catch(() => {
-    recentDispatches.delete(dedupeKey);
+  // In-flight only: settled dispatches stop deduping, so a genuine repeat is delivered.
+  dispatchPromise.catch(() => {}).finally(() => {
+    if (recentDispatches.get(dedupeKey)?.promise === dispatchPromise) {
+      recentDispatches.delete(dedupeKey);
+    }
   });
 
   return dispatchPromise;
