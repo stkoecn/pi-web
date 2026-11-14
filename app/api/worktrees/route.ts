@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { existsSync } from "fs";
-import { addWorktree, findCurrentWorktreePath, listWorktrees, removeWorktree, resolveProject, worktreeRemovalRequiresForce } from "@/lib/worktree";
+import { addWorktree, findCurrentWorktreePath, listWorktrees, removeWorktree, resolveProject, worktreeRemovalRequiresForce, WorktreeBranchInUseError } from "@/lib/worktree";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { projectIdentityKey } from "@/lib/project-identity";
 import { isRemoteDevice } from "@/lib/device-context";
@@ -131,6 +131,16 @@ export async function POST(req: Request) {
     const result = await addWorktree(body.cwd, body.branch);
     return NextResponse.json(result);
   } catch (error) {
+    // The sidebar names the checkout holding the branch instead of showing the
+    // raw git line (#1431); a holder whose folder is gone points at prune.
+    if (error instanceof WorktreeBranchInUseError) {
+      return NextResponse.json({
+        error: error.message,
+        code: error.missing ? "branch_worktree_missing" : "branch_in_use",
+        branch: error.branch,
+        worktreePath: error.worktreePath,
+      }, { status: 409 });
+    }
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: message }, { status: 400 });
   }

@@ -1,31 +1,17 @@
 import { NextResponse } from "next/server";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { readTestModelPayload } from "@/lib/model-test";
+import { getRequestDeviceId, isLocalHost, LOCAL_DEVICE_ID } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
-const TEST_TIMEOUT_MS = 20_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function getAssistantText(message: AssistantMessage): string {
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-}
-
+/**
+ * POST /api/models-config/test — probe one configured model with a tiny chat
+ * request. The probe is a runtime capability: the local runtime runs it
+ * in-process, a remote runtime runs the same probe on the device (its Base URL
+ * is often the device's own loopback, which this server cannot reach), so the
+ * route stays validation + dispatch and carries no device logic.
+ */
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ ok: false, error: "Untrusted API request" }, { status: 403 });
@@ -37,97 +23,28 @@ export async function POST(req: Request) {
     );
   }
 
-  let tempDir: string | undefined;
-
   try {
-    const body = await req.json() as { providerName?: unknown; provider?: unknown; model?: unknown; deviceId?: unknown };
-    // The probe runs on this server: for a remote device it would measure the
-    // GATEWAY's reachability, not the device's. Say so instead of a number
-    // that means nothing for the machine being configured.
-    if (typeof body.deviceId === "string" && body.deviceId !== "localhost" && body.deviceId) {
-      return NextResponse.json({
-        ok: false,
-        error: "Testing a provider from a remote device is not supported yet; the probe would run here, not there.",
-        unsupportedForDevice: true,
-      });
-    }
-    const providerName = typeof body.providerName === "string" ? body.providerName.trim() : "";
-    if (!providerName) return NextResponse.json({ ok: false, error: "providerName is required" }, { status: 400 });
-    if (!isRecord(body.provider)) return NextResponse.json({ ok: false, error: "provider is required" }, { status: 400 });
-    if (!isRecord(body.model)) return NextResponse.json({ ok: false, error: "model is required" }, { status: 400 });
-
-    const modelId = typeof body.model.id === "string" ? body.model.id.trim() : "";
-    if (!modelId) return NextResponse.json({ ok: false, error: "Model ID is required" }, { status: 400 });
-
-    tempDir = mkdtempSync(join(tmpdir(), "pi-web-model-test-"));
-    const modelsPath = join(tempDir, "models.json");
-    writeFileSync(modelsPath, JSON.stringify({
-      providers: {
-        [providerName]: {
-          ...body.provider,
-          models: [{ ...body.model, id: modelId }],
-        },
-      },
-    }, null, 2), "utf8");
-
-    const modelRuntime = await ModelRuntime.create({ modelsPath });
-    const loadError = modelRuntime.getError();
-    if (loadError) return NextResponse.json({ ok: false, error: loadError });
-
-    const model = modelRuntime.getModel(providerName, modelId);
-    if (!model) return NextResponse.json({ ok: false, error: `Model not found: ${providerName}/${modelId}` });
-
-    // A status check, not getAuth(): the request resolves auth itself, so a `!command` key runs once.
-    if (!modelRuntime.getProviderAuthStatus(providerName).configured) {
-      return NextResponse.json({ ok: false, error: `No API key found for "${providerName}"` });
+    const body = await req.json() as Record<string, unknown>;
+    const payload = readTestModelPayload(body);
+    if ("error" in payload) {
+      return NextResponse.json({ ok: false, error: payload.error }, { status: payload.status });
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
-    let status: number | undefined;
-    const startedAt = Date.now();
+    // The header/query device wins (the UI addresses a device through it);
+    // the body's deviceId is the documented fallback for scripts.
+    const contextDevice = getRequestDeviceId(req);
+    const bodyDevice = typeof body.deviceId === "string" && body.deviceId.trim() ? body.deviceId.trim() : "";
+    const deviceId = contextDevice && !isLocalHost(contextDevice)
+      ? contextDevice
+      : (bodyDevice && !isLocalHost(bodyDevice) ? bodyDevice : LOCAL_DEVICE_ID);
 
-    try {
-      // The runtime adds the auth, models.json and session headers a chat request gets
-      // (opencode.ai refuses a request without x-opencode-session). One fresh id per probe.
-      const message = await modelRuntime.completeSimple(model, {
-        messages: [{
-          role: "user",
-          content: "Reply with OK only.",
-          timestamp: Date.now(),
-        }],
-      }, {
-        sessionId: randomUUID(),
-        maxTokens: 16,
-        timeoutMs: TEST_TIMEOUT_MS,
-        maxRetries: 0,
-        cacheRetention: "none",
-        signal: controller.signal,
-        onResponse: (response) => { status = response.status; },
-      });
-
-      const latencyMs = Date.now() - startedAt;
-      if (message.stopReason === "error" || message.stopReason === "aborted") {
-        return NextResponse.json({
-          ok: false,
-          error: message.errorMessage ?? (controller.signal.aborted ? "Test timed out" : "Model returned an error"),
-          latencyMs,
-          status,
-        });
-      }
-
-      return NextResponse.json({
-        ok: true,
-        latencyMs,
-        status,
-        responseText: getAssistantText(message).slice(0, 300),
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+    const { getDeviceRuntime } = await import("@/lib/device-runtime");
+    const runtime = await getDeviceRuntime(deviceId);
+    const result = await runtime.testModelConfig(payload);
+    return NextResponse.json(result);
   } catch (error) {
-    return NextResponse.json({ ok: false, error: errorMessage(error) }, { status: 500 });
-  } finally {
-    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    const message = error instanceof Error ? error.message : String(error);
+    const offline = /not connected or offline/i.test(message);
+    return NextResponse.json({ ok: false, error: message }, { status: offline ? 503 : 500 });
   }
 }

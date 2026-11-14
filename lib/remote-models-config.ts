@@ -71,4 +71,10 @@ export async function writeRemoteModelsConfig(
   const normalized = normalizeModelsConfigCosts(sanitizeModelsConfig(data));
   await writeRemoteFile(driver, path, JSON.stringify(normalized, null, 2));
   invalidateRemoteModels(deviceId);
+  // A live `pi --mode rpc` reads models.json once at spawn, so its catalogue is
+  // now stale against the file the picker reads: respawn the idle sessions so
+  // `set_model` accepts what the picker lists.
+  const { closeIdleRemoteRpcSessionsForDevice } = await import("@/lib/remote-agent-manager");
+  const closed = closeIdleRemoteRpcSessionsForDevice(deviceId);
+  if (closed > 0) console.log(`[remote-models-config] respawned ${closed} idle session(s) of ${deviceId} after a models.json write`);
 }

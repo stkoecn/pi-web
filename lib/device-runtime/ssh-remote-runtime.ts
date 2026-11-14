@@ -221,7 +221,19 @@ export class SshRemoteActiveSession implements IActiveSession {
           unsub();
           // Unwrapped like the local wrapper's send: callers read the command's
           // result (set_model's {provider, id}, get_state's data) directly.
-          resolve(msg.data !== undefined ? msg.data : msg);
+          const data = msg.data !== undefined ? msg.data : msg;
+          // A refused command is an error, not a result: pi answers an
+          // impossible set_model with a success:false frame, and resolving it
+          // as data made the caller read a fake success (the model switch
+          // silently did nothing and the UI fell back to the old model). The
+          // local wrapper throws for the same command.
+          if (msg.success === false) {
+            reject(new Error(
+              `Remote command "${type}" failed on device "${this.session.deviceId}": ${msg.error ?? "unknown error"}`,
+            ));
+            return;
+          }
+          resolve(data);
         }
       });
       // A query with no answer in 5 s means the command did not reach the
@@ -628,6 +640,34 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
     }
     if (!session?.state) return { running: false };
     return { running: true, state: session.state as Record<string, unknown> };
+  }
+
+  async testModelConfig(payload: import("../model-test").TestModelPayload): Promise<import("../model-test").TestModelResult> {
+    const { MODEL_TEST_DEVICE_SCRIPT } = await import("../model-test-device-script");
+    const { REMOTE_PATH_PREFIX } = await import("../gateway/drivers/persistent-shell");
+    try {
+      const { getGateway } = await import("../gateway/singleton");
+      const gateway = getGateway();
+      const driver = await gateway.getDriverForRequest(this.deviceId, 8000);
+      if (!driver || !driver.isAlive()) {
+        return { ok: false, error: `Device ${this.deviceId} is not connected or offline` };
+      }
+      const scriptB64 = Buffer.from(MODEL_TEST_DEVICE_SCRIPT, "utf8").toString("base64");
+      const configB64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+      // The PATH prefix carries pi's own node runtime ($HOME/.local/share/pi-node/...)
+      // so the probe does not depend on the SSH session's shell defaults.
+      const cmd = `${REMOTE_PATH_PREFIX} PIWEB_PROBE=${configB64} node -e "eval(Buffer.from('${scriptB64}','base64').toString('utf8'))"`;
+      const result = await driver.exec(cmd, [], { timeoutMs: 45_000 });
+      const marker = result.stdout.indexOf("__PIWEB_RESULT__");
+      if (marker < 0) {
+        const detail = (result.stderr || result.stdout || "no output").trim().slice(0, 300);
+        return { ok: false, error: `The device's probe produced no result: ${detail}` };
+      }
+      const parsed = JSON.parse(result.stdout.slice(marker + "__PIWEB_RESULT__".length)) as import("../model-test").TestModelResult;
+      return parsed;
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   async closeSession(sessionId: string): Promise<boolean> {

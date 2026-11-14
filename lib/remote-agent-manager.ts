@@ -463,6 +463,26 @@ export function closeRemoteRpcSession(sessionId: string): boolean {
   return true;
 }
 
+/**
+ * Close every idle remote `pi` process of one device so the next use re-spawns
+ * it against the device's CURRENT config.
+ *
+ * The in-memory model catalogue (and the extension set) is read once at spawn;
+ * after the user edits `models.json` the live processes keep serving the old
+ * snapshot, so a model the picker lists from disk was refused by `set_model`
+ * with "Model not found". A session running a turn is never closed: that would
+ * abort a run the user is watching; it keeps its stale catalogue until idle.
+ */
+export function closeIdleRemoteRpcSessionsForDevice(deviceId: string): number {
+  let closed = 0;
+  for (const session of getAllRemoteRpcSessions()) {
+    if (session.deviceId !== deviceId) continue;
+    if (isRemoteSessionRunning(session)) continue;
+    if (closeRemoteRpcSession(session.sessionId)) closed += 1;
+  }
+  return closed;
+}
+
 export function getAllRemoteRpcSessions(): RemoteRpcSession[] {
   return [...new Set(remoteSessions.values())];
 }

@@ -71,6 +71,14 @@ export interface SendSessionCommandOptions {
   toolNames?: string[];
 }
 
+export interface TestModelResult {
+  ok: boolean;
+  error?: string;
+  latencyMs?: number;
+  status?: number;
+  responseText?: string;
+}
+
 export interface SessionStatus {
   running: boolean;
   /** The device's live/persisted state, when the session is known there. */
@@ -266,6 +274,8 @@ export interface IDeviceRuntime {
 
   // 3. Models & Settings
   getAvailableModels(cwd?: string, options?: { force?: boolean }): Promise<ModelsData>;
+  /** One tiny chat request through the device's own pi build, as Settings › Model test runs it. */
+  testModelConfig(payload: import("../model-test").TestModelPayload): Promise<import("../model-test").TestModelResult>;
   getDefaultModel(cwd?: string): Promise<DefaultModelConfig>;
   setDefaultModel(config: DefaultModelConfig, cwd?: string): Promise<void>;
   getEnabledModels(cwd?: string): Promise<string[]>;

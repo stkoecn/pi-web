@@ -419,6 +419,11 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
     return session;
   }
 
+  async testModelConfig(payload: import("../model-test").TestModelPayload): Promise<import("../model-test").TestModelResult> {
+    const { testModelConfigLocally } = await import("../model-test");
+    return testModelConfigLocally(payload);
+  }
+
   async closeSession(_sessionId: string): Promise<boolean> {
     // Local wrappers are released by the idle sweeper and Stop, not by a
     // DELETE /api/agent/[id], which exists to close remote channels.

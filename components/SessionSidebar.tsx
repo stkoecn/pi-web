@@ -55,6 +55,7 @@ import {
   projectRenameRequest,
   sessionMenuEntries,
   type SessionMenuActionId,
+  worktreeCreateFailure,
 } from "@/lib/sidebar-actions";
 import { splitBeforeForkSuffix } from "@/lib/session-fork-name";
 import {
@@ -1501,8 +1502,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd: project.root, branch, deviceId: deviceIdRef.current }),
       });
-      const data = await res.json().catch(() => ({})) as { path?: string; error?: string };
-      if (!res.ok || data.error || !data.path) return { error: data.error ?? `HTTP ${res.status}` };
+      const data = await res.json().catch(() => ({})) as { path?: string; error?: string; code?: string; branch?: string; worktreePath?: string };
+      if (!res.ok || data.error || !data.path) {
+        // A branch held by another checkout names that checkout (#1431).
+        const failure = worktreeCreateFailure(data, res.status);
+        return { error: "error" in failure ? failure.error : t(failure.key, failure.params) };
+      }
       const path = data.path;
       setWorktreeState((prev) => (prev && prev.projectKey === project.key && !prev.worktrees.some((worktree) => worktree.path === path)
         ? { ...prev, worktrees: [...prev.worktrees, { path, branch, isMain: false }] }

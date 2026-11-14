@@ -600,6 +600,8 @@ export const enLocale: LocalePlugin = {
     "sidebar.cancel": "Cancel",
     "sidebar.openRepoRoot": "Open repo root",
     "sidebar.openRepoRootTitle": "Open the repository root to manage worktrees.",
+    "sidebar.worktreeBranchInUse": "Branch '{branch}' is already checked out at {path}",
+    "sidebar.worktreeBranchMissing": "Branch '{branch}' belongs to a worktree whose folder is gone: {path}; git worktree prune clears it",
     "sidebar.worktrees": "Worktrees...",
     "sidebar.checkingWorktrees": "Checking worktrees for this directory.",
     "sidebar.filterWorktrees": "Filter worktrees…",

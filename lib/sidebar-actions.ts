@@ -111,6 +111,27 @@ export function forkFailureMessage(code: string | undefined, error: string): { k
   }
 }
 
+/**
+ * A worktree-create failure as the sidebar shows it (#1431): a branch that is
+ * checked out elsewhere names that checkout instead of the raw git line, and a
+ * holder whose folder is gone points at `git worktree prune`. Anything else
+ * keeps the server's error, or `HTTP <status>` when the body had none.
+ */
+export function worktreeCreateFailure(
+  body: { code?: unknown; branch?: unknown; worktreePath?: unknown; error?: unknown } | undefined,
+  status: number,
+): { key: string; params: { branch: string; path: string } } | { error: string } {
+  const code = typeof body?.code === "string" ? body.code : "";
+  const branch = typeof body?.branch === "string" ? body.branch : "";
+  const path = typeof body?.worktreePath === "string" ? body.worktreePath : "";
+  if (branch && path) {
+    if (code === "branch_in_use") return { key: "sidebar.worktreeBranchInUse", params: { branch, path } };
+    if (code === "branch_worktree_missing") return { key: "sidebar.worktreeBranchMissing", params: { branch, path } };
+  }
+  const error = typeof body?.error === "string" && body.error ? body.error : `HTTP ${status}`;
+  return { error };
+}
+
 /** Root ids per POST /api/sessions/delete (the route's MAX_SESSION_DELETE_IDS). */
 export const PROJECT_DELETE_IDS_PER_REQUEST = 500;
 

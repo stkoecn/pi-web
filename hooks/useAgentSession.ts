@@ -2343,7 +2343,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (selectedModel) {
           setPendingModel(selectedModel);
           if (existingSid) {
-            await sendAgentCommand(sid, { type: "set_model", provider: selectedModel.provider, modelId: selectedModel.modelId }, deviceIdRef.current);
+            // A refused re-apply (a remote process spawned before a models.json
+            // edit lacks the new entry) must not kill the prompt: the run
+            // proceeds on the session's current model, like a fresh session's
+            // fallback, and the state sync shows which model actually ran.
+            await sendAgentCommand(sid, { type: "set_model", provider: selectedModel.provider, modelId: selectedModel.modelId }, deviceIdRef.current)
+              .catch((e) => console.warn("[pi-web] model re-apply before the prompt failed:", e));
           }
         }
         // Switching sessions unmounts this composer and closes its stream. The
@@ -2612,6 +2617,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
     try {
       const selected = await sendAgentCommand<{ provider: string; id: string }>(sid, { type: "set_model", provider, modelId }, deviceIdRef.current)
+      if (!selected?.provider || !selected?.id) {
+        // Neither the local wrapper nor the remote runtime answers a refused
+        // switch with a model object; treating it as a success would poison
+        // the live model and the picker would silently fall back to the
+        // previous one — the "switched back on its own" symptom.
+        throw new Error("The model switch returned no model");
+      }
       setLiveModel({ provider: selected.provider, modelId: selected.id });
       modelSwitchPendingRef.current = false;
       if (midRun) {

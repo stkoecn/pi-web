@@ -600,6 +600,8 @@ export const zhTWLocale: LocalePlugin = {
     "sidebar.cancel": "取消",
     "sidebar.openRepoRoot": "開啟儲存庫根目錄",
     "sidebar.openRepoRootTitle": "開啟儲存庫根目錄以管理 worktree。",
+    "sidebar.worktreeBranchInUse": "分支「{branch}」已在 {path} 檢出",
+    "sidebar.worktreeBranchMissing": "分支「{branch}」所屬的 worktree 資料夾已遺失：{path}；執行 git worktree prune 可清理",
     "sidebar.worktrees": "Worktrees...",
     "sidebar.checkingWorktrees": "正在檢查此目錄的 worktree。",
     "sidebar.filterWorktrees": "篩選 worktree…",
