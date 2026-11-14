@@ -288,9 +288,9 @@ export class SshRemoteActiveSession implements IActiveSession {
 export class SshRemoteDeviceRuntime implements IDeviceRuntime {
   readonly isRemote = true;
   readonly capabilities = {
-    // The remote tool probe lists names and descriptions; JSON schemas need a
-    // full session connection the probe does not open.
-    toolParameters: false,
+    // A live session's `get_tools` carries the real JSON schemas; the static
+    // probe (a session that is not running here) still answers names only.
+    toolParameters: true,
     // The probe reads the device's models.json and its live session; project
     // settings scoping is a local-file read the probe cannot do.
     modelsByCwd: false,
@@ -528,6 +528,42 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
   }
 
   async getTools(sessionId?: string, cwd?: string): Promise<ToolDefinition[]> {
+    // A live session answers `get_tools` with the REAL loadout, schemas
+    // included — the same answer the local path reads. Prefer it; the
+    // static probe (names + descriptions + remote skills) is the fallback
+    // for sessions that are not running in this process.
+    if (sessionId) {
+      const live = getRemoteRpcSession(sessionId);
+      if (live && !((live.channel as any).isClosed?.())) {
+        try {
+          const response = await new Promise<any>((resolve, reject) => {
+            const id = `piweb-gettools-${Date.now()}`;
+            const unsub = live.channel.onMessage((msg: any) => {
+              if (msg?.type === "response" && msg.id === id) {
+                clearTimeout(timer);
+                unsub();
+                resolve(msg);
+              }
+            });
+            const timer = setTimeout(() => { unsub(); reject(new Error("get_tools timed out")); }, 5_000);
+            timer.unref?.();
+            live.channel.send({ type: "get_tools", id });
+          });
+          const tools = response?.data ?? response?.tools;
+          if (Array.isArray(tools) && tools.length > 0) {
+            return tools.map((t: any) => ({
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters,
+              active: t.active,
+            }));
+          }
+        } catch {
+          // Fall back to the static probe below.
+        }
+      }
+    }
+
     let effectiveCwd = cwd;
     if (!effectiveCwd && sessionId) {
       // The route used to read this off the channel's cached state: a session's
