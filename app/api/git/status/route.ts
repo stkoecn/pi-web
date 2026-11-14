@@ -13,7 +13,7 @@ const remoteGitCache = new Map<string, { at: number; value: RemoteGitValue }>();
 
 export async function GET(request: NextRequest) {
   try {
-    const cwd = request.nextUrl.searchParams.get("cwd")?.trim() ?? "";
+    const cwd = request.nextUrl.searchParams.get("cwd") ?? "";
     const deviceId = request.nextUrl.searchParams.get("deviceId") || request.headers.get("x-device-id");
 
     if (deviceId && deviceId !== "localhost") {
@@ -65,8 +65,7 @@ export async function GET(request: NextRequest) {
         );
       }
     }
-
-    if (!cwd || (!cwd.startsWith("/") && !isWindowsAbsolutePath(cwd))) {
+    if (!cwd || (!cwd.startsWith("/") && !isWindowsAbsolutePath(cwd))) {
       return NextResponse.json({ error: "cwd must be an absolute path" }, { status: 400 });
     }
 

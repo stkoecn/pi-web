@@ -37,13 +37,15 @@ export function readTextPreviewChunk(
   const buffer = Buffer.alloc(length);
   const descriptor = fs.openSync(filePath, "r");
   let bytesRead: number;
+  const header = Buffer.alloc(2);
   try {
+    fs.readSync(descriptor, header, 0, 2, 0);
     bytesRead = fs.readSync(descriptor, buffer, 0, length, offset);
   } finally {
     fs.closeSync(descriptor);
   }
 
-  return chunkFromBuffer(buffer, bytesRead, fileSize, offset);
+  return chunkFromBuffer(buffer, bytesRead, fileSize, offset, header);
 }
 
 /**
@@ -59,6 +61,8 @@ export function chunkFromBuffer(
   bytesRead: number,
   fileSize: number,
   offset: number,
+  /** The file's first 2 bytes; a slice at offset > 0 does not carry them. */
+  fileHeader?: Buffer,
 ): TextPreviewChunk {
   // Only the start of a file decides; Load more continues a file shown as text.
   // A remote device's chunk goes through the same test, so a binary device file
@@ -68,7 +72,18 @@ export function chunkFromBuffer(
   }
 
   let end = Math.min(bytesRead, TEXT_PREVIEW_MAX_BYTES);
-  if (offset + end < fileSize) {
+  // At offset 0 the buffer starts with the BOM; later chunks carry it in
+  // the fileHeader argument (fetched alongside the slice, local pread or device read).
+  const header = fileHeader ?? (offset === 0 ? buffer : undefined);
+  const utf16 = header && header.length >= 2
+    ? header[0] === 0xff && header[1] === 0xfe ? "utf-16le"
+      : header[0] === 0xfe && header[1] === 0xff ? "utf-16be" : null
+    : null;
+  if (utf16 && offset + end < fileSize) {
+    end -= end % 2;
+    const last = utf16 === "utf-16le" ? buffer.readUInt16LE(end - 2) : buffer.readUInt16BE(end - 2);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 2;
+  } else if (!utf16 && offset + end < fileSize) {
     let sequenceStart = end;
     while (sequenceStart > end - 3 && (buffer[sequenceStart] & 0xc0) === 0x80) {
       sequenceStart--;
@@ -80,7 +95,9 @@ export function chunkFromBuffer(
   const nextOffset = offset + end;
 
   return {
-    content: buffer.toString("utf8", 0, end),
+    content: utf16
+      ? new TextDecoder(utf16, { ignoreBOM: true }).decode(buffer.subarray(offset === 0 ? 2 : 0, end))
+      : buffer.toString("utf8", 0, end),
     nextOffset,
     truncated: nextOffset < fileSize,
     binary: false,

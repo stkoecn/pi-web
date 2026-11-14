@@ -27,8 +27,8 @@ function isDiffPathAllowed(filePath: string, allowedRoots: Set<string>): boolean
 
 export async function GET(request: NextRequest) {
   try {
-    const cwd = request.nextUrl.searchParams.get("cwd")?.trim() ?? "";
-    const filePath = request.nextUrl.searchParams.get("path")?.trim() ?? "";
+    const cwd = request.nextUrl.searchParams.get("cwd") ?? "";
+    const filePath = request.nextUrl.searchParams.get("path") ?? "";
     const deviceId = request.nextUrl.searchParams.get("deviceId") || request.headers.get("x-device-id");
 
     if (deviceId && deviceId !== "localhost") {
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
         // browser's cwd/path into the device's shell.
         const dir = shellQuote(cwd || "~");
         const file = shellQuote(filePath);
-        const diffRes = await driver.exec(`git -C ${dir} diff -- ${file} 2>/dev/null || echo ""`, [], { timeoutMs: 15_000 });
+        const diffRes = await driver.exec(`git -C ${dir} --literal-pathspecs diff -- ${file} 2>/dev/null || echo ""`, [], { timeoutMs: 15_000 });
         return NextResponse.json({
           supported: true,
           patch: diffRes.stdout || "",
@@ -55,8 +55,7 @@ export async function GET(request: NextRequest) {
         );
       }
     }
-
-    if (!cwd || (!cwd.startsWith("/") && !isWindowsAbsolutePath(cwd))) {
+    if (!cwd || (!cwd.startsWith("/") && !isWindowsAbsolutePath(cwd))) {
       return NextResponse.json({ error: "cwd must be an absolute path" }, { status: 400 });
     }
     if (!filePath || (!filePath.startsWith("/") && !isWindowsAbsolutePath(filePath))) {

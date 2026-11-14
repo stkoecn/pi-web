@@ -148,6 +148,9 @@ function probeStdio(entry, deadline) {
       durationMs: Date.now() - startedAt,
     }), Math.max(1, deadline - Date.now()));
     child.on('error', (error) => { clearTimeout(timer); fail(error); });
+    // A server that exits at once makes the stdin writes fail with EPIPE; the
+    // close handler below turns that into the honest "exited before answering".
+    child.stdin.on('error', () => {});
     child.stderr.on('data', (chunk) => { stderrTail += String(chunk); });
     child.stdout.on('data', (chunk) => {
       buffer += String(chunk);
@@ -179,7 +182,7 @@ function probeStdio(entry, deadline) {
         rejectRequest(new Error(method + ' timed out'));
       }, Math.min(REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())));
       pending.set(id, { resolve: resolveRequest, timer: requestTimer });
-      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n');
+      try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n'); } catch {}
     });
     (async () => {
       try {
@@ -189,7 +192,7 @@ function probeStdio(entry, deadline) {
           clientInfo: { name: 'pi-web-mcp-test', version: '1.0.0' },
         });
         if (init.error) throw new Error(init.error.message || 'initialize failed');
-        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\\n');
+        try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\\n'); } catch {}
         const listed = await request('tools/list', {});
         if (listed.error) throw new Error(listed.error.message || 'tools/list failed');
         const tools = Array.isArray(listed.result && listed.result.tools) ? listed.result.tools : [];
