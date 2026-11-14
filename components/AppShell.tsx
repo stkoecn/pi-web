@@ -19,6 +19,10 @@ import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
 import { AgentSessionPanel } from "./AgentSessionPanel";
+import { DebugPanel, DebugPanelBoundary } from "./DebugPanel";
+import { startPageVisibilityTracking } from "@/lib/page-debug";
+import type { DebugClientSession } from "@/lib/debug-types";
+import { focusIfLost } from "@/lib/stacked-dialog";
 import { SessionChatPanel } from "./SessionChatPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeviceSelector } from "./DeviceSelector";
@@ -405,7 +409,7 @@ export function AppShell() {
   }, []);
 
   // Single active panel — only one dropdown open at a time
-  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | null>(null);
+  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "debug" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -424,8 +428,25 @@ export function AppShell() {
     if (rightPanelFullWidth) setActiveTopPanel(null);
   }, [rightPanelFullWidth]);
 
+  // The debug panel's reader of the chat's own state: kept in a ref, so registering renders
+  // nothing, and read only by the open panel (DebugPanel), never on AppShell's renders.
+  const debugSnapshotReaderRef = useRef<(() => DebugClientSession) | null>(null);
+  const handleDebugSnapshotReaderChange = useCallback((reader: (() => DebugClientSession) | null) => {
+    debugSnapshotReaderRef.current = reader;
+  }, []);
+  // The panel reports the page's visibility history from the first mount on, opened or not.
+  useEffect(() => {
+    startPageVisibilityTracking();
+  }, []);
+
+  const debugButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeDebugPanel = useCallback((restoreFocus: boolean) => {
+    setActiveTopPanel((panel) => panel === "debug" ? null : panel);
+    if (restoreFocus) requestAnimationFrame(() => focusIfLost(document, debugButtonRef.current));
+  }, []);
+
   const toggleTopPanel = useCallback((
-    panel: "agents" | "branches" | "system" | "tools" | "session",
+    panel: "agents" | "branches" | "system" | "tools" | "session" | "debug",
     keepMobileToolbarOpen = false,
   ) => {
     if (isMobile) setSidebarOpen(false);
@@ -1001,7 +1022,7 @@ export function AppShell() {
     setSystemPrompt(null);
     setSystemTools(null);
     setSystemInfoLoading(false);
-    setActiveTopPanel(null);
+    setActiveTopPanel((panel) => panel === "debug" ? panel : null);;
     if (currentProject !== newProject) {
       // Keep #281's project isolation, but park each workspace's file tabs
       // instead of discarding them so they return when the user switches back.
@@ -1026,7 +1047,7 @@ export function AppShell() {
     const projectKey = workspaceKeyOf(session);
     if (activeProjectKeyRef.current !== projectKey) {
       changeFileWorkspace(activeProjectKeyRef.current, projectKey);
-      setActiveTopPanel(null);
+      setActiveTopPanel((panel) => panel === "debug" ? panel : null);;
     }
     activeProjectKeyRef.current = projectKey;
     // Re-clicking the already-open session must not remount the chat and
@@ -1108,7 +1129,7 @@ export function AppShell() {
     setSystemPrompt(null);
     setSystemTools(null);
     setSystemInfoLoading(false);
-    setActiveTopPanel(null);
+    setActiveTopPanel((panel) => panel === "debug" ? panel : null);;
     if (isMobile) setSidebarOpen(false);
     router.replace(deviceHref({ cwd }), { scroll: false });
     // The fresh composer takes the caret once it renders (#1313), unless the
@@ -1369,7 +1390,7 @@ export function AppShell() {
       setSystemPrompt(null);
       setSystemTools(null);
       setSystemInfoLoading(false);
-      setActiveTopPanel(null);
+      setActiveTopPanel((panel) => panel === "debug" ? panel : null);;
       router.replace(deviceHref(cwd ? { cwd } : null), { scroll: false });
     }
   }, [invalidateWorkspaceRestore, router, deviceHref]);
@@ -2278,6 +2299,7 @@ export function AppShell() {
   const renderSessionStatsButton = (mobile: boolean) => {
     if (!mobile && (!showChat || (!sessionStats && !contextUsage))) return null;
 
+
     const tokens = sessionStats?.tokens;
     const cost = sessionStats?.cost ?? 0;
     const formatCompact = formatCompactCount;
@@ -2329,7 +2351,7 @@ export function AppShell() {
         className={mobile ? "mobile-session-stats" : undefined}
         data-mobile-toolbar-stats={mobile ? "true" : undefined}
         style={{
-          marginLeft: mobile ? 0 : "auto",
+          marginLeft: 0,
           display: "flex", alignItems: "center", justifyContent: "flex-end",
           flex: mobile ? 1 : undefined,
           minWidth: 0,
@@ -2434,6 +2456,45 @@ export function AppShell() {
     );
   };
 
+  const renderDebugButton = (mobile: boolean) => {
+    if (!showChat) return null;
+    const open = activeTopPanel === "debug";
+    return (
+      <button
+        ref={debugButtonRef}
+        type="button"
+        onClick={() => toggleTopPanel("debug", mobile)}
+        title={translate("debug.title")}
+        aria-label={translate("debug.title")}
+        aria-pressed={open}
+        style={{
+          marginLeft: mobile ? 0 : "auto",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          width: TOP_BAR_ICON_BUTTON_SIZE, height: "100%", padding: 0,
+          background: open ? "var(--bg-selected)" : "none",
+          border: "none",
+          borderTop: open ? "2px solid var(--accent)" : "2px solid transparent",
+          ...(mobile ? { borderRight: "1px solid var(--border)" } : { borderLeft: "1px solid var(--border)" }),
+          color: open ? "var(--text)" : "var(--text-muted)",
+          cursor: "pointer", flexShrink: 0, transition: "color 0.1s, background 0.1s",
+        }}
+        onMouseEnter={(event) => {
+          event.currentTarget.style.color = "var(--text)";
+        }}
+        onMouseLeave={(event) => {
+          event.currentTarget.style.color = open ? "var(--text)" : "var(--text-muted)";
+        }}
+        data-mobile-toolbar-action={mobile ? "debug" : undefined}
+      >
+        <svg width={mobile ? 16 : 13} height={mobile ? 16 : 13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: open ? "var(--accent)" : "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
+          <path d="M8 2l1.9 1.9M16 2l-1.9 1.9M9 7.1v-1a3 3 0 0 1 6 0v1" />
+          <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6zM12 20v-9" />
+          <path d="M6.5 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4M21 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4" />
+        </svg>
+      </button>
+    );
+  };
+
   const renderMainFileToggle = (mobile: boolean) => {
     const covered = mobile && isNarrowMobile && mobileToolbarMoreOpen;
     return (
@@ -2449,7 +2510,7 @@ export function AppShell() {
         aria-label={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
         data-mobile-toolbar-file={mobile ? "true" : undefined}
         style={{
-          marginLeft: !mobile && !sessionStats && !contextUsage ? "auto" : 0,
+          marginLeft: !mobile && !showChat ? "auto" : 0,
           display: "flex", alignItems: "center", justifyContent: "center",
           width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
           visibility: covered ? "hidden" : "visible",
@@ -2724,6 +2785,7 @@ export function AppShell() {
                 </button>
               )}
               {!isNarrowMobile && renderChatToolbarActions(true)}
+              {!isNarrowMobile && renderDebugButton(true)}
               {renderSessionStatsButton(true)}
               {renderMainFileToggle(true)}
               {isNarrowMobile && mobileToolbarMoreOpen && (
@@ -2737,16 +2799,22 @@ export function AppShell() {
                     top: 0,
                     right: 0,
                     bottom: 0,
-                    left: TOP_BAR_ICON_BUTTON_SIZE,
+                    // Right of the Agents and More buttons, which stay in place.
+                    left: `calc(2 * ${TOP_BAR_ICON_BUTTON_SIZE})`,
                     zIndex: 20,
                     display: "flex",
                     alignItems: "stretch",
+                    // More buttons than a 320px phone fits (the Debug button made seven): scroll, never clip.
+                    overflowX: "auto",
+                    overflowY: "hidden",
+                    scrollbarWidth: "none",
                     background: "color-mix(in srgb, var(--bg-panel) 94%, var(--bg))",
                     boxShadow: "4px 0 18px rgba(0,0,0,0.12)",
                     backdropFilter: "blur(10px)",
                   }}
                 >
                   {renderChatToolbarActions(true)}
+                  {renderDebugButton(true)}
                 </div>
               )}
             </div>
@@ -2764,6 +2832,7 @@ export function AppShell() {
               {renderProjectTrustWarning(false)}
               {renderPiMissingWarning(false)}
               {renderChatToolbarActions(false)}
+              {renderDebugButton(false)}
               {renderSessionStatsButton(false)}
             </>
           )}
@@ -3017,6 +3086,16 @@ export function AppShell() {
                   )}
                 </div>
               )}
+              {activeTopPanel === "debug" && (
+                <DebugPanelBoundary fallback={translate("debug.failed")}>
+                  <DebugPanel
+                    readerRef={debugSnapshotReaderRef}
+                    selectedSessionId={selectedSession?.id ?? null}
+                    sessions={sessionsWithSelection}
+                    onClose={closeDebugPanel}
+                  />
+                </DebugPanelBoundary>
+              )}
             </div>
           )}
 
@@ -3032,6 +3111,7 @@ export function AppShell() {
               key={sessionKey}
               session={selectedSession}
               deviceId={selectedDeviceId}
+              onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
               searchTarget={searchTarget?.sessionId === selectedSession?.id ? searchTarget : null}
               onSearchTargetHandled={handleSearchTargetHandled}
               initialScrollPosition={selectedSession ? sessionScrollPositionsRef.current.get(selectedSession.id) ?? null : null}

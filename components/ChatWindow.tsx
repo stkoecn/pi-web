@@ -441,7 +441,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
     };
   }, [quotedSelection, quoteInputOpen, quoteSubmitting, closeQuotedSelection]);
 
-  const askSelectionHere = useCallback(() => {
+  const quoteSelectionHere = useCallback(() => {
     if (!quotedSelection) return;
     chatInputRef?.current?.insertQuote(buildQuotedSelection(quotedSelection.text));
     // No `removeAllRanges()` here: inserting focuses the composer, and that
@@ -1532,7 +1532,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
             title={t("chat.quoteSelection")}
             aria-label={t("chat.quoteSelection")}
             onPointerDown={(event) => event.preventDefault()}
-            onClick={askSelectionHere}
+            onClick={quoteSelectionHere}
             style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -13,6 +13,7 @@
 
 // Relative import: this module is loaded by lib/agent-client.test.mjs through
 // jiti without tsconfig path mapping, so `@/lib/...` would not resolve there.
+import { missingCwdFromBody } from "./missing-cwd";
 import { withDeviceId } from "./device-context";
 
 export class AgentCommandError extends Error {
@@ -76,6 +77,8 @@ export async function sendAgentCommand<T = unknown>(
       res.status,
       body.code,
       body.accepted,
+      // The session's folder, when the refusal is that it no longer exists (#1422).
+      missingCwdFromBody(body) ?? undefined,
     );
   }
   return body.data as T;
