@@ -875,7 +875,7 @@ export function PluginsConfig({
     setActionMessage(null);
     setGroupStatus(null);
     try {
-      await sendAgentCommand(sessionId, { type: "reload" });
+      await sendAgentCommand(sessionId, { type: "reload" }, deviceId);
       onReloaded?.();
       await loadPlugins();
       setActionMessage(t("i18n.sessionReloaded"));

@@ -601,6 +601,20 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
     command: Record<string, unknown>,
     _options?: SendSessionCommandOptions,
   ): Promise<unknown> {
+    // pi's RPC mode has no reload command, and the local wrapper's reload works
+    // on an in-process session this side does not hold. The device equivalent of
+    // "reload so the new plugins/extensions load" is restarting the remote `pi`:
+    // the next use re-spawns it against the device's current settings.
+    if (command.type === "reload") {
+      const session = getRemoteRpcSession(sessionId);
+      if (session && isRemoteSessionRunning(session)) {
+        throw new Error("Wait for the current response to finish before reloading.");
+      }
+      const { closeRemoteRpcSession } = await import("../remote-agent-manager");
+      closeRemoteRpcSession(sessionId);
+      await this.resumeSession(sessionId);
+      return { success: true };
+    }
     let session = getRemoteRpcSession(sessionId);
     if (!session || ((session.channel as any).isClosed?.())) {
       const resumed = await enqueueDeviceSessionTask(this.deviceId, () =>

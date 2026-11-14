@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { McpErrorResponse, McpTestResponse } from "@/lib/api-types";
 import { isMcpEntryRefusal, readConnectableMcpEntry } from "@/lib/mcp-entry-request";
 import { testMcpServer } from "@/lib/mcp-test";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,11 @@ export const dynamic = "force-dynamic";
 // entry's folder is allowed and trusted. A global stdio server runs in the
 // panel's project when it has one (checked like any cwd), else in the home
 // folder, which the answer names.
+//
+// A device's server runs on that machine — its command resolves there, its
+// ports are its own — so a device's test runs there too
+// (`lib/mcp-test-remote.ts`), with the entry read from the device's own file
+// and the same answer shape.
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -24,6 +30,10 @@ function errorMessage(error: unknown): string {
 // `cwd` is the panel's project: required for a project server, and the
 // folder a global stdio server runs in.
 export async function POST(req: Request) {
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    const { testRemoteMcpServer } = await import("@/lib/mcp-test-remote");
+    return testRemoteMcpServer(req);
+  }
   const entry = await readConnectableMcpEntry(req);
   if (isMcpEntryRefusal(entry)) return NextResponse.json(entry.body, { status: entry.status });
   const { scope, name, sourcePath, configKey, config, cwd, internals } = entry;
