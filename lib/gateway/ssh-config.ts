@@ -425,7 +425,6 @@ export function sshHostToDevice(host: SshConfigHost): ActiveDeviceConfig {
     host: host.hostName,
     port: host.port,
     username: host.username,
-    mode: "active_ssh",
   };
   if (host.privateKeyPath) config.privateKeyPath = host.privateKeyPath;
   if (host.jump && host.jump.length > 0) config.jump = host.jump;

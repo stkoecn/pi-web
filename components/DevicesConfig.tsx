@@ -65,8 +65,6 @@ export function DevicesConfig({
   const [busy, setBusy] = useState<null | "save" | "delete" | "reload">(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busyControlId, setBusyControlId] = useState<string | null>(null);
-  const [pairingCommand, setPairingCommand] = useState<string>("");
-  const [pairingCopied, setPairingCopied] = useState(false);
   const [envInfo, setEnvInfo] = useState<{
     loading: boolean;
     hasPi?: boolean;
@@ -95,28 +93,6 @@ export function DevicesConfig({
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  const fetchPairingCommand = useCallback(async (opts?: { id?: string; name?: string }) => {
-    try {
-      const qs = new URLSearchParams();
-      if (opts?.id) qs.set("id", opts.id);
-      if (opts?.name) qs.set("name", opts.name);
-      const url = qs.toString() ? `/api/devices/join?${qs.toString()}` : "/api/devices/join";
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
-      if (res.ok) {
-        const d = await res.json();
-        if (d.command) setPairingCommand(d.command);
-      }
-    } catch {}
-  }, []);
-
-  const copyCommand = useCallback((cmd: string) => {
-    if (!cmd) return;
-    navigator.clipboard?.writeText(cmd).then(() => {
-      setPairingCopied(true);
-      setTimeout(() => setPairingCopied(false), 2000);
-    }).catch(() => {});
   }, []);
 
   const toggleConnection = useCallback(async (id: string, action: "connect" | "disconnect") => {
@@ -243,10 +219,8 @@ export function DevicesConfig({
     if (configs.length === 0) return;
     const first = configs.find((config) => config.id === selectedId) ?? configs[0];
     setSelectedId(first.id);
-    const d = draftFromConfig(first);
-    setDraft(d);
-    void fetchPairingCommand({ id: d.id, name: d.name });
-  }, [addMode, configs, draft, fetchPairingCommand, selectedId, selectedProblem, selectedSshId]);
+    setDraft(draftFromConfig(first));
+  }, [addMode, configs, draft, selectedId, selectedProblem, selectedSshId]);
 
   const select = (config: DeviceConfigEntry) => {
     setAddMode(false);
@@ -255,15 +229,13 @@ export function DevicesConfig({
     setReloadWarning(null);
     setStatus(null);
     setSelectedId(config.id);
-    const d = draftFromConfig(config);
-    setDraft(d);
+    setDraft(draftFromConfig(config));
     const live = runtime.get(config.id);
     if (live?.status === "online") {
       void checkEnv(config.id);
     } else {
       setEnvInfo(null);
     }
-    void fetchPairingCommand({ id: d.id, name: d.name });
   };
 
   /**
@@ -293,12 +265,10 @@ export function DevicesConfig({
   };
 
   /**
-   * A new device is always a reverse tunnel.
+   * A new device is typed in here.
    *
-   * A dialled host is not typed in here any more: `~/.ssh/config` already says
-   * which machines this user reaches and with which key, so the gateway reads
-   * it instead. What is left for the form is the one case ssh cannot describe —
-   * a machine behind NAT that dials in — and that is what "new" opens.
+   * `~/.ssh/config` hosts are offered read-only by discovery; the form is for a
+   * machine the gateway should serve that ssh does not describe.
    */
   const startAdd = () => {
     setAddMode(true);
@@ -309,7 +279,6 @@ export function DevicesConfig({
     setEnvInfo(null);
     setStatus(null);
     setError(null);
-    void fetchPairingCommand();
   };
 
   const problem = draft ? draftProblem(draft) : "devices.problem.id";
@@ -460,10 +429,9 @@ export function DevicesConfig({
               <div className="config-sidebar-message is-empty">{t("devices.empty")}</div>
             ) : (
               <>
-                {/* Two parts, because the direction is the one thing that decides
-                    how a host behaves: 主动 hosts are dialled by the gateway,
-                    被动 ones dial in. It is a property of the whole group, so it
-                    is a heading rather than a tag repeated on every row. */}
+                {/* Two parts: what `~/.ssh/config` offers read-only, and the
+                    devices this gateway is configured to serve. The saved ones
+                    are editable; the discovered ones are a switch. */}
                 {sshOnlyHosts.length > 0 && (
                   <ConfigSidebarGroupLabel>{t("devices.groupActive")}</ConfigSidebarGroupLabel>
                 )}
@@ -528,7 +496,7 @@ export function DevicesConfig({
                   </ConfigSidebarItem>
                 ))}
                 {(configs.length > 0 || addMode) && (
-                  <ConfigSidebarGroupLabel>{t("devices.groupReverse")}</ConfigSidebarGroupLabel>
+                  <ConfigSidebarGroupLabel>{t("devices.groupSaved")}</ConfigSidebarGroupLabel>
                 )}
                 {configs.map((config) => {
                   const live = runtime.get(config.id);
@@ -709,15 +677,10 @@ export function DevicesConfig({
                   <ConfigDetailHeaderInfo>
                     <ConfigDetailTitle>
                       {addMode ? t("devices.add") : draft.name || draft.id}
-                      {!addMode && (
-                        <span className="settings-device-kind" data-device-kind="reverse_tunnel">
-                          {t("devices.kind.reverse_tunnel")}
-                        </span>
-                      )}
                     </ConfigDetailTitle>
                     {!addMode && (
                       <code className="config-detail-subtitle">
-                        {runtime.get(draft.id)?.remoteAddr || t("devices.mode.reverse_tunnel")}
+                        {runtime.get(draft.id)?.remoteAddr || `${draft.host}:${draft.port}`}
                       </code>
                     )}
                   </ConfigDetailHeaderInfo>
@@ -796,27 +759,13 @@ export function DevicesConfig({
                 <div className="settings-device-form">
                   {field(t("devices.field.id"), "id", { placeholder: "home-nas", disabled: !addMode })}
                   {field(t("devices.field.name"), "name", { placeholder: "Home NAS", mono: false })}
+                  <div className="settings-device-row">
+                    {field(t("devices.field.host"), "host", { placeholder: "192.168.1.14" })}
+                    {field(t("devices.field.port"), "port", { placeholder: "22" })}
+                  </div>
                   {field(t("devices.field.username"), "username", { placeholder: "windsing" })}
+                  {field(t("devices.field.privateKeyPath"), "privateKeyPath", { placeholder: "~/.ssh/id_ed25519" })}
                   {field(t("devices.field.defaultCwd"), "defaultCwd", { placeholder: t("devices.defaultCwdPlaceholder") })}
-
-                  <ConfigNotice
-                    action={
-                      <ConfigButton
-                        size="small"
-                        variant="secondary"
-                        onClick={() => copyCommand(pairingCommand)}
-                        disabled={!pairingCommand}
-                      >
-                        {pairingCopied ? t("devices.copied") : t("devices.copyCommand")}
-                      </ConfigButton>
-                    }
-                  >
-                    {t("devices.tunnelKeyAutoDesc")}
-                    <code className="settings-device-command">
-                      <span className="settings-device-command-label">{t("devices.tunnelCommand")}</span>
-                      {pairingCommand || `curl -fsSL ${typeof window !== "undefined" ? window.location.origin : ""}/api/devices/join | bash`}
-                    </code>
-                  </ConfigNotice>
                 </div>
 
                 <ConfigNotice>{t("devices.secretNote")}</ConfigNotice>

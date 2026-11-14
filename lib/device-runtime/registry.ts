@@ -109,9 +109,8 @@ export class DeviceRuntimeRegistry {
       const { getGateway } = await import("../gateway/singleton");
       const gateway = getGateway();
       const inRegistry = normalizedId ? gateway.registry.get(normalizedId) : undefined;
-      const inTunnels = normalizedId ? gateway.listTunnels().find((t) => t.deviceId.toLowerCase() === normalizedId) : undefined;
       const inDiscovered = normalizedId ? gateway.discoverSshHosts().find((c) => c.id.toLowerCase() === normalizedId) : undefined;
-      const resolvedId = inRegistry ? normalizedId : (inTunnels?.deviceId || inDiscovered?.id);
+      const resolvedId = inRegistry ? normalizedId : inDiscovered?.id;
 
       if (resolvedId && normalizedId) {
         const { SshRemoteDeviceRuntime } = await import("./ssh-remote-runtime");

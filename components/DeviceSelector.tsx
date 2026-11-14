@@ -12,7 +12,6 @@ const COMPACT_BUTTON_SIZE = 36;
 export interface DeviceInfo {
   id: string;
   name: string;
-  mode: "active_ssh" | "reverse_tunnel";
   remoteAddr?: string;
   status: "online" | "offline" | "connecting";
   lastSeen?: number;
@@ -70,7 +69,7 @@ export function DeviceSelector({
   connectingDeviceId = null,
 }: Props) {
   const [devices, setDevices] = useState<DeviceInfo[]>([
-    { id: "localhost", name: "localhost", mode: "active_ssh", status: "online" },
+    { id: "localhost", name: "localhost", status: "online" },
   ]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -288,9 +287,6 @@ export function DeviceSelector({
             }}
           >
             <span>SSH Devices Gateway</span>
-            <span style={{ fontSize: 10, background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: 4 }}>
-              :22222 (R)
-            </span>
           </div>
 
           <div style={{ maxHeight: 240, overflowY: "auto", padding: "4px 0" }}>
@@ -353,9 +349,7 @@ export function DeviceSelector({
                         )}
                       </span>
                       <span style={{ fontSize: 10, color: connecting ? "var(--accent, #6366f1)" : "var(--text-dim, #777)" }}>
-                        {connecting
-                          ? "connecting…"
-                          : device.remoteAddr || (device.mode === "reverse_tunnel" ? "Reverse Tunnel" : "Direct")}
+                        {connecting ? "connecting…" : device.remoteAddr || "Direct"}
                       </span>
                     </div>
                   </div>

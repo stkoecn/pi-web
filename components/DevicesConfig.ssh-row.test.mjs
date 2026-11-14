@@ -32,31 +32,29 @@ test("the ssh row cannot be deleted, because nothing was written", () => {
   assert.match(branch, /devices\.sshReadOnly/);
 });
 
-test("a new device can only be a reverse tunnel", () => {
+test("a new device is an editable host, not a direction choice", () => {
   const start = source.indexOf("const startAdd =");
   const body = source.slice(start, source.indexOf("const problem =", start));
-  // No mode radio, no host, no port, no password: the draft is the tunnel
-  // draft, and `draftToBody` stamps `mode: "reverse_tunnel"` on every save.
   assert.match(body, /setDraft\(emptyDraft\(\)\)/);
   assert.match(body, /setSelectedSshId\(null\)/);
+  // The direction concept is gone with the dial-in mode.
   assert.doesNotMatch(body, /mode:/);
 });
 
-test("the form has no way to type a dialled host", () => {
-  // A host the gateway reaches arrives from ~/.ssh/config, so a second, drifting
-  // way to describe the same machine must not exist in the pane.
+test("the editable form carries the address the gateway dials", () => {
   // The last such block is the editable one: the read-only ssh branch has its own.
   const form = source.slice(
     source.lastIndexOf('<div className="settings-device-form">'),
     source.indexOf('{t("devices.secretNote")}'),
   );
-  assert.doesNotMatch(form, /data-device-field="host"/);
-  assert.doesNotMatch(form, /data-device-field="port"/);
+  // The field helper stamps data-device-field={key}, so the labels are the match.
+  assert.match(form, /devices\.field\.host/);
+  assert.match(form, /devices\.field\.port/);
+  assert.match(form, /devices\.field\.privateKeyPath/);
   assert.doesNotMatch(form, /data-device-field="password"/);
-  assert.doesNotMatch(form, /devices\.authMethod/);
   assert.doesNotMatch(form, /devices\.field\.mode/);
-  // The tunnel command is the whole point of the form.
-  assert.match(form, /devices\.tunnelCommand/);
+  // The dial-in pairing command is gone with the mode.
+  assert.doesNotMatch(form, /devices\.tunnelCommand/);
 });
 
 test("showing an ssh row is not undone by the land-on-a-device effect", () => {
@@ -68,31 +66,29 @@ test("showing an ssh row is not undone by the land-on-a-device effect", () => {
   assert.match(guard, /if \(addMode \|\| draft \|\| selectedSshId \|\| selectedProblem !== null\) return;/);
   assert.match(
     source,
-    /\}, \[addMode, configs, draft, fetchPairingCommand, selectedId, selectedProblem, selectedSshId\]\);/,
+    /\}, \[addMode, configs, draft, selectedId, selectedProblem, selectedSshId\]\);/,
   );
 });
 
-test("the list is split in two by direction, and the detail says how it is reached", () => {
-  // Direction decides how a host behaves, and it is a property of the whole
-  // group: repeating a tag on 17 rows was noise, so the split carries it.
+test("the list is split into discovery and saved devices, and the detail says how it is reached", () => {
   assert.match(source, /devices\.groupActive/);
-  assert.match(source, /devices\.groupReverse/);
+  assert.match(source, /devices\.groupSaved/);
+  assert.doesNotMatch(source, /devices\.groupReverse/);
   assert.doesNotMatch(source, /devices\.groupHosts/);
-  assert.doesNotMatch(source, /devices\.groupSaved/);
   assert.doesNotMatch(source, /devices\.groupSsh/);
 
-  // 主动 first: the hosts ssh already describes are the ones a reader looks for.
+  // The hosts ssh already describes come first: they are what a reader looks for.
   const active = source.indexOf('devices.groupActive');
-  const reverse = source.indexOf('devices.groupReverse');
+  const saved_ = source.indexOf('devices.groupSaved');
   const firstSshRow = source.indexOf('data-device-ssh-item=');
-  assert.ok(active > 0 && reverse > active, "the active group heading comes first");
-  assert.ok(firstSshRow > active && firstSshRow < reverse, "ssh rows sit under the active heading");
+  assert.ok(active > 0 && saved_ > active, "the discovery group heading comes first");
+  assert.ok(firstSshRow > active && firstSshRow < saved_, "ssh rows sit under the discovery heading");
 
   // The jump hops belong to one host, so they are shown in its detail.
   assert.match(source, /devices\.sshJump/);
   assert.match(source, /sshHost\.jump\.join\(" → "\)/);
 
-  // No direction tag on the rows themselves any more.
+  // No direction tag on the rows themselves.
   const listStart = source.indexOf("<ConfigSidebar>");
   const listEnd = source.indexOf("</ConfigSidebar>");
   assert.doesNotMatch(source.slice(listStart, listEnd), /settings-device-kind/);
@@ -120,11 +116,11 @@ test("a stanza the pane cannot use is a row with a question mark, not a footnote
   assert.match(source, /devices\.sshProblemFix/);
   // The count-only line is gone.
   assert.doesNotMatch(source, /devices\.sshProblems/);
-  // Problems stay inside the 主动 group, right after the hosts it could read.
+  // Problems stay inside the discovery group, right after the hosts it could read.
   const active = source.indexOf("devices.groupActive");
-  const reverse = source.indexOf("devices.groupReverse");
+  const saved_ = source.indexOf("devices.groupSaved");
   const problems = source.indexOf("data-device-ssh-problem=");
-  assert.ok(problems > active && problems < reverse, "problem rows sit under the active heading");
+  assert.ok(problems > active && problems < saved_, "problem rows sit under the discovery heading");
 });
 
 test("a discovered host is switched off until the user turns it on", () => {

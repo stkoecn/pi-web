@@ -16,7 +16,6 @@ export interface DeviceConfigEntry {
   username: string;
   privateKeyPath?: string;
   defaultCwd?: string;
-  mode?: "active_ssh" | "reverse_tunnel";
   hasPassword: boolean;
 }
 
@@ -24,7 +23,6 @@ export interface DeviceConfigEntry {
 export interface DeviceRuntimeInfo {
   id: string;
   name: string;
-  mode: "active_ssh" | "reverse_tunnel";
   remoteAddr?: string;
   status: "online" | "offline" | "connecting";
 }
@@ -100,31 +98,30 @@ export interface DeviceReloadResponse {
 }
 
 /**
- * A device the gateway cannot dial: one that dials in.
+ * One saved device, editable in place.
  *
- * There is no address, port or password here because there is nothing to dial
- * and nobody types a secret the device already holds. A host the gateway
- * reaches is read from `~/.ssh/config` instead, where ssh keeps its own
- * credentials — so this form is only ever about the one direction ssh cannot
- * describe.
+ * `~/.ssh/config` hosts are offered read-only by discovery; this form is for a
+ * machine the gateway should serve that ssh does not describe — a
+ * password-only host, a different key, a renamed display name.
  */
 export interface DeviceDraft {
   id: string;
   name: string;
+  host: string;
+  port: string;
   username: string;
   privateKeyPath: string;
   defaultCwd: string;
 }
 
-/** The gateway's own pairing key: the device authorises it, so nothing is typed. */
-export const PAIRING_KEY_PATH = "~/.pi/gateway_ed25519";
-
 export function emptyDraft(): DeviceDraft {
   return {
     id: "",
     name: "",
+    host: "",
+    port: "22",
     username: "",
-    privateKeyPath: PAIRING_KEY_PATH,
+    privateKeyPath: "",
     defaultCwd: "",
   };
 }
@@ -133,18 +130,21 @@ export function draftFromConfig(config: DeviceConfigEntry): DeviceDraft {
   return {
     id: config.id,
     name: config.name ?? "",
+    host: config.host,
+    port: String(config.port),
     username: config.username,
-    privateKeyPath: config.privateKeyPath ?? PAIRING_KEY_PATH,
+    privateKeyPath: config.privateKeyPath ?? "",
     defaultCwd: config.defaultCwd ?? "",
   };
 }
 
-/** Fields a save sends. `mode` is not a choice: this pane only writes tunnels. */
+/** Fields a save sends. A blank field clears what the file had. */
 export function draftToBody(draft: DeviceDraft): Record<string, unknown> {
   return {
     id: draft.id.trim(),
     name: draft.name.trim(),
-    mode: "reverse_tunnel",
+    host: draft.host.trim(),
+    port: draft.port.trim() === "" ? "" : Number(draft.port.trim()),
     username: draft.username.trim(),
     // Sent even when blank: the path is visible in the form, so clearing it is
     // what the user asked for.
@@ -161,6 +161,9 @@ export function draftToBody(draft: DeviceDraft): Record<string, unknown> {
 export function draftProblem(draft: DeviceDraft): string | null {
   if (!draft.id.trim()) return "devices.problem.id";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(draft.id.trim())) return "devices.problem.idFormat";
+  if (!draft.host.trim()) return "devices.problem.host";
+  const port = Number(draft.port.trim());
+  if (!draft.port.trim() || !Number.isInteger(port) || port < 1 || port > 65535) return "devices.problem.port";
   if (!draft.username.trim()) return "devices.problem.username";
   return null;
 }

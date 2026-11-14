@@ -1,7 +1,6 @@
 import { DeviceRegistry } from './device-registry';
 import { isLocalHostId } from './host-identity';
 import { SSHClientPool } from './ssh-client-pool';
-import { SSHServer } from './ssh-server';
 import {
   devicesConfigPath,
   readDevicesFile,
@@ -33,26 +32,12 @@ export class DeviceOfflineError extends Error {
 export class GatewayManager {
   readonly registry = new DeviceRegistry(true); // localhost enabled by default
   readonly clientPool: SSHClientPool;
-  readonly sshServer: SSHServer;
   private initialized = false;
   /** The device list the file last gave us, in file order. */
   private configuredDevices: ActiveDeviceConfig[] = [];
 
   constructor() {
     this.clientPool = new SSHClientPool(this.registry);
-    this.sshServer = new SSHServer(this.registry, this.clientPool, {
-      port: 22222,
-      host: '0.0.0.0',
-      // A device that dials in identifies itself with the SSH username of its
-      // tunnel, which must equal the id in devices.json. Nothing else can tell
-      // the gateway which configured machine just connected, and a tunnel from
-      // an unknown name would otherwise become a device that fails every request.
-      resolveTunnelDevice: (tunnelUsername) => {
-        return this.configuredDevices.find(
-          (config) => config.id === tunnelUsername && (config.mode ?? 'active_ssh') === 'reverse_tunnel',
-        );
-      },
-    });
   }
 
   public async init(): Promise<void> {
@@ -68,42 +53,22 @@ export class GatewayManager {
     // Connect every configured device in parallel. Each handshake takes 2-3 s
     // on a WAN link, and doing them one after another left the last device
     // unusable for ten seconds after every restart.
-    //
-    // A `reverse_tunnel` device is the opposite of a dial-out target: it is one
-    // we cannot reach, and it connects to us. Dialling its `host` would either
-    // fail or, worse, succeed against something else entirely, so it is skipped
-    // here and appears only once it actually dials in.
-    const devices = loaded.configs.filter((dev) => (dev.mode ?? 'active_ssh') === 'active_ssh');
-    for (const dev of devices) {
+    for (const dev of loaded.configs) {
       console.log(`[Gateway] Loading device from config: ${dev.id} (${dev.host}:${dev.port})`);
-    }
-    const tunnels = loaded.configs.filter((dev) => (dev.mode ?? 'active_ssh') === 'reverse_tunnel');
-    for (const dev of tunnels) {
-      console.log(`[Gateway] Waiting for reverse tunnel device: ${dev.id} (ssh -R as user "${dev.id}")`);
     }
     this.configuredDevices = loaded.configs;
 
     // The hosts `ssh` already knows about are listed too, but not dialled: the
     // user asked to see their machines, not to hold a connection on each. A
     // `devices.json` entry always wins for the same id, because that is where a
-    // password-only host, a renamed display name or a reverse tunnel lives.
+    // password-only host or a renamed display name lives.
     const discovered = this.discoverSshHosts(loaded.configs, { enabledOnly: true });
     for (const config of discovered) {
       console.log(`[Gateway] Offering ssh host ${config.id} (${config.host}:${config.port}), not dialled`);
     }
     await Promise.allSettled(discovered.map((dev) => this.clientPool.addDevice(dev, { connect: false })));
 
-    await Promise.allSettled(devices.map((dev) => this.clientPool.addDevice(dev)));
-
-    // Start reverse tunnel SSH server
-    try {
-      await this.sshServer.start();
-      console.log('[Gateway] Reverse tunnel SSH server listening on 0.0.0.0:22222');
-    } catch (e: any) {
-      if (e.code !== 'EADDRINUSE') {
-        console.error('[Gateway] Failed to start reverse tunnel SSH server:', e);
-      }
-    }
+    await Promise.allSettled(loaded.configs.map((dev) => this.clientPool.addDevice(dev)));
   }
 
   public getDriver(id?: string): IHostDriver {
@@ -115,35 +80,12 @@ export class GatewayManager {
     return this.configuredDevices.map((config) => ({ ...config }));
   }
 
-  /**
-   * Every device the user can pick, including one that has not dialled in yet.
-   *
-   * The registry only knows devices that are connected or dialling, so a
-   * `reverse_tunnel` entry vanished completely between gateway restarts: the
-   * user could not see it, could not select it, and had no way to learn that it
-   * was waiting for its own `ssh -R` to arrive. A configured device is a device
-   * the user asked for, so it is listed offline rather than not at all.
-   */
+  /** Every device the user can pick, as the registry currently sees it. */
   public listDevices(): DeviceInfo[] {
     // A host the user switched off is not offered: the switcher is the list
     // of hosts this gateway serves, and the switch exists to keep a machine
     // out of it. `devices.json` entries and localhost are always in.
-    const live = this.registry.list().filter((device) => this.isDeviceEnabled(device.id));
-    const known = new Set(live.map((device) => device.id));
-    const waiting: DeviceInfo[] = this.configuredDevices
-      .filter((config) => (config.mode ?? 'active_ssh') === 'reverse_tunnel')
-      .filter((config) => !known.has(config.id))
-      .map((config) => ({
-        id: config.id,
-        name: config.name,
-        mode: 'reverse_tunnel' as const,
-        // Not an address: this device has none until it dials in. Saying so
-        // keeps the switcher from showing a stale or invented host.
-        remoteAddr: '',
-        status: 'offline' as const,
-        lastSeen: 0,
-      }));
-    return [...live, ...waiting];
+    return this.registry.list().filter((device) => this.isDeviceEnabled(device.id));
   }
 
   /**
@@ -164,37 +106,14 @@ export class GatewayManager {
     const removed: string[] = [];
     for (const id of previous.keys()) {
       if (next.has(id) || id === 'localhost') continue;
-      // Which half owned this device decides how it is torn down: a dialled
-      // device has a client in the pool, a reversed one has a forwarder and an
-      // inner connection in the tunnel server.
-      if ((previous.get(id)?.mode ?? 'active_ssh') === 'reverse_tunnel') {
-        await this.sshServer.closeTunnel(id);
-      } else {
-        this.clientPool.removeDevice(id);
-      }
+      this.clientPool.removeDevice(id);
       removed.push(id);
     }
 
     const connected: string[] = [];
     const unchanged: string[] = [];
     for (const config of configs) {
-      const mode = config.mode ?? 'active_ssh';
       const before = previous.get(config.id);
-      if (mode === 'reverse_tunnel') {
-        // A device switched from dialled to dialled-in must lose its client, or
-        // both connections would keep writing to the same registry entry.
-        if (before && (before.mode ?? 'active_ssh') !== 'reverse_tunnel') {
-          this.clientPool.removeDevice(config.id);
-        }
-        // Nothing to dial. A device that is already dialled in just takes the
-        // new label and credentials; one that is not waits for its own tunnel.
-        const applied = await this.sshServer.updateTunnelConfig(config);
-        (applied ? unchanged : connected).push(config.id);
-        continue;
-      }
-      if (before && (before.mode ?? 'active_ssh') === 'reverse_tunnel') {
-        await this.sshServer.closeTunnel(config.id);
-      }
       if (before && sameConnection(before, config)) {
         // The connection is unchanged, but the label may not be: a rename must
         // show up in the switcher without paying for a new handshake.
@@ -205,7 +124,7 @@ export class GatewayManager {
       // A changed connection replaces the old one: removeDevice ends the client,
       // so a new host or key cannot inherit the previous connection's channels.
       if (before) this.clientPool.removeDevice(config.id);
-      await this.clientPool.addDevice({ ...config, mode: 'active_ssh' });
+      await this.clientPool.addDevice(config);
       connected.push(config.id);
     }
 
@@ -245,8 +164,8 @@ export class GatewayManager {
    * describes.
    *
    * A configured device is the user's explicit statement about a machine: its
-   * id, its display name, its credential, possibly a reverse tunnel. Discovery
-   * must never overwrite that, so the file wins by id.
+   * id, its display name, its credential. Discovery must never overwrite that,
+   * so the file wins by id.
    */
   public discoverSshHosts(
     configured: readonly ActiveDeviceConfig[] = this.configuredDevices,
@@ -322,9 +241,6 @@ export class GatewayManager {
       // A discovered host is not in the pool until someone asks for it.
       await this.clientPool.addDevice(target, { connect: false });
     }
-    if ((target.mode ?? 'active_ssh') === 'reverse_tunnel') {
-      return this.connectDevice(deviceId);
-    }
     return this.clientPool.manualConnect(deviceId);
   }
 
@@ -363,11 +279,6 @@ export class GatewayManager {
   /** The default for a host the switch file has never mentioned. */
   public readEnabledDefault(): boolean {
     return readEnabledHosts().defaultEnabled;
-  }
-
-  /** Devices currently dialled in over a reverse tunnel. */
-  public listTunnels(): { deviceId: string; boundPort: number }[] {
-    return this.sshServer.listTunnels();
   }
 
   /** The file the gateway reads. Kept in one place so a route never guesses it. */
@@ -426,40 +337,14 @@ export class GatewayManager {
     if (!config) {
       return { success: false, status: 'offline', error: `Device ${deviceId} not found in configured devices` };
     }
-    const mode = config.mode ?? 'active_ssh';
-    if (mode === 'active_ssh') {
-      return this.clientPool.manualConnect(deviceId);
-    }
-
-    // For reverse_tunnel: check if physical tunnel is present
-    const tunnels = this.sshServer.listTunnels();
-    const hasTunnel = tunnels.some((t) => t.deviceId === deviceId);
-    if (!hasTunnel) {
-      return {
-        success: false,
-        status: 'offline',
-        error: '设备尚未通过反向隧道拨入网关，请在设备终端执行配对或连接命令',
-      };
-    }
-
-    const entry = this.registry.get(deviceId);
-    if (entry && entry.driver.isAlive()) {
-      return { success: true, status: 'online' };
-    }
-    return { success: false, status: 'offline', error: '反向隧道虽在线，但无法通过 SSH 登录到该设备，请检查认证配置' };
+    return this.clientPool.manualConnect(deviceId);
   }
 
   /**
    * Manually disconnect a device.
    */
   public async disconnectDevice(deviceId: string): Promise<{ success: boolean; status: string }> {
-    const config = this.configuredDevices.find((c) => c.id === deviceId);
-    const mode = config?.mode ?? 'active_ssh';
-    if (mode === 'active_ssh') {
-      this.clientPool.manualDisconnect(deviceId);
-      return { success: true, status: 'offline' };
-    }
-    await this.sshServer.disconnectTunnel(deviceId);
+    this.clientPool.manualDisconnect(deviceId);
     return { success: true, status: 'offline' };
   }
 

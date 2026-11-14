@@ -16,22 +16,8 @@ const syncs = [];
 let configured = [];
 const gateway = {
   configPath: () => file,
-  registry: { list: () => [{ id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" }] },
-  // Mirrors the real gateway: connected devices plus configured reverse-tunnel
-  // devices that have not dialled in, so a waiting host still appears.
-  listDevices: () => [
-    { id: "localhost", name: "Local Host", mode: "active_ssh", status: "online" },
-    ...configured
-      .filter((c) => c.mode === "reverse_tunnel")
-      .map((c) => ({
-        id: c.id,
-        name: c.name,
-        mode: "reverse_tunnel",
-        remoteAddr: "",
-        status: "offline",
-        lastSeen: 0,
-      })),
-  ],
+  registry: { list: () => [{ id: "localhost", name: "Local Host", status: "online" }] },
+  listDevices: () => [{ id: "localhost", name: "Local Host", status: "online" }],
   listConfiguredDevices: () => configured.map((c) => ({ ...c })),
   // The switch file lives in the agent directory; a test stubs it so the
   // answer does not depend on what this machine has enabled.
@@ -86,7 +72,7 @@ const initial = [
 before(() => writeFileSync(file, JSON.stringify(initial, null, 2)));
 beforeEach(() => {
   syncs.length = 0;
-  configured = initial.map((c) => ({ ...c, mode: "active_ssh" }));
+  configured = initial.map((c) => ({ ...c }));
   writeFileSync(file, JSON.stringify(initial, null, 2));
 });
 after(() => {
@@ -140,24 +126,19 @@ test("POST refuses a duplicate id with 409, and leaves the file alone", async ()
   assert.equal(syncs.length, 0);
 });
 
-test("POST rejects an id that would break URLs, and a missing username", async () => {
-  const badId = await POST(request("POST", { id: "my box", username: "u" }));
+test("POST rejects an id that would break URLs, a missing username and a missing host", async () => {
+  const badId = await POST(request("POST", { id: "my box", username: "u", host: "h" }));
   assert.equal(badId.status, 400);
   assert.match((await badId.json()).error, /may use only letters/);
 
-  // No host is not a problem any more: a reverse tunnel dials *in*, so the
-  // gateway never needs an address. The login is still required, because the
-  // tunnel's ssh user is the device id it registers under.
-  const noUser = await POST(request("POST", { id: "box" }));
+  const noUser = await POST(request("POST", { id: "box", host: "h" }));
   assert.equal(noUser.status, 400);
   assert.match((await noUser.json()).error, /username/);
-  assert.deepEqual(saved().map((c) => c.id), ["wsmac", "vps"]);
-});
 
-test("POST refuses a dialled host: that lives in ~/.ssh/config", async () => {
-  const res = await POST(request("POST", { id: "box", host: "h", username: "u", mode: "active_ssh" }));
-  assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /Only reverse tunnels are saved here/);
+  // A device is a host the gateway dials, so an address is required.
+  const noHost = await POST(request("POST", { id: "box", username: "u" }));
+  assert.equal(noHost.status, 400);
+  assert.match((await noHost.json()).error, /host/);
   assert.deepEqual(saved().map((c) => c.id), ["wsmac", "vps"]);
 });
 
@@ -209,22 +190,6 @@ test("a file that cannot be parsed is reported instead of overwritten", async ()
   assert.equal(readFileSync(file, "utf8"), "{ broken");
 });
 
-test("a reverse-tunnel device that has not dialled in is still listed", async () => {
-  const res = await POST(request("POST", {
-    id: "home", name: "Home (dial-in)", mode: "reverse_tunnel", username: "windsing",
-  }));
-  assert.equal(res.status, 200);
-
-  const body = await (await GET()).json();
-  const waiting = body.devices.find((d) => d.id === "home");
-  // Absent would mean the user cannot see or select the host they just added.
-  assert.ok(waiting, "configured reverse-tunnel device must appear");
-  assert.equal(waiting.status, "offline");
-  assert.equal(waiting.mode, "reverse_tunnel");
-  // No address is invented: nothing is known until it connects.
-  assert.equal(waiting.remoteAddr, "");
-});
-
 test("GET offers the hosts ~/.ssh/config names, without making them devices", async () => {
   const body = await (await GET()).json();
   const discovered = body.sshHosts.find((h) => h.id === "from-ssh-config");
@@ -237,13 +202,4 @@ test("GET offers the hosts ~/.ssh/config names, without making them devices", as
   assert.equal(body.configs.some((c) => c.id === "from-ssh-config"), false);
   // The path is reported so the pane can say where the rows come from.
   assert.ok(body.sshConfigPath.endsWith("ssh-config"));
-});
-
-test("a reverse-tunnel device needs no host or port in the file", async () => {
-  const res = await POST(request("POST", { id: "home", mode: "reverse_tunnel", username: "windsing" }));
-  assert.equal(res.status, 200);
-  const entry = saved().find((c) => c.id === "home");
-  assert.equal(entry.mode, "reverse_tunnel");
-  assert.equal(entry.port, 0);
-  assert.equal(entry.host, "127.0.0.1");
 });

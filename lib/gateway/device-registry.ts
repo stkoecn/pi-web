@@ -21,7 +21,6 @@ export class DeviceRegistry extends EventEmitter {
         info: {
           id: 'localhost',
           name: hostId,
-          mode: 'active_ssh',
           remoteAddr: '127.0.0.1',
           status: 'online',
           lastSeen: Date.now(),

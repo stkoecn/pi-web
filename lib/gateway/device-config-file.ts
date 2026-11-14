@@ -55,11 +55,8 @@ function asString(value: unknown): string | undefined {
  * a guessed port or user, which fails as a confusing authentication error
  * instead of as "this line is wrong".
  *
- * The two modes need different fields. An `active_ssh` entry is a host the
- * gateway dials, so `host` and `port` are required. A `reverse_tunnel` entry is
- * a machine that dials *in*, so it has no address of its own to dial: only the
- * identity (`id`, which must match the tunnel's SSH username) and the
- * credentials for the connection the tunnel carries.
+ * Every entry is a host the gateway dials, so `host`, `port` and `username`
+ * are required.
  */
 export function parseDeviceEntry(
   value: unknown,
@@ -73,23 +70,14 @@ export function parseDeviceEntry(
   if (!DEVICE_ID_PATTERN.test(id)) {
     return { reason: `id "${id}" may use only letters, digits, dot, dash and underscore` };
   }
-  const mode = raw.mode === "reverse_tunnel" ? "reverse_tunnel" : "active_ssh";
   const username = asString(raw.username);
   if (!username) return { reason: "missing username" };
 
-  // A tunnel entry's address is always the gateway's own loopback: the port is
-  // chosen when the device connects, so whatever `host`/`port` it carries would
-  // be a guess. Rejecting the file over an address it cannot use would make the
-  // entry look wrong when it is only irrelevant.
-  const host = mode === "reverse_tunnel" ? (asString(raw.host) ?? "127.0.0.1") : asString(raw.host);
+  const host = asString(raw.host);
   if (!host) return { reason: "missing host" };
 
-  const defaultPort = mode === "reverse_tunnel" ? 0 : 22;
-  const port = raw.port === undefined ? defaultPort : Number(raw.port);
-  const portValid = mode === "reverse_tunnel"
-    ? port === 0 || (Number.isInteger(port) && port >= 1 && port <= 65535)
-    : Number.isInteger(port) && port >= 1 && port <= 65535;
-  if (!portValid) {
+  const port = raw.port === undefined ? 22 : Number(raw.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return { reason: `port ${String(raw.port)} is not between 1 and 65535` };
   }
 
@@ -107,7 +95,6 @@ export function parseDeviceEntry(
     host,
     port,
     username,
-    mode,
   };
   if (privateKeyPath) config.privateKeyPath = privateKeyPath;
   if (password) config.password = password;
@@ -157,7 +144,7 @@ export function readDevicesFile(filePath: string = devicesConfigPath()): Devices
 }
 
 /** The fields a file entry carries, in the order they are written. */
-const WRITTEN_FIELDS = ["id", "name", "host", "port", "username", "privateKeyPath", "password", "mode", "defaultCwd"] as const;
+const WRITTEN_FIELDS = ["id", "name", "host", "port", "username", "privateKeyPath", "password", "defaultCwd"] as const;
 
 /**
  * A config as the file stores it.
@@ -172,8 +159,6 @@ function serializeDevice(config: ActiveDeviceConfig): Record<string, unknown> {
   for (const field of WRITTEN_FIELDS) {
     const value = config[field];
     if (value === undefined || value === null || value === "") continue;
-    // `mode: active_ssh` is the default, so writing it all the time would be noise.
-    if (field === "mode" && value === "active_ssh") continue;
     out[field] = value;
   }
   return out;
@@ -213,7 +198,6 @@ export interface DeviceConfigInput {
   privateKeyPath?: unknown;
   password?: unknown;
   defaultCwd?: unknown;
-  mode?: unknown;
 }
 
 /** A config as the browser may see it: the secret itself is never sent, only whether one is set. */
@@ -245,7 +229,6 @@ function mergeConfig(current: ActiveDeviceConfig, input: DeviceConfigInput): { c
   if (current.privateKeyPath !== undefined) merged.privateKeyPath = current.privateKeyPath;
   if (current.password !== undefined) merged.password = current.password;
   if (current.defaultCwd !== undefined) merged.defaultCwd = current.defaultCwd;
-  if (current.mode !== undefined && current.mode !== "active_ssh") merged.mode = current.mode;
 
   for (const field of EDITABLE_TEXT_FIELDS) {
     const value = input[field];
@@ -269,21 +252,12 @@ function mergeConfig(current: ActiveDeviceConfig, input: DeviceConfigInput): { c
     if (typeof port !== "number" || Number.isNaN(port)) return { reason: `port ${String(input.port)} is not a number` };
     merged.port = port;
   }
-  // A mode switch is a real edit: an `active_ssh` device that becomes
-  // `reverse_tunnel` must stop being dialled out for, and vice versa.
-  if (input.mode !== undefined) {
-    if (input.mode !== "active_ssh" && input.mode !== "reverse_tunnel") {
-      return { reason: `mode must be "active_ssh" or "reverse_tunnel"` };
-    }
-    merged.mode = input.mode;
-  }
-
   return parseDeviceEntry(merged);
 }
 
 function toConfig(input: DeviceConfigInput, id: string): { config: ActiveDeviceConfig } | { reason: string } {
   const entry: Record<string, unknown> = { id };
-  for (const field of ["name", "host", "port", "username", "privateKeyPath", "password", "defaultCwd", "mode"] as const) {
+  for (const field of ["name", "host", "port", "username", "privateKeyPath", "password", "defaultCwd"] as const) {
     const value = input[field];
     if (typeof value === "string" && value.trim().length > 0) entry[field] = value.trim();
     else if (typeof value === "number") entry[field] = value;
@@ -358,6 +332,5 @@ export function sameConnection(a: ActiveDeviceConfig, b: ActiveDeviceConfig): bo
     && a.username === b.username
     && (a.privateKeyPath ?? "") === (b.privateKeyPath ?? "")
     && (a.password ?? "") === (b.password ?? "")
-    && String(a.privateKey ?? "") === String(b.privateKey ?? "")
-    && (a.mode ?? "active_ssh") === (b.mode ?? "active_ssh");
+    && String(a.privateKey ?? "") === String(b.privateKey ?? "");
 }

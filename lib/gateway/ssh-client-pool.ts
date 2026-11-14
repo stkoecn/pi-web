@@ -59,7 +59,6 @@ export class SSHClientPool {
         {
           id: config.id,
           name: config.name,
-          mode: config.mode ?? 'active_ssh',
           remoteAddr: `${config.host}:${config.port}`,
           status: shouldConnect ? 'connecting' : 'offline',
           lastSeen: Date.now(),
@@ -152,7 +151,7 @@ export class SSHClientPool {
         this.connectingClients.delete(config.id);
         try { client.destroy(); } catch {}
         const existing = this.registry.get(config.id);
-        if (existing && existing.info.mode === 'active_ssh') {
+        if (existing) {
           this.registry.register(
             {
               ...existing.info,
@@ -197,18 +196,14 @@ export class SSHClientPool {
       // page is still loading) is free.
       void driver.warmUp();
 
-      // Establish reverse bridge over the existing SSH tunnel for native mesh communication
+      // Establish reverse bridge over the existing SSH connection for native mesh communication
       void setupMeshReverseBridge(config.id, client).catch(() => {});
 
       const existing = this.registry.get(config.id);
-      const mode = existing ? existing.info.mode : 'active_ssh';
-      const boundPort = existing ? existing.info.boundPort : undefined;
       this.registry.register(
         {
           id: config.id,
           name: live.name,
-          mode,
-          boundPort,
           remoteAddr: `${live.host}:${live.port}`,
           status: 'online',
           lastSeen: Date.now(),
@@ -223,7 +218,7 @@ export class SSHClientPool {
       if (superseded()) return;
       this.connectingClients.delete(config.id);
       const existing = this.registry.get(config.id);
-      if (existing && existing.info.mode === 'active_ssh') {
+      if (existing) {
         this.registry.register(
           {
             ...existing.info,
@@ -245,7 +240,7 @@ export class SSHClientPool {
       this.connectingClients.delete(config.id);
       this.activeClients.delete(config.id);
       const existing = this.registry.get(config.id);
-      if (existing && existing.info.mode === 'active_ssh') {
+      if (existing) {
         this.registry.register(
           {
             ...existing.info,

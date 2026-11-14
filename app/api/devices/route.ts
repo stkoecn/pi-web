@@ -31,8 +31,7 @@ function failure(error: unknown, status = 500) {
  * pane can show and edit the file itself. Passwords and key contents never
  * leave this process; a saved device reports `hasPassword` instead.
  *
- * `devices` includes configured devices that have not connected yet, so a
- * reverse-tunnel host the user added is visible while it waits to dial in.
+ * `devices` includes configured devices that have not connected yet.
  */
 export async function GET() {
   try {
@@ -104,18 +103,10 @@ export async function POST(req: Request) {
     const file = readDevicesFile(gateway.configPath());
     if (file.error) return NextResponse.json({ error: file.error }, { status: 409 });
 
-    // A host the gateway dials is not stored here any more: `~/.ssh/config`
-    // already says which machines this user reaches, with which user, port and
-    // key. Writing a second copy would drift the moment either file changed, so
-    // the only entry this endpoint accepts is the one ssh cannot describe — a
-    // machine behind NAT that dials in.
-    if (body.mode !== undefined && body.mode !== 'reverse_tunnel') {
-      return NextResponse.json(
-        { error: 'Only reverse tunnels are saved here; a dialled host is read from ~/.ssh/config' },
-        { status: 400 },
-      );
-    }
-    const added = addDeviceToConfigs(file.configs, { ...body, mode: 'reverse_tunnel' });
+    // A host `~/.ssh/config` already describes is offered by discovery; an
+    // entry here is the explicit form for a machine ssh does not know about
+    // (a password-only host, a different key, a renamed display name).
+    const added = addDeviceToConfigs(file.configs, body);
     if ('reason' in added) {
       const status = added.reason.includes('already exists') ? 409 : 400;
       return NextResponse.json({ error: added.reason }, { status });
@@ -151,12 +142,6 @@ export async function PUT(req: Request) {
     const file = readDevicesFile(gateway.configPath());
     if (file.error) return NextResponse.json({ error: file.error }, { status: 409 });
 
-    if (body.mode !== undefined && body.mode !== 'reverse_tunnel') {
-      return NextResponse.json(
-        { error: 'Only reverse tunnels are saved here; a dialled host is read from ~/.ssh/config' },
-        { status: 400 },
-      );
-    }
     const updated = updateDeviceInConfigs(file.configs, body);
     if ('reason' in updated) {
       const status = updated.reason.startsWith('no device') ? 404 : 400;
