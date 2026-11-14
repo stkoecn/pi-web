@@ -212,13 +212,16 @@ export class SshRemoteActiveSession implements IActiveSession {
       // channel takes them — the same contract as the local wrapper's send.
       // A closed channel still throws from send() and rejects below.
       const fireAndForget = type === "prompt" || type === "steer" || type === "follow_up"
-        || type === "abort" || type === "set_tools";
+        || type === "abort" || type === "set_tools" || type === "extension_ui_response"
+        || type === "compact";
 
       const unsub = this.onMessage((msg: any) => {
         if (msg && msg.type === "response" && msg.id === id) {
           clearTimeout(timeout);
           unsub();
-          resolve(msg);
+          // Unwrapped like the local wrapper's send: callers read the command's
+          // result (set_model's {provider, id}, get_state's data) directly.
+          resolve(msg.data !== undefined ? msg.data : msg);
         }
       });
       // A query with no answer in 5 s means the command did not reach the
@@ -597,7 +600,8 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
       }
       session = resumed;
     }
-    session.channel.send(command);
+    const active = new SshRemoteActiveSession(session);
+    const result = await active.send(command);
     // An answered dialog is not echoed back on the channel this process reads,
     // so release the awaiting-input flag here or the sidebar keeps the session
     // parked on a question the user already answered.
@@ -605,7 +609,7 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
       const { clearRemotePendingUiRequest } = await import("../remote-agent-manager");
       clearRemotePendingUiRequest(session.sessionId || sessionId, (command as { id?: unknown }).id);
     }
-    return { accepted: true };
+    return result;
   }
 
   async getSessionStatus(sessionId: string): Promise<SessionStatus> {
