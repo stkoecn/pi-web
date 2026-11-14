@@ -27,6 +27,7 @@ import type {
   ProjectTrustStatus,
 } from "@/lib/api-types";
 import type { McpImportFieldValue, McpImportNote } from "@/lib/mcp-import";
+import { isRemoteDevice, withDeviceId } from "@/lib/device-context";
 import { itemsToSwitch } from "./settings-ui-helpers";
 
 // Pure helpers for Settings › MCP (components/McpConfig.tsx): what each row
@@ -1482,10 +1483,10 @@ function isMcpTestResponse(value: unknown): value is McpTestResponse {
     && typeof result.testedAt === "number";
 }
 
-async function requestMcpTest(body: Record<string, unknown>, fetchImpl: FetchLike, signal: AbortSignal): Promise<McpTestRequestResult> {
+async function requestMcpTest(body: Record<string, unknown>, deviceId: string | undefined, fetchImpl: FetchLike, signal: AbortSignal): Promise<McpTestRequestResult> {
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await fetchImpl("/api/mcp/test", {
+    response = await fetchImpl(withDeviceId("/api/mcp/test", deviceId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1519,10 +1520,18 @@ export async function postMcpTest(
   fetchImpl: FetchLike = (input, init) => fetch(input, init),
   signal?: AbortSignal,
   timeoutMs: number = MCP_TEST_TIMEOUT_MS,
+  deviceId?: string,
 ): Promise<McpTestRequestResult> {
-  const body: Record<string, unknown> = { scope: server.scope, name: server.name, ...(cwd ? { cwd } : {}) };
+  const body: Record<string, unknown> = {
+    scope: server.scope,
+    name: server.name,
+    ...(cwd ? { cwd } : {}),
+    // The route reads the device from the query; the body's copy is the
+    // documented fallback for callers that cannot set one.
+    ...(isRemoteDevice(deviceId) ? { deviceId } : {}),
+  };
   return withinDeadline<McpTestRequestResult>(
-    (deadlineSignal) => requestMcpTest(body, fetchImpl, deadlineSignal),
+    (deadlineSignal) => requestMcpTest(body, deviceId, fetchImpl, deadlineSignal),
     () => ({ ok: false, error: { error: `POST /api/mcp/test did not answer within ${timeoutMs} ms`, timedOut: true } }),
     timeoutMs,
     signal,

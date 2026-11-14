@@ -510,7 +510,7 @@ export function McpConfig({
     const current = loadRef.current;
     // As for a change: the project only when the listing covers it. A global stdio server runs there, else in the home folder.
     const testCwd = current.state === "loaded" && current.data.project ? cwd : null;
-    const result = await postMcpTest({ scope: server.scope, name: server.name }, testCwd);
+    const result = await postMcpTest({ scope: server.scope, name: server.name }, testCwd, undefined, undefined, undefined, deviceId);
     // Closed meanwhile: nothing is left to update.
     if (testRequestsRef.current.get(key) !== request) return;
     testRequestsRef.current.delete(key);

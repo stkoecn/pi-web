@@ -96,15 +96,21 @@ function clip(text: string, max: number): string {
  * uses, so the panel cannot tell the transports apart.
  */
 export async function testRemoteMcpServer(req: Request): Promise<NextResponse> {
-  const deviceId = getRequestDeviceId(req);
-  if (!isRemoteDevice(deviceId)) {
-    return NextResponse.json({ error: "Not a remote device", reason: "invalid-request" }, { status: 400 });
-  }
-  let body: { scope?: unknown; name?: unknown; cwd?: unknown };
+  let body: { scope?: unknown; name?: unknown; cwd?: unknown; deviceId?: unknown };
   try {
     body = await req.json() as typeof body;
   } catch {
-    return NextResponse.json({ error: "Invalid request body", reason: "invalid-request" }, { status: 400 });
+    body = {};
+  }
+  // The query/header wins; the body's deviceId is the documented fallback for
+  // callers that cannot set one.
+  const contextDevice = getRequestDeviceId(req);
+  const bodyDevice = typeof body.deviceId === "string" && body.deviceId.trim() ? body.deviceId.trim() : "";
+  const deviceId = contextDevice && isRemoteDevice(contextDevice)
+    ? contextDevice
+    : (bodyDevice && isRemoteDevice(bodyDevice) ? bodyDevice : "");
+  if (!deviceId) {
+    return NextResponse.json({ error: "Not a remote device", reason: "invalid-request" }, { status: 400 });
   }
   const scope: McpScope = body.scope === "project" ? "project" : "global";
   const name = typeof body.name === "string" ? body.name.trim() : "";

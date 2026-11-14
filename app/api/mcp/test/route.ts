@@ -26,11 +26,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// POST /api/mcp/test body: { scope, name, cwd? }
+// POST /api/mcp/test body: { scope, name, cwd?, deviceId? }
 // `cwd` is the panel's project: required for a project server, and the
-// folder a global stdio server runs in.
+// folder a global stdio server runs in. The deviceId rides the query for
+// callers that can set one, and the body for the ones that cannot.
 export async function POST(req: Request) {
-  if (isRemoteDevice(getRequestDeviceId(req))) {
+  const queryDevice = getRequestDeviceId(req);
+  let remote = isRemoteDevice(queryDevice);
+  if (!remote) {
+    // The panel's documented fallback carries the device in the body; a clone
+    // peeks at it, because the local branch reads the body itself.
+    try {
+      const peek = await req.clone().json() as { deviceId?: unknown };
+      remote = isRemoteDevice(typeof peek?.deviceId === "string" ? peek.deviceId.trim() : "");
+    } catch {
+      // No parsable body: the local branch reports what is wrong with it.
+    }
+  }
+  if (remote) {
     const { testRemoteMcpServer } = await import("@/lib/mcp-test-remote");
     return testRemoteMcpServer(req);
   }
