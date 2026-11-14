@@ -740,8 +740,8 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
 
   // 3. Models & Settings
 
-  async getAvailableModels(cwd?: string): Promise<ModelsData> {
-    const catalogue = await loadRemoteModels(this.deviceId);
+  async getAvailableModels(cwd?: string, options?: { force?: boolean }): Promise<ModelsData> {
+    const catalogue = await loadRemoteModels(this.deviceId, options);
     return remoteCatalogueToModelsData(catalogue);
   }
 

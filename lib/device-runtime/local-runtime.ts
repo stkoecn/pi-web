@@ -627,7 +627,7 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
     );
   }
 
-  async getAvailableModels(cwd?: string): Promise<ModelsData> {
+  async getAvailableModels(cwd?: string, _options?: { force?: boolean }): Promise<ModelsData> {
     const effectiveCwd = cwd || (await this.getHomeDir());
     try {
       return await loadModelsWithCache(effectiveCwd, () => this.loadModelsInternal(effectiveCwd));

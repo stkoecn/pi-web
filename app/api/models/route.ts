@@ -117,7 +117,10 @@ export async function GET(req: Request) {
   const deviceId = getRequestDeviceId(req, url.searchParams);
   if (isRemoteDevice(deviceId)) {
     const runtime = await getDeviceRuntime(deviceId);
-    const data = await runtime.getAvailableModels();
+    // `refresh=1`: the user just edited the device's models.json and wants the
+    // picker to read it again, past the 60 s catalogue cache.
+    const force = url.searchParams.get("refresh") === "1";
+    const data = await runtime.getAvailableModels(undefined, { force });
     if (data.modelList.length === 0) {
       return Response.json({
         ...data,

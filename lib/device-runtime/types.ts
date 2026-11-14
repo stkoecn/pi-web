@@ -265,7 +265,7 @@ export interface IDeviceRuntime {
   deliverMeshMessage(targetSessionId: string, message: MeshMessage): Promise<DeliverResult>;
 
   // 3. Models & Settings
-  getAvailableModels(cwd?: string): Promise<ModelsData>;
+  getAvailableModels(cwd?: string, options?: { force?: boolean }): Promise<ModelsData>;
   getDefaultModel(cwd?: string): Promise<DefaultModelConfig>;
   setDefaultModel(config: DefaultModelConfig, cwd?: string): Promise<void>;
   getEnabledModels(cwd?: string): Promise<string[]>;

@@ -230,11 +230,19 @@ async function resolveChannel(deviceId: string): Promise<{ channel: RPCChannel; 
   return { channel: created.session.channel, state: created.data };
 }
 
-async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
+async function fetchCatalogue(deviceId: string, force = false): Promise<RemoteModelCatalogue> {
   try {
-    // If there is no existing live RPC session on that device, reading models.json
-    // directly from disk via SFTP is fast (100-400ms) and avoids the 10-15s cold
-    // spawn timeout when pi is missing, slow, or errored.
+    // The device's `models.json` is what the user edits, so it is the source of
+    // truth for the picker: read it from disk first (a fast SFTP read, 100-400ms).
+    // pi's in-memory catalogue only changes on a session restart, so leading with
+    // it showed models the config no longer contains. The channel's answer is the
+    // fallback for a models.json with no usable models (a provider-backed entry
+    // whose models pi resolved at startup).
+    const diskCatalogue = await fetchCatalogueFromDisk(deviceId);
+    if (diskCatalogue.models.length > 0) {
+      return diskCatalogue;
+    }
+
     const { getAllRemoteRpcSessions, getRemoteRpcSession } = await import(
       "@/lib/remote-agent-manager"
     );
@@ -243,14 +251,7 @@ async function fetchCatalogue(deviceId: string): Promise<RemoteModelCatalogue> {
       .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
     const existing = live.length > 0 ? getRemoteRpcSession(live[0].sessionId) : undefined;
 
-    if (!existing) {
-      const diskCatalogue = await fetchCatalogueFromDisk(deviceId);
-      if (diskCatalogue.models.length > 0) {
-        return diskCatalogue;
-      }
-    }
-
-    const target = await resolveChannel(deviceId);
+    const target = existing ? { channel: existing.channel, state: existing.state } : await resolveChannel(deviceId);
     if (!target) {
       return await fetchCatalogueFromDisk(deviceId);
     }
@@ -496,7 +497,7 @@ export async function loadRemoteModels(
     if (pending) return pending;
   }
 
-  const load = fetchCatalogue(deviceId)
+  const load = fetchCatalogue(deviceId, options.force === true)
     .then((catalogue) => {
       // `partial` means the list is a fallback around a device that had not
       // finished loading its catalogue: caching it for a minute would keep
