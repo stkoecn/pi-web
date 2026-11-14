@@ -28,6 +28,9 @@ import type {
   SessionUiStateRequest,
   TerminalOptions,
   TerminalSession,
+
+  SendSessionCommandOptions,
+  SessionStatus,
 } from "./types";
 import type { SessionEntry, SessionHeader } from "../types";
 import {
@@ -203,6 +206,14 @@ export class SshRemoteActiveSession implements IActiveSession {
     return new Promise((resolve, reject) => {
       const id = (message.id as string) || `remote-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const req = { ...message, id };
+
+      // Delivery commands answer through the SSE stream (their progress is a
+      // turn, not a reply frame), so they resolve as accepted the moment the
+      // channel takes them — the same contract as the local wrapper's send.
+      // A closed channel still throws from send() and rejects below.
+      const fireAndForget = type === "prompt" || type === "steer" || type === "follow_up"
+        || type === "abort" || type === "set_tools";
+
       const unsub = this.onMessage((msg: any) => {
         if (msg && msg.type === "response" && msg.id === id) {
           clearTimeout(timeout);
@@ -210,25 +221,25 @@ export class SshRemoteActiveSession implements IActiveSession {
           resolve(msg);
         }
       });
-      // No answer in 5 s means the command did not reach the remote `pi` (dead
-      // channel, device asleep): a fabricated success made remote delivery
-      // indistinguishable from the local path's real errors. `abort` stays
-      // fire-and-forget — best effort by design.
+      // A query with no answer in 5 s means the command did not reach the
+      // remote `pi` (dead channel, device asleep): a fabricated success made
+      // remote queries indistinguishable from real errors.
       const timeout = setTimeout(() => {
         unsub();
-        if (type === "abort") {
-          resolve({ type: "response", id, success: true, acknowledged: false });
-        } else {
-          reject(new Error(
-            `Remote command "${type}" got no response from device "${this.session.deviceId}" within 5 s.`
-            + " The device may be offline or its `pi` process gone.",
-          ));
-        }
+        reject(new Error(
+          `Remote command "${type}" got no response from device "${this.session.deviceId}" within 5 s.`
+          + " The device may be offline or its `pi` process gone.",
+        ));
       }, 5000);
       timeout.unref?.();
 
       try {
         this.session.channel.send(req);
+        if (fireAndForget) {
+          clearTimeout(timeout);
+          unsub();
+          resolve({ type: "response", id, success: true, accepted: true });
+        }
       } catch (error) {
         clearTimeout(timeout);
         unsub();
@@ -308,6 +319,7 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
           const { sessionId, session, data } = await createRemoteRpcSession({
             deviceId: this.deviceId,
             cwd: effectiveCwd,
+            ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
             model: initialModel,
             thinkingLevel: options.thinkingLevel,
             toolNames: options.toolNames,
@@ -504,7 +516,9 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
       const resumed = await enqueueDeviceSessionTask(this.deviceId, () =>
         ensureRemoteRpcSessionForExisting(this.deviceId, sessionId));
       if (!resumed) {
-        throw new Error(`Session not found on remote device ${this.deviceId}: ${sessionId}`);
+        const err = new Error(`Session not found on remote device ${this.deviceId}: ${sessionId}`);
+        (err as { status?: number }).status = 404;
+        throw err;
       }
       session = resumed;
     }
@@ -514,12 +528,71 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
   }
 
   async getTools(sessionId?: string, cwd?: string): Promise<ToolDefinition[]> {
-    const rawTools = await getRemoteTools(this.deviceId, cwd);
+    let effectiveCwd = cwd;
+    if (!effectiveCwd && sessionId) {
+      // The route used to read this off the channel's cached state: a session's
+      // tools are scoped by its project, so the state's cwd decides.
+      const state = getRemoteRpcSession(sessionId)?.state as Record<string, unknown> | undefined;
+      effectiveCwd = typeof state?.cwd === "string"
+        ? state.cwd
+        : (state?.sessionFile ? undefined : "/");
+    }
+    const rawTools = await getRemoteTools(this.deviceId, effectiveCwd);
     return rawTools.map((t) => ({
       name: t.name,
       description: t.description,
       active: t.active,
     }));
+  }
+
+  async sendSessionCommand(
+    sessionId: string,
+    command: Record<string, unknown>,
+    _options?: SendSessionCommandOptions,
+  ): Promise<unknown> {
+    let session = getRemoteRpcSession(sessionId);
+    if (!session || ((session.channel as any).isClosed?.())) {
+      const resumed = await enqueueDeviceSessionTask(this.deviceId, () =>
+        ensureRemoteRpcSessionForExisting(this.deviceId, sessionId));
+      if (!resumed) {
+        const err = new Error(`Session not found on remote device ${this.deviceId}: ${sessionId}`);
+        (err as { status?: number }).status = 404;
+        throw err;
+      }
+      session = resumed;
+    }
+    session.channel.send(command);
+    // An answered dialog is not echoed back on the channel this process reads,
+    // so release the awaiting-input flag here or the sidebar keeps the session
+    // parked on a question the user already answered.
+    if (command.type === "extension_ui_response") {
+      const { clearRemotePendingUiRequest } = await import("../remote-agent-manager");
+      clearRemotePendingUiRequest(session.sessionId || sessionId, (command as { id?: unknown }).id);
+    }
+    return { accepted: true };
+  }
+
+  async getSessionStatus(sessionId: string): Promise<SessionStatus> {
+    // Status polling has to work for sessions that only exist on the device:
+    // resume the persisted transcript when nothing runs in this process, the
+    // same way sendSessionCommand does.
+    const { getRemoteRpcSessionState } = await import("../remote-agent-manager");
+    const state = (await getRemoteRpcSessionState(sessionId).catch(() => undefined))
+      ?? null;
+    if (state) return { running: true, state };
+
+    let session = getRemoteRpcSession(sessionId);
+    if (!session || ((session.channel as any).isClosed?.())) {
+      session = (await enqueueDeviceSessionTask(this.deviceId, () =>
+        ensureRemoteRpcSessionForExisting(this.deviceId, sessionId).catch(() => null))) ?? undefined;
+    }
+    if (!session?.state) return { running: false };
+    return { running: true, state: session.state as Record<string, unknown> };
+  }
+
+  async closeSession(sessionId: string): Promise<boolean> {
+    const { closeRemoteRpcSession } = await import("../remote-agent-manager");
+    return closeRemoteRpcSession(sessionId);
   }
 
   subscribeSessionEvents(sessionId: string, listener: (event: unknown) => void): () => void {

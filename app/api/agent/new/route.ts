@@ -7,6 +7,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { startRpcSession } from "@/lib/rpc-manager";
 import { cwdMissingBody } from "@/lib/missing-cwd";
 import { getRequestDeviceId, isRemoteDevice, LOCAL_DEVICE_ID } from "@/lib/device-context";
+import { getDeviceRuntime } from "@/lib/device-runtime";
 import { deviceHomeOrDefault } from "@/lib/device-home";
 
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -38,7 +39,9 @@ export async function POST(req: Request) {
         ? command.deviceId.trim()
         : LOCAL_DEVICE_ID);
     if (isRemoteDevice(deviceId)) {
-      const { createRemoteRpcSession } = await import("@/lib/remote-agent-manager");
+      // Facade guard: the whole remote flow is the runtime's createSession —
+      // spawn, model/thinking overrides, the per-device serialization queue and
+      // its retry all live there, so this branch carries no remote logic.
       const { provider, modelId, toolNames, thinkingLevel, sessionDir, deviceId: _bodyDeviceId, ...promptCommand } = command as {
         provider?: string;
         modelId?: string;
@@ -54,22 +57,15 @@ export async function POST(req: Request) {
       }
       const explicitThinkingLevel = parseThinkingLevel(thinkingLevel);
 
-      // Overrides travel with the spawn so the remote pi boots straight into the
-      // requested model / thinking level instead of being re-configured later.
-      const { sessionId, session: remoteSession, data } = await createRemoteRpcSession({
-        deviceId,
+      const runtime = await getDeviceRuntime(deviceId);
+      const init = await runtime.createSession({
         // No `/root` fallback: macOS devices have no such directory.
         cwd: cwd || await deviceHomeOrDefault(deviceId),
         ...(typeof sessionDir === "string" ? { sessionDir } : {}),
-        ...(provider && modelId ? { model: { provider, modelId } } : {}),
+        ...(provider && modelId ? { provider, modelId } : {}),
         ...(explicitThinkingLevel ? { thinkingLevel: explicitThinkingLevel } : {}),
         ...(toolNames ? { toolNames } : {}),
       });
-
-      const modelState = data?.model
-        ? { provider: data.model.provider as string, modelId: data.model.id as string }
-        : null;
-      const thinkingState = data?.thinkingLevel as string | undefined;
 
       // A brand-new persistent remote session only becomes visible once the
       // catalogue is re-scanned; the sidebar lists it right after creation.
@@ -77,18 +73,21 @@ export async function POST(req: Request) {
       invalidateRemoteSessionCache(deviceId);
 
       if (promptCommand.type !== "ensure_session") {
-        // Fire-and-forget: the client learns about progress through the SSE stream.
-        remoteSession.channel.send(promptCommand);
+        // Fire-and-forget on the runtime's channel (an accepted send resolves
+        // on write; the client learns about progress through the SSE stream).
+        if (init.activeSession) {
+          await init.activeSession.send(promptCommand as Record<string, unknown>);
+        }
         promptAccepted = promptCommand.type === "prompt";
       }
 
       // Same key set as the local branch so the client reducer needs no branch.
       return NextResponse.json({
         success: true,
-        sessionId,
+        sessionId: init.sessionId,
         data: null,
-        model: modelState,
-        thinkingLevel: thinkingState,
+        model: init.model ?? null,
+        thinkingLevel: init.thinkingLevel ?? null,
       });
     }
 

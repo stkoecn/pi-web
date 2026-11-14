@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { LOCAL_DEVICE_ID } from "../device-context";
+import type { SendSessionCommandOptions, SessionStatus } from "./types";
 import {
   startRpcSession,
   getRpcSession,
@@ -379,6 +380,40 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
       tools,
       recreated: result.recreated,
     };
+  }
+
+  async sendSessionCommand(
+    sessionId: string,
+    command: Record<string, unknown>,
+    options?: SendSessionCommandOptions,
+  ): Promise<unknown> {
+    let active = await this.getActiveSession(sessionId);
+    if (!active || !active.isAlive()) {
+      const filePath = await resolveSessionPath(sessionId);
+      if (!filePath) {
+        const err = new Error(`Session not found: ${sessionId}`);
+        (err as { status?: number }).status = 404;
+        throw err;
+      }
+      const { session } = await startRpcSession(sessionId, filePath, undefined, {
+        ...(options?.toolNames ? { toolNames: options.toolNames } : {}),
+      });
+      active = new LocalActiveSession(session);
+    }
+    return active.send(command);
+  }
+
+  async getSessionStatus(sessionId: string): Promise<SessionStatus> {
+    const rpc = getRpcSession(sessionId);
+    if (!rpc || !rpc.isAlive()) return { running: false };
+    const state = await rpc.send({ type: "get_state" }) as Record<string, unknown>;
+    return { running: true, state };
+  }
+
+  async closeSession(_sessionId: string): Promise<boolean> {
+    // Local wrappers are released by the idle sweeper and Stop, not by a
+    // DELETE /api/agent/[id], which exists to close remote channels.
+    return false;
   }
 
   async getTools(sessionId?: string, cwd?: string): Promise<ToolDefinition[]> {

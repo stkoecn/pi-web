@@ -60,8 +60,21 @@ export interface CreateSessionOptions {
   modelId?: string;
   toolNames?: string[];
   thinkingLevel?: string;
+  /** Overrides the device's default session directory (remote spawns). */
+  sessionDir?: string;
   tempKey?: string;
   maxRetries?: number;
+}
+
+export interface SendSessionCommandOptions {
+  /** Tool loadout applied when a dead local session has to be resumed first. */
+  toolNames?: string[];
+}
+
+export interface SessionStatus {
+  running: boolean;
+  /** The device's live/persisted state, when the session is known there. */
+  state?: Record<string, unknown>;
 }
 
 export interface SessionInitResult {
@@ -227,6 +240,16 @@ export interface IDeviceRuntime {
   forkSession(sessionId: string, targetEntryId?: string, options?: ForkSessionOptions): Promise<ForkSessionResult>;
   setSessionTools(sessionId: string, tools?: string[]): Promise<SetToolsResult>;
   getTools(sessionId?: string, cwd?: string): Promise<ToolDefinition[]>;
+  /**
+   * A client command verbatim to a live (or resumable) session. Delivery
+   * commands accept on write; their progress flows through the event stream.
+   * Throws when the session does not exist on this device.
+   */
+  sendSessionCommand(sessionId: string, command: Record<string, unknown>, options?: SendSessionCommandOptions): Promise<unknown>;
+  /** Live-or-persisted status for polling; `running: false` when unknown. */
+  getSessionStatus(sessionId: string): Promise<SessionStatus>;
+  /** Releases a session's live channel. Local sessions report closed: false. */
+  closeSession(sessionId: string): Promise<boolean>;
   subscribeSessionEvents(sessionId: string, listener: (event: unknown) => void): () => void;
 
   // 2. Messaging & Realtime Interruption
