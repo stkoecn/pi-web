@@ -813,7 +813,9 @@ export function SkillsConfig({
     setSaveError(null);
     setGroupStatus(null);
     try {
-      const res = await fetch("/api/skills", {
+      // The deviceId decides the route's branch: without it a device skill's
+      // path hits the local filesystem and answers "file not found".
+      const res = await fetch(withDeviceId("/api/skills", deviceId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -842,7 +844,7 @@ export function SkillsConfig({
         return n;
       });
     }
-  }, []);
+  }, [deviceId]);
 
   // One PATCH for the whole group: each file is edited on its own and
   // reported separately, so the skills the route refuses keep their state and
@@ -857,7 +859,7 @@ export function SkillsConfig({
     setSaveError(null);
     setGroupStatus(null);
     try {
-      const res = await fetch("/api/skills", {
+      const res = await fetch(withDeviceId("/api/skills", deviceId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePaths, disableModelInvocation }),
@@ -887,7 +889,7 @@ export function SkillsConfig({
         return next;
       });
     }
-  }, [t]);
+  }, [t, deviceId]);
 
   const selectedSkill = skills.find((s) => s.filePath === selected) ?? null;
   const bulkBusy = loading || toggling.size > 0 || updatingSkill !== null;
