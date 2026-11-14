@@ -290,7 +290,7 @@ export function AgentsConfig({
     setModelsError(null);
     void (async () => {
       try {
-        const response = await fetch(`/api/models?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal });
+        const response = await fetch(withDeviceId(`/api/models?cwd=${encodeURIComponent(cwd)}`, deviceId), { signal: controller.signal });
         const data = await response.json() as Partial<ModelsData> & { error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
         setModelOptions(data.modelList ?? []);

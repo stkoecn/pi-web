@@ -40,3 +40,40 @@ After any deploy: `scripts/normalize-next-symlinks.mjs` on the node, then a real
 ## Pending extension dialogs on a remote session
 
 An extension dialog (`ask`/`select`/`input`) crosses the SSE stream once, so a client whose stream was down at that moment would never see it and the run sat parked for ever. Three closures since: `RemoteRpcSession.pendingUiRequests` keeps every unanswered blocking frame (`trackRemoteRunState()`), `toRemoteEventSession()` replays them to each client that (re)subscribes (the client's queue deduplicates by request id), and `clearRemotePendingUiRequest()` plus `agent_end`/`agent_settled` retire them. The lease route answers `awaitingInput` for a device session from the same set — the sidebar's "waiting for your answer" works remotely now. A dead device cannot fake liveness either: `getRemoteRpcSessionState()` probes the channel (3 s) before trusting its cache and closes the session on the second dead probe, which tells the clients and puts the next use on a fresh resume.
+
+## Panel request audit (every frontend call × its device story)
+
+The full sweep of the client's `/api` calls, after the round of fixes that
+found the same bug four times (skills toggle, MCP Test, Agents reload, the
+side chat). Classes:
+
+- **`DEV`** — the call carries the deviceId and the route answers from the
+  device: sessions/agent/lease/events, `models/**`, `models-config/**`
+  (incl. Test and discover), `skills/**`, `plugins/**`, `subagents/**`,
+  `mcp/**` (incl. Test), `git/status`, `git/diff`, `files/**`, `worktrees`,
+  `cwd/validate`, `cwd/browse`, `default-cwd`, `sessions/ui-state`,
+  `sessions/[id]` (GET/DELETE/fork), `terminal`, `auth/providers`,
+  `auth/api-key/*`, `auth/logout`.
+- **Inherently the gateway's own** — no device meaning: `devices/**`
+  (managing the list itself), `web-auth`, `push/**`, `app-update`,
+  `mesh/**` (cross-device by design), `open-in-explorer` (this host's file
+  manager, loopback-guarded), `skills/search` + `models-config/catalog`
+  (network lookups), `home`.
+- **Honest refusals on a device, pending device-side implementations**:
+  `auth/login` (+ its SSE GET) — OAuth runs on this host; the device
+  provider list carries no OAuth rows, so the UI cannot reach it.
+  `provider-usage/query` — the per-provider quota requests authenticate
+  with this host's stored keys; running them against a device's keys needs
+  the query logic on the device (drift-prone, deferred with reason
+  `remote-unsupported`).
+
+Fixed in this sweep (the client omitted the deviceId the route was waiting
+for): the side chat's fork and delete (`lib/side-chat-client.ts`), the idle
+context read (`readIdleMessages`), the Agents panel's model list, the Skills
+content/details calls, the Models panel's auth section (`auth/providers`,
+`auth/api-key/*`, `auth/logout` — with new device branches reading and
+writing the DEVICE's `auth.json` and `models.json`), Settings › General's
+tools/cache-miss settings (new device branches editing the device's
+`settings.json` through the same writers), and the catalog refresh (a device
+probe refreshes the device's own `models-store.json`). The `agent/new` call
+carries the device in its body, the documented fallback.

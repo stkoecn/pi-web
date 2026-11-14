@@ -1,4 +1,5 @@
 import { shareModelCatalogRefresh } from "@/lib/model-catalog-refresh";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,20 @@ export const dynamic = "force-dynamic";
  * there is no second shape of the model list to keep in agreement.
  */
 export async function POST(req: Request) {
+  // A device refreshes against ITS own pi build and catalogue store: the
+  // probe runs there (default agent dir, allowNetwork), and the refreshed
+  // models-store.json reaches the picker through the next device read.
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    let provider: string | undefined;
+    try {
+      const body = await req.json() as { provider?: unknown };
+      if (typeof body?.provider === "string" && body.provider.trim()) provider = body.provider.trim();
+    } catch {}
+    const { refreshRemoteCatalog } = await import("@/lib/remote-model-catalog");
+    const result = await refreshRemoteCatalog(deviceId, provider);
+    return Response.json(result);
+  }
   let provider: string | undefined;
   try {
     const body = await req.json() as { provider?: unknown };

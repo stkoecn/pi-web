@@ -1903,7 +1903,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const readIdleMessages = useCallback(async (sid: string) => {
     // `tail` counts user and assistant entries: 1 reads from the newest of them to the leaf.
     const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1", tail: "1" });
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/context?${params}`);
+    const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(sid)}/context?${params}`, deviceIdRef.current));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { context, leafId } = await res.json() as { context: SessionData["context"]; leafId?: string | null };
     // A run started meanwhile shows its own messages, and its end reads them all.

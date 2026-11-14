@@ -1,4 +1,5 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 import { randomUUID } from "node:crypto";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { createLoginOptions, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
@@ -20,6 +21,12 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ provider: string }> }
 ) {
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return Response.json(
+      { error: "OAuth sign-in runs on this host; a device's own OAuth providers are not listed yet.", reason: "remote-unsupported" },
+      { status: 501 },
+    );
+  }
   const { provider } = await params;
   const { token, code } = (await req.json()) as { token?: string; code?: string };
 
@@ -47,6 +54,12 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ provider: string }> }
 ) {
+  if (isRemoteDevice(getRequestDeviceId(req))) {
+    return Response.json(
+      { error: "OAuth sign-in runs on this host; a device's own OAuth providers are not listed yet.", reason: "remote-unsupported" },
+      { status: 501 },
+    );
+  }
   const { provider } = await params;
 
   const encoder = new TextEncoder();

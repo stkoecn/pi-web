@@ -1565,7 +1565,7 @@ export function AppShell() {
 
   // The switcher's New side chat, on the main agent's row, whichever family member the main chat shows.
   const handleNewSideChat = useCallback(async (rootSessionId: string) => {
-    const result = await createSideChat(rootSessionId, translate);
+    const result = await createSideChat(rootSessionId, translate, undefined, selectedDeviceId);
     if ("error" in result) return result.error;
     if (isMobile) setActiveTopPanel(null);
     handleSideSession(result.session, null);
@@ -1624,7 +1624,7 @@ export function AppShell() {
   // main chat showing it goes back to the parent, as the Main agent row does
   // (`handleSessionDeleted` would leave the family for a fresh composer).
   const handleDeleteSideChat = useCallback(async (sessionId: string, root: SessionInfo): Promise<string | null> => {
-    const result = await deleteSideChat(sessionId);
+    const result = await deleteSideChat(sessionId, agentTabs.find((tab) => tab.sessionId === sessionId)?.deviceId ?? selectedDeviceId);
     if (result) return result.error;
     handleCloseFileTab(`agent:${sessionId}`);
     if (selectedSessionRef.current?.id === sessionId) {

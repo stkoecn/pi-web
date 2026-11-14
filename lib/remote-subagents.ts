@@ -169,7 +169,7 @@ export async function deleteRemoteSubagentProfile(
  * device has none, which is what the local writers expect) and is removed
  * afterwards, so a failed upload never leaves a half-synced local artifact.
  */
-async function withRemoteSettingsFile(
+export async function withRemoteSettingsFile(
   driver: IHostDriver,
   remotePath: string,
   edit: (localPath: string) => Promise<void>,

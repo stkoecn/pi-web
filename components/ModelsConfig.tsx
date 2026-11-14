@@ -3,6 +3,7 @@
 import { LLAMA_CPP_PROVIDER_ID } from "@/lib/provider-listing";
 import { useState, useEffect, useCallback, useId, useRef, type ButtonHTMLAttributes, type DragEvent } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { withDeviceId } from "@/lib/device-context";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import { ContextWindowError, normalizeContextWindowOverrides, withContextWindowOverride } from "@/lib/model-context";
@@ -72,7 +73,6 @@ import { providerBadgeLabel } from "./enabled-models-helpers";
 import { OAuthPastePanel } from "./OAuthPastePanel";
 import { ProviderIcon } from "./ProviderIcon";
 import { ProviderUsageSummary } from "./ProviderUsageSummary";
-import { withDeviceId } from "@/lib/device-context";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1650,9 +1650,9 @@ function OAuthDetail({ provider, onRefresh, enabledModels, contextSettings }: {
 // pi's default router address (`/login llama.cpp`, docs/llama-cpp.md).
 const DEFAULT_LLAMA_ROUTER_URL = "http://127.0.0.1:8080";
 
-function ApiKeyDetail({ provider, onRefresh, enabledModels, contextSettings }: {
+function ApiKeyDetail({ provider, onRefresh, enabledModels, contextSettings, deviceId }: {
   provider: ApiKeyProvider; onRefresh: () => void; enabledModels: EnabledModelsController;
-  contextSettings: ModelContextSettings;
+  contextSettings: ModelContextSettings; deviceId?: string;
 }) {
   const llama = provider.id === LLAMA_CPP_PROVIDER_ID;
   const [serverUrl, setServerUrl] = useState(llama && !provider.configured ? DEFAULT_LLAMA_ROUTER_URL : "");
@@ -1670,7 +1670,7 @@ function ApiKeyDetail({ provider, onRefresh, enabledModels, contextSettings }: {
     setError(null);
     setSavedOk(false);
     try {
-      const res = await fetch(`/api/auth/api-key/${encodeURIComponent(provider.id)}`, {
+      const res = await fetch(withDeviceId(`/api/auth/api-key/${encodeURIComponent(provider.id)}`, deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: apiKey.trim(), ...(llama ? { serverUrl: serverUrl.trim() } : {}) }),
@@ -1700,7 +1700,7 @@ function ApiKeyDetail({ provider, onRefresh, enabledModels, contextSettings }: {
     setRemoving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/auth/api-key/${encodeURIComponent(provider.id)}`, { method: "DELETE" });
+      const res = await fetch(withDeviceId(`/api/auth/api-key/${encodeURIComponent(provider.id)}`, deviceId), { method: "DELETE" });
       const d = await res.json() as { success?: boolean; error?: string };
       if (!res.ok || d.error) setError(d.error ?? `HTTP ${res.status}`);
       else onRefresh();
@@ -1795,6 +1795,7 @@ function ApiKeyDetail({ provider, onRefresh, enabledModels, contextSettings }: {
           controller={enabledModels}
           contextSettings={contextSettings}
           emptyCatalogHint={llama ? t("models.llamaEmptyCatalog") : undefined}
+          deviceId={deviceId}
         />
       )}
     </div>
@@ -1998,7 +1999,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, deviceId =
   const [providerNameDraft, setProviderNameDraft] = useState<{ provider: string; name: string } | null>(null);
 
   /** Resolves true once the lists and runtime names have been replaced. */
-  const refreshAuthProviders = useCallback(() => fetch("/api/auth/providers")
+  const refreshAuthProviders = useCallback(() => fetch(withDeviceId("/api/auth/providers", deviceId))
     .then((r) => r.json())
     .then((d: { oauthProviders?: OAuthProvider[]; apiKeyProviders?: ApiKeyProvider[]; providerNames?: Record<string, string> }) => {
       if (Array.isArray(d.oauthProviders)) setOauthProviders(d.oauthProviders);
@@ -2334,7 +2335,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, deviceId =
     if (selection.type === "apikey") {
       const p = apiKeyProviders.find((p) => p.id === selection.providerId);
       if (!p) return null;
-      return <ApiKeyDetail key={p.id} provider={p} onRefresh={refreshAuthProviders} enabledModels={enabledModels} contextSettings={contextSettings(p.id)} />;
+      return <ApiKeyDetail key={p.id} provider={p} onRefresh={refreshAuthProviders} enabledModels={enabledModels} contextSettings={contextSettings(p.id)} deviceId={deviceId} />;
     }
     if (selection.type === "provider") {
       const provider = config.providers?.[selection.name];

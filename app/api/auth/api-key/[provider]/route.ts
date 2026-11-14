@@ -4,6 +4,7 @@ import { invalidateModelsCache } from "@/lib/models-cache";
 import { removeStoredCredentialIfType, storeProviderCredential } from "@/lib/provider-credential-store";
 import { getModelRuntimeWithExtensions } from "@/lib/model-runtime";
 import { refreshModelCatalogs } from "@/lib/model-catalog-refresh";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,16 @@ export async function POST(req: Request, { params }: Params) {
     const llama = provider === LLAMA_CPP_PROVIDER_ID;
     if (typeof apiKey !== "string" || (!llama && !apiKey.trim())) {
       return NextResponse.json({ error: "apiKey is required" }, { status: 400 });
+    }
+    // A device's key belongs in the device's own auth.json: the stored
+    // credential authorizes that machine's requests, not this host's. The
+    // models.json providers the device panel manages all authenticate with a
+    // key (that is what the file is), so the plain credential write is the
+    // whole story — no runtime login flow, no catalog pass.
+    if (isRemoteDevice(getRequestDeviceId(req))) {
+      const { storeRemoteApiKey } = await import("@/lib/remote-auth");
+      await storeRemoteApiKey(getRequestDeviceId(req), provider, apiKey.trim());
+      return NextResponse.json({ success: true });
     }
     const routerUrl = llama && typeof serverUrl === "string" ? URL.parse(serverUrl) : null;
     if (llama && (!routerUrl || !["http:", "https:"].includes(routerUrl.protocol))) {
@@ -61,9 +72,20 @@ export async function POST(req: Request, { params }: Params) {
 }
 
 // DELETE /api/auth/api-key/[provider] — removes stored API key
-export async function DELETE(_req: Request, { params }: Params) {
+export async function DELETE(req: Request, { params }: Params) {
   const { provider } = await params;
   try {
+    if (isRemoteDevice(getRequestDeviceId(req))) {
+      const { removeRemoteCredential } = await import("@/lib/remote-auth");
+      const removal = await removeRemoteCredential(getRequestDeviceId(req), provider, "api_key");
+      if (removal.status === "type_mismatch") {
+        return NextResponse.json(
+          { error: `${provider} is authenticated with OAuth, not an API key` },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json({ success: true });
+    }
     const removal = await removeStoredCredentialIfType(provider, "api_key");
     if (removal.status === "type_mismatch") {
       return NextResponse.json(

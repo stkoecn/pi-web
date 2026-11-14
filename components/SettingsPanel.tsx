@@ -17,6 +17,7 @@ import {
 import { useEnterSendMode, setEnterSendMode } from "@/hooks/useEnterSendMode";
 import { useFilesPlacement, setFilesPlacement } from "@/hooks/useFilesPlacement";
 import { sendAgentCommand } from "@/lib/agent-client";
+import { withDeviceId } from "@/lib/device-context";
 import type { ProjectTrustStatus, ToolSettingsResponse } from "@/lib/api-types";
 import { SETTINGS_BUILTIN_TOOLS } from "@/lib/tool-presets";
 import {
@@ -86,7 +87,7 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
   return <svg {...common}><path d="M9 7V2M15 7V2M6 13V8a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v5a6 6 0 0 1-12 0ZM12 19v3" /></svg>;
 }
 
-function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange">) {
+function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange, deviceId }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange" | "deviceId">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
@@ -131,7 +132,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/api/tools/settings")
+    void fetch(withDeviceId("/api/tools/settings", deviceId))
       .then(async (response) => {
         const data = await response.json() as ToolSettingsResponse & { error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
@@ -145,7 +146,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/api/cache-miss-notices")
+    void fetch(withDeviceId("/api/cache-miss-notices", deviceId))
       .then(async (response) => {
         const data = await response.json() as { enabled?: boolean; error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
@@ -162,7 +163,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
     setCacheMissNoticesSaving(true);
     setCacheMissNoticesError(null);
     try {
-      const response = await fetch("/api/cache-miss-notices", {
+      const response = await fetch(withDeviceId("/api/cache-miss-notices", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
@@ -182,7 +183,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
     setShellSaving(true);
     setShellError(null);
     try {
-      const response = await fetch("/api/tools/settings", {
+      const response = await fetch(withDeviceId("/api/tools/settings", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
@@ -191,7 +192,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
       if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
       setShellSettings(data);
       if (sessionId) {
-        await sendAgentCommand(sessionId, { type: "reload" });
+        await sendAgentCommand(sessionId, { type: "reload" }, deviceId);
         onSessionReloaded();
       }
     } catch (cause) {
@@ -208,7 +209,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
     setBuiltinToolsError(null);
     try {
       const builtinTools = enabled ? [...shellSettings.builtinTools, name] : shellSettings.builtinTools.filter((tool) => tool !== name);
-      const response = await fetch("/api/tools/settings", {
+      const response = await fetch(withDeviceId("/api/tools/settings", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ builtinTools }),
@@ -850,7 +851,7 @@ export function SettingsPanel({
             </nav>
           )}
           <ConfigDetailNavigationContext.Provider value={detailNavigation}>
-          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
+          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} deviceId={deviceId} />)}
           {/* The gateway's host list is a property of this Pi Web, not of the selected device. */}
           {sectionHost("devices", <DevicesConfig embedded onClose={onClose} onDevicesChanged={onDevicesChanged} />)}
           {sectionHost("team", <TeamConfig embedded cwd={cwd} deviceId={deviceId} onClose={onClose} />)}

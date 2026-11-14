@@ -1,4 +1,5 @@
 import type { SessionInfo } from "./types";
+import { withDeviceId } from "@/lib/device-context";
 
 /** The fork route's refusals of a side chat, as translated notices. */
 export const SIDE_REFUSAL_MESSAGES = {
@@ -14,8 +15,9 @@ export async function createSideChat(
   sourceSessionId: string,
   translate: (key: (typeof SIDE_REFUSAL_MESSAGES)[keyof typeof SIDE_REFUSAL_MESSAGES]) => string,
   name?: string,
+  deviceId?: string,
 ): Promise<{ session: SessionInfo } | { error: string }> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(sourceSessionId)}/fork`, {
+  const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(sourceSessionId)}/fork`, deviceId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ side: true, ...(name ? { name } : {}) }),
@@ -33,8 +35,8 @@ export async function createSideChat(
 }
 
 /** Delete one side chat. Answers the failure to show, or null. */
-export async function deleteSideChat(sessionId: string): Promise<{ error: string } | null> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+export async function deleteSideChat(sessionId: string, deviceId?: string): Promise<{ error: string } | null> {
+  const res = await fetch(withDeviceId(`/api/sessions/${encodeURIComponent(sessionId)}`, deviceId), {
     method: "DELETE",
     cache: "no-store",
   });

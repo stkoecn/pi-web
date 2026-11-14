@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { withDeviceId } from "@/lib/device-context";
 import { useI18n } from "@/hooks/useI18n";
 import type { EnabledModelsView } from "@/lib/enabled-models";
 import {
@@ -330,7 +331,7 @@ export function EnabledModelsProviderSwitchNote({
  * catalog overlay has been fetched — see `lib/model-catalog-refresh.ts` (#914).
  * The button is the whole feature: nothing refreshes catalogs on its own.
  */
-function useCatalogRefresh(providerId: string, onChanged: () => void) {
+function useCatalogRefresh(providerId: string, onChanged: () => void, deviceId?: string) {
   const [refreshing, setRefreshing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -342,7 +343,7 @@ function useCatalogRefresh(providerId: string, onChanged: () => void) {
     setNote(null);
     void (async () => {
       try {
-        const res = await fetch("/api/models/refresh", {
+        const res = await fetch(withDeviceId("/api/models/refresh", deviceId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ provider: providerId }),
@@ -371,18 +372,20 @@ export function EnabledModelsSection({
   controller,
   contextSettings,
   emptyCatalogHint,
+  deviceId,
 }: {
   providerId: string;
   controller: EnabledModelsController;
   contextSettings?: ModelContextSettings;
   emptyCatalogHint?: string;
+  deviceId?: string;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const { view, loading, pending, failure } = controller;
   const provider = findProviderView(view, providerId)
     ?? (emptyCatalogHint && !failure ? { id: providerId, models: [], enabledCount: 0 } : undefined);
-  const catalog = useCatalogRefresh(providerId, controller.refresh);
+  const catalog = useCatalogRefresh(providerId, controller.refresh, deviceId);
   const noteId = useId();
 
   useEffect(() => setQuery(""), [providerId]);

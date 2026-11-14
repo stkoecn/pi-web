@@ -19,6 +19,7 @@ import {
   writePowerShellToolEnabled,
 } from "@/lib/powershell-settings";
 import { SETTINGS_BUILTIN_TOOLS } from "@/lib/tool-presets";
+import { getRequestDeviceId, isRemoteDevice } from "@/lib/device-context";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,52 @@ function refusal(status: number, reason: McpRefusalReason, error: string) {
 function errorResponse(error: unknown) {
   return refusal(500, "internal", error instanceof Error ? error.message : String(error));
 }
+/**
+ * The validated change as a writer call against a settings path, or null when
+ * the change makes no sense for the device's platform (the PowerShell switch
+ * on a non-Windows device). Validation matches the local route's exactly.
+ */
+async function deviceChangeApplier(
+  changes: { enabled?: unknown; builtinTools?: unknown; codemode?: unknown; codemodeMode?: unknown; codemodeInlineBudget?: unknown },
+  platform: NodeJS.Platform,
+): Promise<((settingsPath: string) => Promise<unknown>) | null> {
+  const { writeBuiltinTools, writePowerShellToolEnabled } = await import("@/lib/powershell-settings");
+  const {
+    writeCodemodePreference,
+    writeCodemodeMode,
+    writeCodemodeInlineBudget,
+    CODEMODE_INLINE_BUDGET_MAX,
+    isCodemodeInlineBudget,
+    isCodemodeMode,
+    isCodemodePreference,
+  } = await import("@/lib/codemode-settings");
+  const { SETTINGS_BUILTIN_TOOLS } = await import("@/lib/tool-presets");
+
+  if ("builtinTools" in changes) {
+    const tools = changes.builtinTools;
+    if (!Array.isArray(tools) || !tools.every((name) => SETTINGS_BUILTIN_TOOLS.includes(name))) return null;
+    return (settingsPath) => writeBuiltinTools(tools as string[], settingsPath, platform);
+  }
+  if ("codemodeMode" in changes) {
+    if (!isCodemodeMode(changes.codemodeMode)) return null;
+    return (settingsPath) => writeCodemodeMode(changes.codemodeMode as "on" | "only", settingsPath);
+  }
+  if ("codemodeInlineBudget" in changes) {
+    const budget = changes.codemodeInlineBudget;
+    if (budget !== null && !isCodemodeInlineBudget(budget)) return null;
+    return (settingsPath) => writeCodemodeInlineBudget((budget ?? undefined) as number | undefined, settingsPath);
+  }
+  if ("codemode" in changes) {
+    if (!isCodemodePreference(changes.codemode)) return null;
+    return (settingsPath) => writeCodemodePreference(changes.codemode as "automatic" | "always", settingsPath);
+  }
+  if ("enabled" in changes) {
+    if (platform !== "win32") return null;
+    if (typeof changes.enabled !== "boolean") return null;
+    return (settingsPath) => writePowerShellToolEnabled(changes.enabled as boolean, settingsPath, platform);
+  }
+  return null;
+}
 
 async function readToolSettings(): Promise<ToolSettingsResponse> {
   // One after the other: each takes the file lock, and a reader that finds it
@@ -50,7 +97,61 @@ async function readToolSettings(): Promise<ToolSettingsResponse> {
   return { isWindows: process.platform === "win32", powerShellEnabled, builtinTools, codemode, codemodeMode, codemodeInlineBudget };
 }
 
-export async function GET() {
+/**
+ * The device's own global settings.json, edited through the same writers the
+ * local route runs: the file is downloaded, the writer takes that path (they
+ * all accept one), and the bytes go back under `cat >` (mode preserved). The
+ * PowerShell switch follows the DEVICE's platform — a Linux device has no
+ * PowerShell tool to switch.
+ */
+async function readDeviceToolSettings(deviceId: string, settingsPath: string): Promise<ToolSettingsResponse> {
+  const { getGateway } = await import("@/lib/gateway/singleton");
+  const { withRemoteSettingsFile } = await import("@/lib/remote-subagents");
+  const { readPowerShellToolEnabled, readBuiltinTools } = await import("@/lib/powershell-settings");
+  const { readCodemodePreference, readCodemodeSettings } = await import("@/lib/codemode-settings");
+  const platform = await devicePlatform(deviceId);
+  const driver = await getGateway().getDriverForRequest(deviceId);
+  await withRemoteSettingsFile(driver, settingsPath, async () => {});
+  const powerShellEnabled = await readPowerShellToolEnabled(settingsPath, platform);
+  const builtinTools = await readBuiltinTools(settingsPath, platform);
+  const codemode = await readCodemodePreference(settingsPath);
+  const { mode: codemodeMode, inlineBudget: codemodeInlineBudget } = await readCodemodeSettings(settingsPath);
+  return { isWindows: platform === "win32", powerShellEnabled, builtinTools, codemode, codemodeMode, codemodeInlineBudget };
+}
+
+async function devicePlatform(deviceId: string): Promise<NodeJS.Platform> {
+  const { getGateway } = await import("@/lib/gateway/singleton");
+  const driver = await getGateway().getDriverForRequest(deviceId);
+  const result = await driver.exec("uname -s 2>/dev/null || echo Windows_NT", [], { timeoutMs: 10_000 });
+  const kernel = result.stdout.trim().toLowerCase();
+  if (kernel.includes("darwin")) return "darwin";
+  if (kernel.includes("windows") || kernel.includes("windows_nt")) return "win32";
+  return "linux";
+}
+
+/** One settings change against the device's file, through the local writers. */
+async function writeDeviceToolSetting(
+  deviceId: string,
+  settingsPath: string,
+  apply: (settingsPath: string) => Promise<void>,
+): Promise<void> {
+  const { getGateway } = await import("@/lib/gateway/singleton");
+  const { withRemoteSettingsFile } = await import("@/lib/remote-subagents");
+  const driver = await getGateway().getDriverForRequest(deviceId);
+  await withRemoteSettingsFile(driver, settingsPath, (tempPath) => apply(tempPath));
+}
+
+export async function GET(req: Request) {
+  const deviceId = getRequestDeviceId(req);
+  if (isRemoteDevice(deviceId)) {
+    try {
+      const { getRemoteAgentDir } = await import("@/lib/remote-settings");
+      const settingsPath = `${await getRemoteAgentDir(deviceId)}/settings.json`;
+      return NextResponse.json(await readDeviceToolSettings(deviceId, settingsPath));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
   try {
     return NextResponse.json(await readToolSettings());
   } catch (error) {
