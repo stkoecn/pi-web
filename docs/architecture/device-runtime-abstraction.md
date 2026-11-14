@@ -332,9 +332,21 @@ if (isRemoteDevice(deviceId)) {
 
 **上游血缘修复**：v0.16.0 合并以"内容级三方合并（base=f130910）+ 双亲合并提交"完成，`dev` 与 `upstream/main` 建立真实 git 血缘——**此后同步直接 `git merge upstream/main` 即可**，不再需要手工快照。同时找回了此前手工同步丢失的上游子系统（未确认发送 #1432、missingCwd #1422、Debug 快照读取器、工具时钟、#1401 二进制嗅探）。
 
-### 2. 已知待办（按优先级）
+### 2. 收敛进度更新（R2e 已执行的部分）
 
-1. **主会话路由收编（R2e，未做）**：`agent/new`、`agent/[id]`、`agent/[id]/events`、`sessions`、`agent/running`、`sessions/[id]` 仍各自保留 `isRemoteDevice` 分支并复制运行时逻辑（约 60 处分叉点中的主体）。收编方向：路由只做参数解析，全部委托 `getDeviceRuntime(deviceId)`；远程分支逻辑下沉进 `SshRemoteDeviceRuntime`/`remote-agent-manager`；`enqueueDeviceSessionTask` 队列/上限在所有建会话路径生效。**必须在有 E2E（wsnas 联调 + 浏览器 QA）的会话中逐条进行**——这些路由今天工作正常，收编是重构而非修复。
+- `agent/new`：远程分支已是 `runtime.createSession` 的薄 facade——设备级串行队列、MaxSessions 重试、spawn 覆盖项全部收敛到一处；`sessionDir` 进入 `CreateSessionOptions`。
+- `agent/[id]`：POST 是薄 dispatcher（校验 + mesh 解阻钩子 + 错误映射在路由，`set_tools`/`get_tools`/其余命令全走 runtime）；GET/DELETE 走 `getSessionStatus`/`closeSession`。契约新增 `sendSessionCommand`（本地=wrapper 语义，远程=信道写 + extension_ui 清理 + 持久会话恢复）。
+- `agent/[id]/events`：薄 facade；`getEventStreamSession` 交给 runtime（本地=wrapper/恢复，远程=信道适配器，已移至 `lib/remote-event-stream.ts`），同一 `createAgentEventStream` 服务双端。
+- `SshRemoteActiveSession.send`：投递类命令（prompt/steer/follow_up/abort/set_tools）写信道即接受（进度走 SSE，与本地 wrapper 同契约）；查询类等响应、5s 超时拒绝——既无旧版假成功，也无"一刀切拒绝"对远程投递的误伤。
+- **terminal-manager 调和完成**：本地恢复上游同步契约（按 id 复用、工作区不匹配即抛错、`createTerminal` 同步），设备路径独立为 `createDeviceTerminal`，终端路由按 deviceId 分叉；上游 #1560 Windows 关闭测试解除 skip 并通过；分离远程终端回收与 cleanupAt 保留。
+- `sessions` 与 `agent/running` **按设计保留 facade**：其远程分支是网关级关注点（设备在线、列表版本、运行计数器），不属于要下沉的运行时逻辑。
+
+### 3. 剩余待办（按优先级）
+
+1. **远程工具参数与按 cwd 的模型探测**：`capabilities` 已显式声明限制；若需要，在远程探针（remote-tools/remote-models）中加 schema 与项目作用域。
+2. **远程 subagent 运行跟踪**：subagents/[id] 目前对远程显式 501；设备端运行时需要暴露运行状态。
+3. **PI_SESSION_ID 注入新会话**：远程新会话首个 `get_state` 前没有会话 id，网关侧的"设备仅一个运行会话"兜底覆盖了大部分场景。
+4. **历史遗留测试失败**：组件 10 个、lib 18 个、junction 1 个在本次工作开始前即失败（与本次无关），集中在 Debug 面板交互与主题渲染断言，宜专项清理。
 2. **远程工具参数与按 cwd 的模型探测**：`capabilities` 已显式声明限制；若需要，在远程探针（remote-tools/remote-models）中加 schema 与项目作用域。
 3. **远程 subagent 运行跟踪**：subagents/[id] 目前对远程显式 501；设备端运行时需要暴露运行状态。
 4. **PI_SESSION_ID 注入新会话**：远程新会话首个 `get_state` 前没有会话 id，网关侧的"设备仅一个运行会话"兜底覆盖了大部分场景。
