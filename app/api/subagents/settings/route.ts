@@ -60,6 +60,16 @@ export async function PUT(req: Request) {
     )) {
       return NextResponse.json({ error: `maxConcurrent must be an integer between 1 and ${MAX_SUBAGENT_MAX_CONCURRENT}` }, { status: 400 });
     }
+    if (isRemoteDevice(getRequestDeviceId(req))) {
+      // The same writers run against a local copy of the device's file; the
+      // result goes back through the gateway (lib/remote-subagents.ts).
+      const { writeRemoteSubagentSettings } = await import("@/lib/remote-subagents");
+      const settings = await writeRemoteSubagentSettings(getRequestDeviceId(req), {
+        enabled: body.enabled as boolean | undefined,
+        maxConcurrent: body.maxConcurrent as number | undefined,
+      });
+      return NextResponse.json(settings);
+    }
     let settings = readSubagentSettings();
     if (body.enabled !== undefined) settings = writeBuiltInSubagentsEnabled(body.enabled);
     if (body.maxConcurrent !== undefined) settings = writeSubagentMaxConcurrent(body.maxConcurrent);

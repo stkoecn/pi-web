@@ -380,6 +380,15 @@ function syncFlagAlias(
 function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfile | null {
   try {
     const source = readFileSync(filePath, "utf8");
+    return parseSubagentProfileDocument(source, filePath, scope);
+  } catch {
+    return null;
+  }
+}
+
+/** Parse one profile document's text — shared with the device path, which reads over the gateway. */
+export function parseSubagentProfileDocument(source: string, filePath: string, scope: SubagentScope): SubagentProfile | null {
+  try {
     const { data, rest } = parseFrontmatter(source);
     const name = stringValue(data?.name) ?? basename(filePath, ".md");
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
@@ -466,7 +475,18 @@ function profileDirectories(cwd: string): Array<[string, Exclude<SubagentScope, 
  * prompt at the version it was copied from.
  */
 function builtInProfiles(): SubagentProfile[] {
-  const disabled = disabledBuiltInSubagents();
+  return builtInSubagentProfilesFor([...disabledBuiltInSubagents()]);
+}
+
+/**
+ * The built-in profile set with the enabled flags a disabled-name list implies.
+ *
+ * pi ships the same built-ins on every machine, so a device's panel renders its
+ * list from this host's set and the DEVICE's own disabled list (which travels
+ * with the device's `agents/settings.json`), not from this host's settings.
+ */
+export function builtInSubagentProfilesFor(disabledNames: readonly string[]): SubagentProfile[] {
+  const disabled = new Set(disabledNames.map((name) => name.toLowerCase()));
   return BUILTIN_PROFILES.map((profile) => ({
     ...profile,
     tools: [...profile.tools],
@@ -504,6 +524,11 @@ function assertProfileName(name: string): string {
   return normalized;
 }
 
+/** Name validation the device writes need too — the same rule, one home. */
+export function assertSubagentProfileName(name: string): string {
+  return assertProfileName(name);
+}
+
 function writableProfileDirectory(cwd: string, scope: SubagentWritableScope): string {
   if (scope === "global") return join(getAgentDir(), "agents");
   if (scope === "project") return join(resolve(cwd), ".pi", "agents");
@@ -526,11 +551,15 @@ function assertWritableProfileDirectory(cwd: string, scope: SubagentWritableScop
   return dir;
 }
 
-export function saveSubagentProfile(
-  cwd: string,
-  scope: SubagentWritableScope,
+/**
+ * Validate, merge with the stored frontmatter and render one profile document —
+ * everything but the write, so the device path (which reads and writes over the
+ * gateway) renders the exact bytes this host's save would.
+ */
+export function composeSubagentProfileDocument(
+  stored: Record<string, unknown>,
   profile: Omit<SubagentProfile, "scope" | "filePath">,
-): SubagentProfile {
+): { name: string; document: string; profile: Omit<SubagentProfile, "scope" | "filePath"> } {
   const name = assertProfileName(profile.name);
   const tools = [...new Set(profile.tools.filter((tool) => BUILTIN_TOOLS.has(tool)))];
   const extensionTools = [...new Set(profile.extensionTools ?? [])];
@@ -552,13 +581,6 @@ export function saveSubagentProfile(
   const codemode = validateSavedCodemode(profile.codemode);
   const requestedMcp = validateSavedMcp(profile.mcp);
   const promptMode = profile.promptMode === "replace" ? "replace" : "append";
-  const dir = assertWritableProfileDirectory(cwd, scope);
-  mkdirSync(dir, { recursive: true });
-  if (scope === "project" && !isProjectProfilePathAllowed(cwd, dir)) {
-    throw new Error("Agent profile directory is outside the project root");
-  }
-  const filePath = join(dir, `${name}.md`);
-  const stored = readStoredFrontmatter(filePath);
   const mcp = requestedMcp ?? parseMcp(stored.mcp);
   const managed: Record<string, unknown> = {
     description,
@@ -598,27 +620,50 @@ export function saveSubagentProfile(
     if (!(key in frontmatter)) frontmatter[key] = value;
   }
   const yaml = stringifyYaml(frontmatter, { noRefs: true, lineWidth: 1000 }).trimEnd();
-  writePrivateFileAtomicSync(filePath, `---\n${yaml}\n---\n\n${systemPrompt}\n`);
   return {
-    ...profile,
     name,
-    displayName,
-    description,
-    systemPrompt,
-    tools,
-    ...(skills !== undefined ? { skills } : {}),
-    extensions,
-    ...(extensionTools.length > 0 ? { extensionTools } : {}),
-    loadSkills,
-    loadExtensions,
-    codemode,
-    mcp,
-    ...(model ? { model } : { model: undefined }),
-    ...(maxTurns ? { maxTurns } : { maxTurns: undefined }),
-    promptMode,
-    ...(profile.color ? { color: profile.color } : {}),
-    ...(profile.isolation ? { isolation: profile.isolation } : {}),
-    ...(profile.persistSession !== undefined ? { persistSession: profile.persistSession } : {}),
+    document: `---\n${yaml}\n---\n\n${systemPrompt}\n`,
+    profile: {
+      ...profile,
+      name,
+      displayName,
+      description,
+      systemPrompt,
+      tools,
+      ...(skills !== undefined ? { skills } : {}),
+      extensions,
+      ...(extensionTools.length > 0 ? { extensionTools } : {}),
+      loadSkills,
+      loadExtensions,
+      codemode,
+      mcp,
+      ...(model ? { model } : { model: undefined }),
+      ...(maxTurns ? { maxTurns } : { maxTurns: undefined }),
+      promptMode,
+      ...(profile.color ? { color: profile.color } : {}),
+      ...(profile.isolation ? { isolation: profile.isolation } : {}),
+      ...(profile.persistSession !== undefined ? { persistSession: profile.persistSession } : {}),
+    },
+  };
+}
+
+export function saveSubagentProfile(
+  cwd: string,
+  scope: SubagentWritableScope,
+  profile: Omit<SubagentProfile, "scope" | "filePath">,
+): SubagentProfile {
+  const name = assertProfileName(profile.name);
+  const dir = assertWritableProfileDirectory(cwd, scope);
+  mkdirSync(dir, { recursive: true });
+  if (scope === "project" && !isProjectProfilePathAllowed(cwd, dir)) {
+    throw new Error("Agent profile directory is outside the project root");
+  }
+  const filePath = join(dir, `${name}.md`);
+  const stored = readStoredFrontmatter(filePath);
+  const composed = composeSubagentProfileDocument(stored, profile);
+  writePrivateFileAtomicSync(filePath, composed.document);
+  return {
+    ...composed.profile,
     scope,
     filePath,
   };

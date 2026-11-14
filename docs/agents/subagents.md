@@ -38,3 +38,7 @@
 - One session has one chat: opening a child in the main chat closes its tab, and its row's tab button is then greyed (`AppShell`).
 - A tab is a real view of the session, so opening one on a finished child starts a wrapper through the events route, as opening it in the main chat does; the idle timer releases it. While a child just dispatched has no session to read yet, the panel retries. Only the active tab is mounted. Subagent tabs are not persisted and are dropped on every project switch (`changeFileWorkspace()`), while the file tabs are parked; an active subagent tab hands the panel to the restored project's file tabs.
 
+
+## Subagent profiles on a device
+
+A device's profiles are its own files (`<agentDir>/agents`, `<cwd>/.pi/agents`, `<cwd>/.agents/agents`), read over the gateway (`readRemoteSubagentProfiles`, full document parse) with pi's built-ins merged in, enabled by the DEVICE's `agents/settings.json` disabled list. The writes go through the same code this host runs: `composeSubagentProfileDocument()` renders the bytes a local save would against the device file's stored frontmatter (`lib/remote-subagents.ts`), the settings writers take a path so the edit runs on a downloaded copy of the device's `agents/settings.json`, and a delete is a name-validated `rm -f`. AgentsConfig carries the deviceId on every call — a bare one fell to the local branch and wrote this host's files.

@@ -15,6 +15,7 @@ import {
   isDisabledPackage,
 } from "@/lib/plugin-entries";
 import { isPluginSourceCheckable } from "@/lib/plugin-updates";
+import { parseNpmSource } from "@/lib/npm-source";
 import { readRemoteFiles, writeRemoteFile } from "@/lib/remote-settings-file";
 import { getRemoteAgentDir, invalidateRemoteSettings } from "@/lib/remote-settings";
 
@@ -153,14 +154,176 @@ export async function readRemotePluginList(
       diagnostics.push({ type: "error", source: path, message: `${path} could not be read as a settings file` });
     }
   }
+  const packages = readRemotePackages(globalSettings, projectSettings);
+  // The settings list alone reads as if nothing were installed: the detail view
+  // showed "未找到" for every install path and zeros for every count. The probe
+  // asks the device what pi's own loader would resolve, one round trip for all.
+  const probed = await probeRemotePackages(driver, agentDir, packages);
+  let totals = emptyCounts();
+  for (const pkg of packages) {
+    const probe = probed.get(pkg.source);
+    if (!probe) continue;
+    pkg.installedPath = probe.installedPath;
+    pkg.packageName = probe.packageName;
+    pkg.version = probe.version;
+    pkg.description = probe.description;
+    if (!pkg.disabled) {
+      // A disabled package's resources never load, so they stay uncounted — the
+      // same rule the local route applies to its loader's answers.
+      pkg.counts = probe.counts;
+      totals = {
+        extensions: totals.extensions + probe.counts.extensions,
+        skills: totals.skills + probe.counts.skills,
+        prompts: totals.prompts + probe.counts.prompts,
+        themes: totals.themes + probe.counts.themes,
+      };
+    }
+    const resourceCount = pkg.counts.extensions + pkg.counts.skills + pkg.counts.prompts + pkg.counts.themes;
+    if (!pkg.disabled && !probe.exists) {
+      // The local route's wording: a configured source the device cannot resolve.
+      diagnostics.push({ type: "warning", source: pkg.source, message: "Configured package path was not found." });
+    }
+    pkg.status = pkg.disabled ? "disabled" : resourceCount > 0 ? "loaded" : pkg.installedPath ? "installed" : "missing";
+  }
   return {
-    packages: readRemotePackages(globalSettings, projectSettings),
+    packages,
     standaloneExtensions: [],
-    totals: emptyCounts(),
+    totals,
     diagnostics,
     projectResourcesLoaded,
     ...({ remote: { deviceId: driver.deviceId, source: "file" } } as object),
   } as PluginsResponse;
+}
+
+/** What the device answered for one npm package: pi's loader facts, as numbers. */
+export interface RemotePackageProbe {
+  exists: boolean;
+  installedPath?: string;
+  packageName?: string;
+  version?: string;
+  description?: string;
+  counts: PluginResourceCounts;
+}
+
+/**
+ * The probe the device runs for every configured npm package at once.
+ *
+ * Plain JS, delivered base64 in `PIWEB_PKGS` like the other device scripts. The
+ * resource counts mirror pi's package-manager conventions: extensions come from
+ * the manifest's `pi.extensions` list, else a root `index.ts` / `index.js`, else
+ * a recursive scan of `extensions/`; skills are `skills/` directories holding a
+ * `SKILL.md`; prompts and themes are their directories' `.md` / `.json` files.
+ */
+const REMOTE_PACKAGE_PROBE_SCRIPT = `
+const fs = require('fs');
+const path = require('path');
+const input = JSON.parse(Buffer.from(process.env.PIWEB_PKGS || '', 'base64').toString('utf8'));
+const walk = (dir, pattern) => {
+  let n = 0, entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) n += walk(full, pattern);
+    else if (pattern.test(entry.name)) n += 1;
+  }
+  return n;
+};
+const results = [];
+for (const dir of input.dirs || []) {
+  try {
+    if (!fs.existsSync(dir)) { results.push({ dir, exists: false }); continue; }
+    const probe = { dir, exists: true, counts: { extensions: 0, skills: 0, prompts: 0, themes: 0 } };
+    const pkgJsonPath = path.join(dir, 'package.json');
+    let manifest;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+      probe.packageName = typeof parsed.name === 'string' ? parsed.name : undefined;
+      probe.version = typeof parsed.version === 'string' ? parsed.version : undefined;
+      probe.description = typeof parsed.description === 'string' ? parsed.description : undefined;
+      if (parsed.pi && Array.isArray(parsed.pi.extensions)) manifest = parsed.pi.extensions;
+    } catch {}
+    if (manifest) {
+      for (const rel of manifest) if (fs.existsSync(path.resolve(dir, rel))) probe.counts.extensions += 1;
+    } else if (fs.existsSync(path.join(dir, 'index.ts')) || fs.existsSync(path.join(dir, 'index.js'))) {
+      probe.counts.extensions = 1;
+    } else {
+      probe.counts.extensions = walk(path.join(dir, 'extensions'), /\\.(ts|js)$/);
+    }
+    const skillsDir = path.join(dir, 'skills');
+    try {
+      for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && fs.existsSync(path.join(skillsDir, entry.name, 'SKILL.md'))) probe.counts.skills += 1;
+      }
+    } catch {}
+    probe.counts.prompts = walk(path.join(dir, 'prompts'), /\\.md$/);
+    probe.counts.themes = walk(path.join(dir, 'themes'), /\\.json$/);
+    results.push(probe);
+  } catch (e) {
+    results.push({ dir, exists: false, error: String((e && e.message) || e) });
+  }
+}
+process.stdout.write(JSON.stringify({ results }));
+`;
+
+/** Candidate install dirs for the `npm:` sources, keyed by source. */
+function npmPackageDirs(agentDir: string, packages: readonly PluginPackageInfo[]): Map<string, string> {
+  const dirs = new Map<string, string>();
+  for (const pkg of packages) {
+    const npm = parseNpmSource(pkg.source);
+    if (!npm) continue;
+    dirs.set(pkg.source, `${agentDir}/npm/node_modules/${npm.name}`);
+  }
+  return dirs;
+}
+
+/**
+ * Ask the device what is on disk for the configured packages: install path,
+ * package.json metadata and resource counts, one round trip for all of them.
+ *
+ * Anything the probe cannot answer (no node, a dead driver) leaves the package
+ * as the settings read described it — the list degrades, it does not fail.
+ */
+export async function probeRemotePackages(
+  driver: IHostDriver,
+  agentDir: string,
+  packages: readonly PluginPackageInfo[],
+): Promise<Map<string, RemotePackageProbe>> {
+  const probed = new Map<string, RemotePackageProbe>();
+  const dirs = npmPackageDirs(agentDir, packages);
+  if (dirs.size === 0) return probed;
+  const ordered = [...dirs.values()];
+  try {
+    const configB64 = Buffer.from(JSON.stringify({ dirs: ordered }), "utf8").toString("base64");
+    const scriptB64 = Buffer.from(REMOTE_PACKAGE_PROBE_SCRIPT, "utf8").toString("base64");
+    const result = await driver.exec(
+      `PIWEB_PKGS=${configB64} node -e "eval(Buffer.from('${scriptB64}','base64').toString('utf8'))"`,
+      [],
+      { timeoutMs: 30_000 },
+    );
+    if (result.exitCode !== 0 || !result.stdout.trim().startsWith("{")) return probed;
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      results?: Array<{ dir: string; exists: boolean; packageName?: string; version?: string; description?: string; counts?: PluginResourceCounts }>;
+    };
+    const byDir = new Map((parsed.results ?? []).map((r) => [r.dir, r]));
+    for (const [source, dir] of dirs) {
+      const answer = byDir.get(dir);
+      if (!answer) continue;
+      probed.set(source, {
+        exists: answer.exists === true,
+        ...(answer.exists ? {
+          installedPath: dir,
+          packageName: answer.packageName,
+          version: answer.version,
+          description: answer.description,
+        } : {}),
+        counts: answer.exists && answer.counts ? { ...emptyCounts(), ...answer.counts } : emptyCounts(),
+      });
+    }
+  } catch {
+    // The probe is best effort: the settings read still answers.
+  }
+  return probed;
 }
 
 /** The settings object a write starts from, with `packages` normalised to an array. */

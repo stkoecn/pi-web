@@ -55,17 +55,35 @@ export async function GET(req: Request) {
 }
 
 export async function PUT(req: Request) {
+  const deviceId = getRequestDeviceId(req);
   try {
     const body = await req.json() as {
       cwd?: unknown;
       scope?: unknown;
       profile?: Omit<SubagentProfile, "scope" | "filePath">;
     };
-    const cwd = await validateCwd(body.cwd);
     const scope = validateScope(body.scope);
     if (!body.profile || typeof body.profile.name !== "string") {
       return NextResponse.json({ error: "profile required" }, { status: 400 });
     }
+    if (isRemoteDevice(deviceId)) {
+      // The profile is a file on the device, rendered by the same composer the
+      // local save runs, so both paths write the same bytes.
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const { getRemoteAgentDir } = await import("@/lib/remote-settings");
+      const { writeRemoteSubagentProfile } = await import("@/lib/remote-subagents");
+      const agentDir = await getRemoteAgentDir(deviceId);
+      const target = typeof body.cwd === "string" && body.cwd ? body.cwd : undefined;
+      const driver = getGateway().getOnlineDriver(deviceId);
+      const profile = await writeRemoteSubagentProfile(driver, {
+        agentDir,
+        cwd: target ?? (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId)),
+        scope,
+        profile: body.profile,
+      });
+      return NextResponse.json({ profile });
+    }
+    const cwd = await validateCwd(body.cwd);
     return NextResponse.json({ profile: saveSubagentProfile(cwd, scope, body.profile) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -74,13 +92,30 @@ export async function PUT(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const deviceId = getRequestDeviceId(req);
   try {
     const body = await req.json() as { cwd?: unknown; scope?: unknown; name?: unknown; enabled?: unknown };
-    const cwd = await validateCwd(body.cwd);
     const scope = validateToggleScope(body.scope);
     if (typeof body.name !== "string") return NextResponse.json({ error: "name required" }, { status: 400 });
     if (typeof body.enabled !== "boolean") return NextResponse.json({ error: "enabled required" }, { status: 400 });
     const name = body.name;
+    if (isRemoteDevice(deviceId)) {
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const { getRemoteAgentDir } = await import("@/lib/remote-settings");
+      const { toggleRemoteSubagentProfile } = await import("@/lib/remote-subagents");
+      const agentDir = await getRemoteAgentDir(deviceId);
+      const driver = getGateway().getOnlineDriver(deviceId);
+      const target = typeof body.cwd === "string" && body.cwd ? body.cwd : undefined;
+      const profile = await toggleRemoteSubagentProfile(driver, {
+        agentDir,
+        cwd: target ?? (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId)),
+        scope,
+        name,
+        enabled: body.enabled,
+      });
+      return NextResponse.json({ profile });
+    }
+    const cwd = await validateCwd(body.cwd);
     const source = listSubagentProfileSources(cwd).find((profile) =>
       profile.scope === scope && profile.name.toLowerCase() === name.toLowerCase()
     );
@@ -122,11 +157,27 @@ export async function PATCH(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const deviceId = getRequestDeviceId(req);
   try {
     const body = await req.json() as { cwd?: unknown; scope?: unknown; name?: unknown };
-    const cwd = await validateCwd(body.cwd);
     const scope = validateScope(body.scope);
     if (typeof body.name !== "string") return NextResponse.json({ error: "name required" }, { status: 400 });
+    if (isRemoteDevice(deviceId)) {
+      const { getGateway } = await import("@/lib/gateway/singleton");
+      const { getRemoteAgentDir } = await import("@/lib/remote-settings");
+      const { deleteRemoteSubagentProfile } = await import("@/lib/remote-subagents");
+      const agentDir = await getRemoteAgentDir(deviceId);
+      const driver = getGateway().getOnlineDriver(deviceId);
+      const target = typeof body.cwd === "string" && body.cwd ? body.cwd : undefined;
+      await deleteRemoteSubagentProfile(driver, {
+        agentDir,
+        cwd: target ?? (await (await import("@/lib/device-home")).deviceHomeOrDefault(deviceId)),
+        scope,
+        name: body.name,
+      });
+      return NextResponse.json({ ok: true });
+    }
+    const cwd = await validateCwd(body.cwd);
     deleteSubagentProfile(cwd, scope, body.name);
     return NextResponse.json({ ok: true });
   } catch (error) {

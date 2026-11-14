@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { withDeviceId } from "@/lib/device-context";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { ProjectTrustStatus, SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
@@ -253,7 +254,7 @@ export function AgentsConfig({
     setSettingsError(null);
     void (async () => {
       try {
-        const response = await fetch("/api/subagents/settings", {
+        const response = await fetch(withDeviceId("/api/subagents/settings", deviceId), {
           cache: "no-store",
           signal: controller.signal,
         });
@@ -342,7 +343,7 @@ export function AgentsConfig({
     setError(null);
     setSavedOk(false);
     try {
-      const response = await fetch("/api/subagents/profiles", {
+      const response = await fetch(withDeviceId("/api/subagents/profiles", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd, scope: targetScope, profile: draft }),
@@ -365,7 +366,7 @@ export function AgentsConfig({
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch("/api/subagents/profiles", {
+      const response = await fetch(withDeviceId("/api/subagents/profiles", deviceId), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd, scope: selected.scope, name: selected.name }),
@@ -421,7 +422,7 @@ export function AgentsConfig({
     setToggling(true);
     setError(null);
     try {
-      const response = await fetch("/api/subagents/profiles", {
+      const response = await fetch(withDeviceId("/api/subagents/profiles", deviceId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd, scope: selected.scope, name: selected.name, enabled }),
@@ -442,7 +443,7 @@ export function AgentsConfig({
     setSettingsSaving(true);
     setSettingsError(null);
     try {
-      const response = await fetch("/api/subagents/settings", {
+      const response = await fetch(withDeviceId("/api/subagents/settings", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
@@ -464,7 +465,7 @@ export function AgentsConfig({
     setMaxConcurrent(value);
     setSettingsError(null);
     try {
-      const response = await fetch("/api/subagents/settings", {
+      const response = await fetch(withDeviceId("/api/subagents/settings", deviceId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ maxConcurrent: value }),

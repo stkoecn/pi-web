@@ -32,7 +32,8 @@ function readMaxConcurrent(value: unknown): number {
  * a name no built-in claims is preserved rather than dropped, because it usually
  * means the file was written by a newer build.
  */
-function readDisabledBuiltIns(value: unknown): string[] {
+/** The device reads need this parser too: the same rules, one home. */
+export function readDisabledBuiltIns(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const names: string[] = [];
   const seen = new Set<string>();

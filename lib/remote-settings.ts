@@ -848,6 +848,9 @@ export async function readRemoteSubagentProfiles(
     { dir: `${cwd}/.agents/agents`, scope: "workspace" },
     { dir: `${cwd}/.pi/agents`, scope: "project" },
   ];
+  // The device's own built-in switches ride along in this file: pi ships the
+  // same built-ins everywhere, so only the disabled list differs per machine.
+  const subagentSettingsPath = `${agentDir}/agents/settings.json`;
 
   const profiles: Array<Record<string, unknown>> = [];
   // One round trip for all three roots plus every profile file, instead of a
@@ -882,20 +885,34 @@ export async function readRemoteSubagentProfiles(
   const entries = roots.flatMap((root, index) =>
     (filesByRoot.get(index) ?? []).map((file) => ({ file, root })),
   );
-  const contents = await readFilesAtOnce(driver, entries.map(({ file }) => file));
+  const contents = await readFilesAtOnce(driver, [...entries.map(({ file }) => file), subagentSettingsPath]);
 
   for (const { file, root } of entries) {
-    const content = (contents.get(file) ?? "").split("\n").slice(0, 40).join("\n");
-    const meta = parseFrontmatter(content);
-    const base = file.slice(file.lastIndexOf("/") + 1).replace(/\.md$/, "");
-    profiles.push({
-      name: meta.name || base,
-      displayName: meta.name || base,
-      description: meta.description ?? "",
-      scope: root.scope,
-      filePath: file,
-      enabled: true,
-    });
+    // The full document parse (the local loader's rules), so the editor opens a
+    // device profile with its real tools, model and switches, not a stub.
+    const { parseSubagentProfileDocument } = await import("@/lib/subagents");
+    const parsed = parseSubagentProfileDocument(contents.get(file) ?? "", file, root.scope as never);
+    if (parsed) profiles.push(parsed as unknown as Record<string, unknown>);  }
+
+  // The built-ins join the file-backed ones, enabled by the device's own list —
+  // the same shape the local loader answers with.
+  try {
+    const settingsText = contents.get(subagentSettingsPath);
+    if (settingsText !== undefined) {
+      const { readDisabledBuiltIns } = await import("@/lib/subagent-settings");
+      const { builtInSubagentProfilesFor } = await import("@/lib/subagents");
+      const parsed = JSON.parse(settingsText) as unknown;
+      const disabled = readDisabledBuiltIns(
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>).disabledBuiltIns
+          : undefined,
+      );
+      const builtIns = builtInSubagentProfilesFor(disabled) as unknown as Array<Record<string, unknown>>;
+      profiles.push(...builtIns);
+      profiles.sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
+    }
+  } catch {
+    // A settings file that does not parse leaves the file-backed list alone.
   }
 
   return { profiles, remote: { deviceId, source: "file" } };
