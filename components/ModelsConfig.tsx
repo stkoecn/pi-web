@@ -343,8 +343,9 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 // ── Provider detail ───────────────────────────────────────────────────────────
 
-function ProviderDetail({ name, editingName, fallbackLabel, provider, onChange, onEditingNameChange, onRename, onDelete, onAddModels, enabledModels }: {
+function ProviderDetail({ name, editingName, fallbackLabel, provider, deviceId, onChange, onEditingNameChange, onRename, onDelete, onAddModels, enabledModels }: {
   name: string; editingName: string; fallbackLabel: string; provider: ProviderEntry;
+  deviceId?: string;
   onChange: (p: ProviderEntry) => void; onEditingNameChange: (n: string) => void;
   onRename: (n: string) => void; onDelete: () => void;
   onAddModels: (models: DiscoveredModel[]) => void; enabledModels: EnabledModelsController;
@@ -371,10 +372,10 @@ function ProviderDetail({ name, editingName, fallbackLabel, provider, onChange, 
     setDiscoveryState({ phase: "loading" });
     setSelectedModelIds([]);
     try {
-      const res = await fetch("/api/models-config/discover", {
+      const res = await fetch(withDeviceId("/api/models-config/discover", deviceId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerName: name, provider: { ...provider, models: undefined } }),
+        body: JSON.stringify({ providerName: name, provider: { ...provider, models: undefined }, deviceId }),
       });
       const data = await res.json() as { models?: DiscoveredModel[]; endpoint?: string; error?: string };
       if (requestId !== discoveryRequestIdRef.current) return;
@@ -2346,6 +2347,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, deviceId =
           editingName={providerNameDraft?.provider === selection.name ? providerNameDraft.name : selection.name}
           fallbackLabel={customProviderLabel(selection.name, {})}
           provider={provider}
+          deviceId={deviceId}
           onChange={(p) => updateProvider(selection.name, p)}
           onEditingNameChange={(n) => setProviderNameDraft(n === selection.name ? null : { provider: selection.name, name: n })}
           onRename={(n) => renameProvider(selection.name, n)}
