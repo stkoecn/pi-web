@@ -9,7 +9,7 @@ import { normalizeCustomPanelLines, stripAnsi } from "@/lib/ansi";
 import { splitNoticeLinks, splitNoticeText } from "@/lib/notice-text";
 import { EXTENSION_DIALOG_BASE_WIDTH, fitExtensionDialogWidth } from "@/lib/extension-dialog-fit";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, hasAssistantAnswer, isHiddenCustomMessage, isMessageGroupAnchor, isMeshOutboundMessage, splitFinalAssistantBlocks, liveOutputPreview, LIVE_OUTPUT_PREVIEW_LINES } from "@/lib/message-display";
+import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, hasAssistantAnswer, isHiddenCustomMessage, isMessageGroupAnchor, isMeshOutboundMessage, splitFinalAssistantBlocks, liveOutputPreview, LIVE_OUTPUT_PREVIEW_LINES, getTurnAnchors, hasTurnRef } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { getFinalAnswerViews, keepWrittenFiles, type FinalAnswerViews } from "@/lib/turn-views";
 import { formatTurnDuration, getTurnDurationMs } from "@/lib/turn-duration";
@@ -38,6 +38,7 @@ import type { SettingsSection } from "@/lib/settings-navigation";
 import { getTranscriptNotices, summarizeCacheMisses, type CacheMissSummary } from "@/lib/transcript-notices";
 import { cacheMissSummaryText, TRANSCRIPT_NOTICE_WARNING_COLOR, TranscriptNoticeLines } from "@/components/TranscriptNotices";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
+import { claimDoneChime, DONE_CHIME_SAME_EVENT_MS } from "@/lib/done-chime";
 import {
   captureScrollDistance,
   getNextVisibleCount,
@@ -275,10 +276,14 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
   const wrappedOnAgentEnd = useCallback((end: AgentEndInfo) => {
     // A run someone stopped did not finish anything, and one whose subagents still work did not finish the task.
     if (completionNotificationsEnabled && soundEnabledRef.current && !end.aborted && !end.subagentsActive) {
-      playDoneSoundRef.current();
+      // Another page showing this session got the same agent_end (#1688).
+      const sid = sessionIdRef.current ?? session?.id;
+      if (!sid || claimDoneChime([sid], Date.now() - DONE_CHIME_SAME_EVENT_MS)) playDoneSoundRef.current();
     }
     onAgentEnd?.(end);
-  }, [completionNotificationsEnabled, onAgentEnd]);
+  // sessionIdRef is useAgentSession's ref, declared below: a dependency would read it before then.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completionNotificationsEnabled, onAgentEnd, session?.id]);
 
   const initialScrollPositionRef = useRef(searchTarget ? null : initialScrollPosition ?? null);
   const [pendingScrollRestore, setPendingScrollRestore] = useState<Extract<ChatScrollPosition, { atBottom: false }> | null>(() => {
@@ -849,7 +854,10 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
   const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
 
-  const visibleMessages = messages.filter((m) => isMessageGroupAnchor(m) || m.role === "assistant");
+  // While a run goes, an extension message that opened it anchors its turn before the reply lands.
+  const openTail = agentRunning || isStreaming;
+  const turnAnchors = useMemo(() => getTurnAnchors(messages, { openTail }), [messages, openTail]);
+  const turnRefCount = messages.reduce((count, message, idx) => count + (hasTurnRef(message, turnAnchors[idx]) ? 1 : 0), 0);
   // Stable Map identity: `messages` doesn't change during streaming updates
   // (the streaming message lives in streamingStore), so memoized MessageViews
   // skip re-rendering on every message_update event. An inline `new Map()`
@@ -877,7 +885,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
     }
     return history.reverse();
   }, [messages]);
-  const messageRefs = useMessageRefs(visibleMessages.length);
+  const messageRefs = useMessageRefs(turnRefCount);
   const revealHistoryForMinimap = useCallback(() => {
     setVisibleCount((current) => Math.max(current, messages.length * 2));
   }, [messages.length]);
@@ -1166,13 +1174,13 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
               // still-streaming segment. lastUserIdx stays the scroll target.
               let lastAnchorIdx = -1;
               for (let i = messages.length - 1; i >= 0; i--) {
-                if (isMessageGroupAnchor(messages[i])) { lastAnchorIdx = i; break; }
+                if (turnAnchors[i]) { lastAnchorIdx = i; break; }
               }
 
               const visibleRefIndexByMessage = new Map<number, number>();
               let refIdx = 0;
               messages.forEach((msg, idx) => {
-                if (isMessageGroupAnchor(msg) || msg.role === "assistant") {
+                if (hasTurnRef(msg, turnAnchors[idx])) {
                   visibleRefIndexByMessage.set(idx, refIdx++);
                 }
               });
@@ -1188,7 +1196,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                 if (isHiddenCustomMessage(msg)) return null;
                 // pi's showCacheMissNotices (#1265): read from the stored message, not a turn view's copy.
                 const notices = options.withNotices === false ? [] : getTranscriptNotices(messages[idx]);
-                const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
+                const isVisible = hasTurnRef(msg, turnAnchors[idx]);
                 const currentRefIdx = visibleRefIndexByMessage.get(idx);
                 const keyPrefix = options.keyPrefix ?? "message";
                 // Not the entry id alone: a message sent or streamed in this run
@@ -1198,9 +1206,8 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                 if (msg.role === "assistant") {
                   showTimestamp = true;
                   for (let j = idx + 1; j < messages.length; j++) {
-                    const r = messages[j].role;
-                    if (r === "user") break;
-                    if (r === "assistant") { showTimestamp = false; break; }
+                    if (turnAnchors[j]) break;
+                    if (messages[j].role === "assistant") { showTimestamp = false; break; }
                   }
                   // Hide on the currently-streaming tail (the streaming bubble owns the live timestamp)
                   if (showTimestamp && isStreaming && idx === messages.length - 1) {
@@ -1248,8 +1255,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
 
               const rendered: ReactNode[] = [];
               for (let idx = 0; idx < messages.length;) {
-                const msg = messages[idx];
-                const hasAnchor = isMessageGroupAnchor(msg);
+                const hasAnchor = turnAnchors[idx];
                 if (!hasAnchor && idx !== 0) {
                   rendered.push(renderMessage(idx));
                   idx += 1;
@@ -1262,7 +1268,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
                 const userIdx = hasAnchor ? idx : -1;
                 const groupStartIdx = hasAnchor ? idx : 0;
                 let endIdx = idx + 1;
-                while (endIdx < messages.length && !isMessageGroupAnchor(messages[endIdx])) endIdx += 1;
+                while (endIdx < messages.length && !turnAnchors[endIdx]) endIdx += 1;
 
                 const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
 
@@ -1474,6 +1480,7 @@ export function ChatWindow({ session, deviceId = "localhost", searchTarget, onSe
             messageRefs={messageRefs}
             onRevealHistory={revealHistoryForMinimap}
             turnsBefore={earlierTurnCount}
+            turnAnchors={turnAnchors}
           />
         )}
         </>}

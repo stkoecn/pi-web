@@ -33,6 +33,8 @@ Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
 6. 依赖必须按 `package-lock.json` 在远端 `npm ci --omit=dev` 安装（首次部署或 package.json/lock 变更后）：远端 node_modules 落后于本地构建时（如 Next 小版本差一），构建产物在首个请求即崩（无堆栈的 `TypeError`）。lock 由 `npm install --package-lock-only` 从本机安装树生成并提交。
 7. 无 systemd 的节点（如 wsk40 容器）用其 supervisord 常驻：`/etc/supervisor/conf.d/pi-web.conf` + `sudo supervisorctl reread/update`；验证标准同上。各节点登录密码在各自服务配置的 `PI_WEB_PASSWORD`。
 
+The published pi-web ships no lockfile, so its dependencies resolve afresh on install, and pi up to 1.2.0 linked its own packages with `^` ranges. Install every `@earendil-works/*` package the tree holds, the SDK's own dependencies included (`pi-codemode`, `pi-mcp`, `pi-telemetry`, …), with `npm install --save-exact`, so npm reuses those exact versions for the SDK's ranges. `lib/pi-packages.test.mjs` fails on any pi package that is not pinned that way.
+
 ---
 
 ## Architecture
@@ -43,9 +45,19 @@ Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
 - **Product scope**: a light web wrapper around pi, not an IDE or a platform of its own. Before adding a feature, check the out-of-scope list in [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Extension compatibility (principle)**: extensions written for the pi CLI must behave the same here. Fix display problems in the web client; never add pi-web-only options or fields to the extension API (`ctx.ui.*` options, `extension_ui_request`). pi's TUI (`node_modules/@earendil-works/pi-tui`) is the reference for what an extension asking for something means.
 
+## UI Copy
+
+Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+
+## Bug Fixes
+
+Fix a bug at its cause, reasoning from first principles and established best practice. Do not patch over the symptom.
+
 ---
 
-## File Map
+## API Routes
+
+Each route's methods and parameters; code elsewhere is found by name (`ls lib components hooks`) and through the topic notes' file lists.
 
 ```
 app/api/

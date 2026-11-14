@@ -53,11 +53,11 @@ export async function POST(req: Request) {
     if (isRemoteDevice(deviceId)) {
       const { updateRemoteSkill } = await import("@/lib/remote-skill-writes");
       output = (await updateRemoteSkill(deviceId, { install: skill.install, cwd })).output;
+    
     } else {
       const { stdout, stderr } = await runNpx(buildSkillUpdateArgs(skill.install), {
         timeout: 60_000,
         cwd: scope === "project" ? cwd : undefined,
-        env: { ...process.env, FORCE_COLOR: "0" },
       });
       output = `${stdout}${stderr}`;
     }
