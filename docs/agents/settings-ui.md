@@ -31,3 +31,7 @@
 ## Reload session on a device
 
 The panels' "Reload session" sends `POST /api/agent/[id]` with `deviceId`. For a device there is no in-process wrapper to reload, so the runtime restarts the remote `pi` (`SshRemoteDeviceRuntime.sendSessionCommand` intercepts `reload`): it refuses mid-run, closes the channel, and re-resumes, so the next use reads the device's current plugins, skills and extensions.
+
+## The deviceId rides every panel request
+
+A settings panel addressed at a device (`?deviceId=`) must attach it to **every** call — reads and writes alike (`withDeviceId()`). The recurring failure was a read that carried the device and a write that did not: the Skills toggle answered "file not found" from the local branch's `existsSync`, the MCP Test refused the device's folder on file-access grounds, and the Agents panel's profile writes edited this host's files. When a route gains a device branch, check the panel's every call, not only the one being fixed.

@@ -70,3 +70,7 @@
 - `lib/auth-throttle.ts` is deliberately global, not per-IP (its header says why). Failures double the delay (1 s → 60 s cap) for everyone; a success or 5 idle minutes resets it. The reset window must stay longer than the max delay, or waiting out one block restarts the burst.
 - State lives on `globalThis` under `Symbol.for("pi-web:auth-throttle")`, so it survives hot reload and `proxy.ts` and the route handlers share it under both `next dev` and `next start`. Tests reset it with `recordAuthSuccess()`.
 - `POST /api/web-auth` and every `Authorization: Basic` header on `/api/*` share the counter; `proxy.ts` checks Basic before its `/api/web-auth` exemption, so `GET /api/web-auth` is no unthrottled password oracle. A valid session cookie is checked first and never blocked. While blocked, Basic gets `429` even with the right password, and a Basic success never resets the counter (`proxy.ts` explains both).
+
+## Worktree create failures (#1431)
+
+Creating a worktree on a branch another checkout holds names **that checkout** instead of the raw git line: the route classifies `WorktreeBranchInUseError` into `{ code: "branch_in_use" | "branch_worktree_missing", branch, worktreePath }` (409), and `worktreeCreateFailure()` (`lib/sidebar-actions.ts`) maps it to the `sidebar.worktreeBranchInUse` / `sidebar.worktreeBranchMissing` notices; anything else keeps the server's error, or `HTTP <status>` when the body had none.
