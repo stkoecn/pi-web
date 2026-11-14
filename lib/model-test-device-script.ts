@@ -52,8 +52,11 @@ function findPiPackageDir() {
     const pkgDir = findPiPackageDir();
     if (!pkgDir) return out({ ok: false, error: "pi's package directory was not found on the device" });
     const sdk = require(path.join(pkgDir, 'dist', 'index.js'));
-    if (!sdk || typeof sdk.ModelRuntime !== 'object' || !sdk.ModelRuntime) {
-      return out({ ok: false, error: "the device's pi build does not export ModelRuntime" });
+    // ModelRuntime is a class, so its type here is 'function', not 'object';
+    // what the probe actually needs is the static create().
+    const ModelRuntime = sdk && (sdk.ModelRuntime || (sdk.default && sdk.default.ModelRuntime));
+    if (!ModelRuntime || typeof ModelRuntime.create !== 'function') {
+      return out({ ok: false, error: "the device's pi build does not export a usable ModelRuntime (found: " + (ModelRuntime ? typeof ModelRuntime : String(ModelRuntime)) + ")" });
     }
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-web-model-test-'));
     const modelsPath = path.join(tempDir, 'models.json');
