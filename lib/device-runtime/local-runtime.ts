@@ -410,6 +410,15 @@ export class LocalDeviceRuntime implements IDeviceRuntime {
     return { running: true, state };
   }
 
+  async getEventStreamSession(sessionId: string): Promise<object | undefined> {
+    const rpc = getRpcSession(sessionId);
+    if (rpc?.isAlive()) return rpc;
+    const filePath = await resolveSessionPath(sessionId);
+    if (!filePath) return undefined;
+    const { session } = await startRpcSession(sessionId, filePath, undefined);
+    return session;
+  }
+
   async closeSession(_sessionId: string): Promise<boolean> {
     // Local wrappers are released by the idle sweeper and Stop, not by a
     // DELETE /api/agent/[id], which exists to close remote channels.

@@ -2,7 +2,7 @@ import { stat } from "fs/promises";
 import { resolve } from "path";
 import { NextResponse } from "next/server";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
-import { createTerminal } from "@/lib/terminal-manager";
+import { createTerminal, createDeviceTerminal } from "@/lib/terminal-manager";
 import { isLocalHostId } from "@/lib/gateway/host-identity";
 
 export const dynamic = "force-dynamic";
@@ -43,13 +43,22 @@ export async function POST(req: Request) {
       }
     }
 
-    const id = await createTerminal(
-      cwd,
-      typeof body.cols === "number" ? body.cols : 80,
-      typeof body.rows === "number" ? body.rows : 24,
-      body.id as string | undefined,
-      deviceId,
-    );
+    // The local contract is sync (upstream's reuse-by-id); a device terminal
+    // goes through the gateway driver asynchronously.
+    const id = deviceId && deviceId !== "localhost"
+      ? await createDeviceTerminal(
+          cwd,
+          typeof body.cols === "number" ? body.cols : 80,
+          typeof body.rows === "number" ? body.rows : 24,
+          body.id as string | undefined,
+          deviceId,
+        )
+      : createTerminal(
+          cwd,
+          typeof body.cols === "number" ? body.cols : 80,
+          typeof body.rows === "number" ? body.rows : 24,
+          body.id as string | undefined,
+        );
     return NextResponse.json({ id });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });

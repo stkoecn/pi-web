@@ -595,6 +595,17 @@ export class SshRemoteDeviceRuntime implements IDeviceRuntime {
     return closeRemoteRpcSession(sessionId);
   }
 
+  async getEventStreamSession(sessionId: string): Promise<object | undefined> {
+    const { toRemoteEventSession } = await import("../remote-event-stream");
+    let session = getRemoteRpcSession(sessionId);
+    if (!session || ((session.channel as any).isClosed?.())) {
+      session = (await enqueueDeviceSessionTask(this.deviceId, () =>
+        ensureRemoteRpcSessionForExisting(this.deviceId, sessionId).catch(() => null))) ?? undefined;
+    }
+    if (!session) return undefined;
+    return toRemoteEventSession(session) as unknown as object;
+  }
+
   subscribeSessionEvents(sessionId: string, listener: (event: unknown) => void): () => void {
     const session = getRemoteRpcSession(sessionId);
     if (session && !((session.channel as any).isClosed?.())) {

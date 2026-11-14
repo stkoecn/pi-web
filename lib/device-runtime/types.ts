@@ -248,6 +248,12 @@ export interface IDeviceRuntime {
   sendSessionCommand(sessionId: string, command: Record<string, unknown>, options?: SendSessionCommandOptions): Promise<unknown>;
   /** Live-or-persisted status for polling; `running: false` when unknown. */
   getSessionStatus(sessionId: string): Promise<SessionStatus>;
+  /**
+   * The session as an SSE event source for createAgentEventStream: a live
+   * wrapper, a resumed session, or the device channel adapter. Undefined
+   * when the session does not exist on this device.
+   */
+  getEventStreamSession?(sessionId: string): Promise<object | undefined>;
   /** Releases a session's live channel. Local sessions report closed: false. */
   closeSession(sessionId: string): Promise<boolean>;
   subscribeSessionEvents(sessionId: string, listener: (event: unknown) => void): () => void;

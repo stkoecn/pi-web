@@ -127,7 +127,12 @@ function dimension(value: number, fallback: number): number {
   return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
 }
 
-export async function createTerminal(
+/**
+ * A terminal on a remote device, through the gateway driver. Kept apart from
+ * the local createTerminal so the local contract stays upstream's (sync,
+ * reuse-by-id): the terminal route forks on deviceId.
+ */
+export async function createDeviceTerminal(
   cwd: string,
   cols: number,
   rows: number,
@@ -191,6 +196,29 @@ export async function createTerminal(
       scheduleCleanup(id, record);
     });
 
+    return id;
+  }
+
+  // Unreachable for a remote id (handled above); kept total for the compiler.
+  return createDeviceTerminal(cwd, cols, rows, id, deviceId);
+}
+
+/**
+ * A terminal on this machine, upstream's sync contract: reuse by id (same
+ * workspace), spawn or throw, register, return the id. `await` on it from
+ * existing callers keeps working.
+ */
+export function createTerminal(
+  cwd: string,
+  cols: number,
+  rows: number,
+  id: string = randomUUID(),
+): string {
+  const existing = registry().get(id);
+  if (existing) {
+    if (!samePath(existing.cwd, cwd)) {
+      throw new Error("Terminal belongs to a different workspace");
+    }
     return id;
   }
 
