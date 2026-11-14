@@ -70,6 +70,9 @@ test("two unnamed side tabs match the Agents list regardless of open order", () 
     setAgentTabs(update) { context.tabs = update(context.tabs); },
     setActiveFileTabId() {}, setRightPanelOpen() {},
     isMobile: false,
+    gatewayHostId: null,
+    selectedDeviceIdRef: { current: "localhost" },
+    deviceTabsRef: { current: new Map() },
   });
   const family = [
     { id: "side-a", name: "Side chat", created: "2026-01-01", relation: { kind: "side" } },

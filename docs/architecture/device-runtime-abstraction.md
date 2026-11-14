@@ -343,10 +343,10 @@ if (isRemoteDevice(deviceId)) {
 
 ### 3. 剩余待办（按优先级）
 
-1. **远程工具参数与按 cwd 的模型探测**：`capabilities` 已显式声明限制；若需要，在远程探针（remote-tools/remote-models）中加 schema 与项目作用域。
-2. **远程 subagent 运行跟踪**：subagents/[id] 目前对远程显式 501；设备端运行时需要暴露运行状态。
-3. **PI_SESSION_ID 注入新会话**：远程新会话首个 `get_state` 前没有会话 id，网关侧的"设备仅一个运行会话"兜底覆盖了大部分场景。
-4. **历史遗留测试失败**：组件 10 个、lib 18 个、junction 1 个在本次工作开始前即失败（与本次无关），集中在 Debug 面板交互与主题渲染断言，宜专项清理。
+1. **远程工具参数（T3 已实现）/ 按 cwd 的模型探测**：`getTools` 现优先走活动会话的真实 `get_tools`（含 JSON schema），静态探针降级为回退；`capabilities.toolParameters` 已翻为 true。按 cwd 的模型作用域仍为显式限制（探针读设备级 models.json）。
+2. **远程 subagent 运行跟踪（T4 保持显式 501）**：操控设备上的运行需要设备端运行时自身暴露运行状态，属于跨进程特性，待设备端扩展支持。
+3. **PI_SESSION_ID 注入新会话（T2 核实已覆盖）**：注入扩展读取 session_start 事件的会话 id；`createRemoteRpcSession` 在 init 的 get_state 中解析真实 id；网关的"设备仅一个运行会话"兜底覆盖残余场景——无需新代码。
+4. **历史遗留测试失败（T1 已清理）**：曾有的 29 个失败已修复或按平台/环境显式限定（详见 commit 814137d）。当前仅剩：git/diff 的 Windows junction 合成用例（realpath 逃逸 repo 与显式 allow 的平台语义冲突，上游 POSIX CI 不运行它），以及批量并行运行时的跨测试干扰（单跑全绿）。
 2. **远程工具参数与按 cwd 的模型探测**：`capabilities` 已显式声明限制；若需要，在远程探针（remote-tools/remote-models）中加 schema 与项目作用域。
 3. **远程 subagent 运行跟踪**：subagents/[id] 目前对远程显式 501；设备端运行时需要暴露运行状态。
 4. **PI_SESSION_ID 注入新会话**：远程新会话首个 `get_state` 前没有会话 id，网关侧的"设备仅一个运行会话"兜底覆盖了大部分场景。
