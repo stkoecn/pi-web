@@ -15,13 +15,27 @@ export interface RemoteRpcSession {
   /** Last message seen on the channel; the idle sweeper reaps stale sessions. */
   lastActivityAt: number;
   /**
-   * Blocking extension dialogs still unanswered on this session, by request id.
+   * Blocking extension dialogs still unanswered on this session.
    *
    * Tracked here rather than read from `state`: pi's `get_state` does not report
    * them, and the sidebar needs to tell a run parked on a person from one that
    * is still working.
    */
   pendingUiRequestIds: Set<string>;
+  /**
+   * The same requests' full frames, by request id.
+   *
+   * `extension_ui_request` crosses the SSE stream once; a browser whose stream
+   * was down at that moment (hidden page, refresh, a dropped channel) would
+   * never see the dialog and the run would sit parked for ever. The event
+   * stream replays these frames to every client that (re)subscribes.
+   */
+  pendingUiRequests: Map<string, Record<string, unknown>>;
+  /**
+   * Consecutive liveness probes that found the device dead. Two in a row close
+   * the session; one network blip must not kill a healthy slow one.
+   */
+  deadProbes: number;
   /**
    * A turn is in flight, as reported by pi's own events.
    *
@@ -125,7 +139,8 @@ function requestOnChannel(
  * `agent_end` / `agent_settled` end it, and a blocking `extension_ui_request`
  * parks it until the matching `extension_ui_response` goes back.
  */
-function trackRemoteRunState(session: RemoteRpcSession, msg: any): void {
+/** Exported for the ui-replay tests: the whole state machine is this function. */
+export function trackRemoteRunState(session: RemoteRpcSession, msg: any): void {
   if (!msg || typeof msg.type !== "string") return;
 
   if (msg.type === "agent_start") {
@@ -137,11 +152,16 @@ function trackRemoteRunState(session: RemoteRpcSession, msg: any): void {
     session.runActive = false;
     session.state = { ...(session.state ?? {}), isStreaming: false };
     session.pendingUiRequestIds.clear();
+    session.pendingUiRequests.clear();
+    session.deadProbes = 0;
     return;
   }
   if (msg.type === "extension_ui_request" && typeof msg.id === "string") {
     if (isBlockingExtensionUiRequest(msg as unknown as ExtensionUiRequest)) {
       session.pendingUiRequestIds.add(msg.id);
+      // Keep the whole frame: the event stream replays it to a client that
+      // (re)subscribes without it (hidden page, refresh, dropped channel).
+      session.pendingUiRequests.set(msg.id, msg);
     }
     return;
   }
@@ -240,6 +260,8 @@ export async function createRemoteRpcSession(options: CreateRemoteRpcSessionOpti
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
     pendingUiRequestIds: new Set<string>(),
+    pendingUiRequests: new Map<string, Record<string, unknown>>(),
+    deadProbes: 0,
     runActive: false,
   };
 
@@ -436,17 +458,32 @@ export function getRemoteRpcSession(sessionId: string): RemoteRpcSession | undef
  * Current state of a live remote session, refreshed over the channel.
  *
  * Falls back to the cached snapshot when pi does not answer in time, which is
- * what `?systemPrompt=0` status polling and the reconcile loop can live with.
+ * what `?systemPrompt=0` status polling and the reconcile loop can live with —
+ * but never for a DEAD process: a cached `streaming: true` outlived its pi more
+ * than once, and the sidebar span forever. Before trusting the cache the
+ * channel is probed with a short `get_state`; two dead probes in a row close
+ * the session (its `onClose` tells the clients) and the caller resumes afresh.
+ * One blip only increments `deadProbes`, so a healthy slow session survives.
  */
 export async function getRemoteRpcSessionState(sessionId: string): Promise<any | undefined> {
   const session = remoteSessions.get(sessionId);
   if (!session) return undefined;
-  const response = await requestOnChannel(session.channel, { type: "get_state" });
+  const channelClosed = (session.channel as { isClosed?: () => boolean }).isClosed?.() === true;
+  const response = channelClosed
+    ? null
+    : await requestOnChannel(session.channel, { type: "get_state" }, 3_000);
   if (response?.success && response.data) {
     // `isStreaming` comes from our own event tracking, not from the reply: a
     // `get_state` taken while a turn is starting reports false, and overwriting
     // the flag here made the sidebar drop the spinner mid-run.
+    session.deadProbes = 0;
     session.state = { ...response.data, isStreaming: isRemoteSessionRunning(session) };
+    return session.state;
+  }
+  session.deadProbes += 1;
+  if (session.deadProbes >= 2) {
+    closeRemoteRpcSession(sessionId);
+    return undefined;
   }
   return session.state;
 }
@@ -534,7 +571,10 @@ export function isRemoteSessionRunning(session: RemoteRpcSession): boolean {
  */
 export function clearRemotePendingUiRequest(sessionId: string, requestId: unknown): void {
   if (typeof requestId !== "string") return;
-  remoteSessions.get(sessionId)?.pendingUiRequestIds.delete(requestId);
+  const session = remoteSessions.get(sessionId);
+  if (!session) return;
+  session.pendingUiRequestIds.delete(requestId);
+  session.pendingUiRequests.delete(requestId);
 }
 
 /**

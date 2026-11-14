@@ -49,6 +49,20 @@ export function toRemoteEventSession(remote: RemoteRpcSession): AgentEventStream
     },
     onEvent(listener: (event: AgentEventLike) => void) {
       listeners.add(listener);
+      // Replay the pending extension dialogs to THIS client first: the request
+      // crossed the stream once, and a client whose stream was down at that
+      // moment (hidden page, refresh, a dropped channel) would never see the
+      // dialog and the run would sit parked for ever. The client deduplicates
+      // by request id (enqueueExtensionUiRequest), so a client that already
+      // has the dialog keeps it where it stands.
+      for (const frame of remote.pendingUiRequests.values()) {
+        try {
+          const clientEvent = toClientAgentEvent(frame as AgentEventLike);
+          if (clientEvent) listener(clientEvent);
+        } catch (error) {
+          console.error("[remote-event-stream] replay of a pending extension dialog failed:", error);
+        }
+      }
       const unsubscribe = remote.channel.onMessage((msg: any) => {
         if (!msg || typeof msg.type !== "string") return;
         // RPC plumbing (`response` frames to our own get_state / set_model calls)
