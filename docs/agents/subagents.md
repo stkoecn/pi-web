@@ -45,3 +45,12 @@
 ## Subagent profiles on a device
 
 A device's profiles are its own files (`<agentDir>/agents`, `<cwd>/.pi/agents`, `<cwd>/.agents/agents`), read over the gateway (`readRemoteSubagentProfiles`, full document parse) with pi's built-ins merged in, enabled by the DEVICE's `agents/settings.json` disabled list. The writes go through the same code this host runs: `composeSubagentProfileDocument()` renders the bytes a local save would against the device file's stored frontmatter (`lib/remote-subagents.ts`), the settings writers take a path so the edit runs on a downloaded copy of the device's `agents/settings.json`, and a delete is a name-validated `rm -f`. AgentsConfig carries the deviceId on every call — a bare one fell to the local branch and wrote this host's files.
+
+## v0.17.0: the Agents strip locks onto the main agent
+
+The strip that shows a session's running subagent (1eb21f7) locks onto the
+main agent's row — picking another session's strip entry closes the switcher
+instead of moving the strip. Its AGENTS.md-era placement rules live in the
+upstream components (`AgentMiniStrip.tsx`); pi-web keeps the strip
+device-transparent (it renders from the session's own events, whatever host
+holds the session).

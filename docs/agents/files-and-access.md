@@ -74,3 +74,12 @@
 ## Worktree create failures (#1431)
 
 Creating a worktree on a branch another checkout holds names **that checkout** instead of the raw git line: the route classifies `WorktreeBranchInUseError` into `{ code: "branch_in_use" | "branch_worktree_missing", branch, worktreePath }` (409), and `worktreeCreateFailure()` (`lib/sidebar-actions.ts`) maps it to the `sidebar.worktreeBranchInUse` / `sidebar.worktreeBranchMissing` notices; anything else keeps the server's error, or `HTTP <status>` when the body had none.
+
+## v0.17.0: one upload may use the whole limit
+
+The per-file cap and the per-request total were separate, so a single 90 MB
+file was refused under a 100 MB total (bae035e). The per-file check now uses
+`MAX_UPLOAD_TOTAL_BYTES`: one file may take the whole limit, and the total
+check still bounds a multi-file drop. #1660/#1667's git fixes
+(`--literal-pathspecs`, trailing-space paths) also apply to the device git
+routes, which mirror the local invocations.

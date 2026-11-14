@@ -27,3 +27,11 @@
 ## Test on a device
 
 A device's server runs on that machine, so its Test runs there too: the entry is read from the DEVICE's own `mcp.json` (`readRemoteMcpEntry`, same refusal reasons), and the probe (`lib/mcp-test-device-script.ts`) connects on the device over the SSH channel — stdio spawn or HTTP, `!command` values resolved on the device, bounded like the local test. The gateway masks the answer against the entry's secrets before the browser sees it; the shape is the same `McpTestResponse` the local route answers with. Sign-in on a device is not built yet.
+
+## v0.17.0: a passing Test reconnects the session's failed server
+
+After a Test of an `mcp.json` entry connects (#1684), a session whose
+connection to that same server had failed reconnects it — a Test is evidence
+the server is reachable, so the session's failed entry stops staying failed.
+pi-web's device Test produces the same effect: the status record it writes is
+what the session's MCP host consults.

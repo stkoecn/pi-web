@@ -77,3 +77,12 @@ tools/cache-miss settings (new device branches editing the device's
 `settings.json` through the same writers), and the catalog refresh (a device
 probe refreshes the device's own `models-store.json`). The `agent/new` call
 carries the device in its body, the documented fallback.
+
+## Sync state
+
+dev merges upstream v0.17.0 (merge `7746a75`, both parents recorded). The
+v0.17.0 merge kept pi-web's device era intact: the mesh anchor inside the
+reworked turn-anchor function, the device branch inside the skills update
+route (upstream's env scrub applies to the local branch only — the device CLI
+already runs in the device's own environment), and the whole device-panel
+audit (see the panel request audit above).
